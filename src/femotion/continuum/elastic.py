@@ -173,7 +173,10 @@ class Elastic:
             fb = free.reshape(-1, d) if len(free) % d == 0 else None
             if fb is not None and np.all(fb[:, 0] % d == 0) and np.all(fb == fb[:, :1] + np.arange(d)):
                 A = A.tobsr(blocksize=(d, d))  # whole nodes free: aggregate node blocks (far fewer CG steps for quadratic cells)
-            ml = pyamg.smoothed_aggregation_solver(A, B=B, symmetry="hermitian", max_coarse=500)
+            # prolongation smoothing weighted row by row (Gershgorin bound): pyamg's default estimates the spectral radius from
+            # a random vector, and about 1 draw in 15 underestimates it for quadratic solids, so that CG diverges
+            ml = pyamg.smoothed_aggregation_solver(A, B=B, symmetry="hermitian", max_coarse=500,
+                                                   smooth=("jacobi", {"omega": 4.0 / 3.0, "weighting": "local"}))
             resid: list[float] = []
             u[free] = ml.solve(b, tol=tol, accel="cg", maxiter=2000, residuals=resid)
             self.cg_iterations = len(resid) - 1

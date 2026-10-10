@@ -116,19 +116,24 @@ def test_welded_blocks_patch():
 
 
 def test_quadratic_solid_amg_matches_direct():
-    """quadratic tetrahedra, whole nodes fixed: AMG runs on 3 × 3 node blocks and agrees with the direct solver"""
+    """quadratic tetrahedra, whole nodes fixed: AMG runs on 3 × 3 node blocks and agrees with the direct solver. Seeds 10 and
+    18 are random states under which pyamg's default prolongation smoothing made CG diverge"""
     G = pytest.importorskip("femotion.mesh.gmsh")
     pytest.importorskip("gmsh")
     pytest.importorskip("pyamg")
     m = G.solid(lambda occ: occ.addBox(0, 0, 0, 2, 0.4, 0.4), size=0.1)
-    res = {}
-    for method in ("direct", "amg"):
+
+    def solve(method):
         s = Elastic(m, E=200.0, nu=0.3, order=2)
         s.body_force((0, 0, -1.0))
         s.fix(lambda x: np.isclose(x[0], 0))
         s.solve(method=method)
-        res[method] = s.nodal_displacement()
-    assert np.abs(res["amg"] - res["direct"]).max() < 1e-8 * np.abs(res["direct"]).max()
+        return s.nodal_displacement()
+
+    ref = solve("direct")
+    for seed in (0, 10, 18):
+        np.random.seed(seed)
+        assert np.abs(solve("amg") - ref).max() < 1e-8 * np.abs(ref).max()
 
 
 @pytest.mark.filterwarnings("ignore")
