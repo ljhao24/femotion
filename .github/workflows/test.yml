@@ -26,7 +26,7 @@ jobs:
           # Apple silicon: the only runner where the MLX flow solver runs
           - {os: macos-14, python: "3.12", resolution: highest, extras: all}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - name: system libraries (gmsh; OpenSeesPy's Linux build before Python 3.12)
         if: runner.os == 'Linux'
@@ -52,7 +52,7 @@ jobs:
       run:
         working-directory: js
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
