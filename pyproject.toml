@@ -31,7 +31,7 @@ Issues = "https://github.com/ljhao24/femotion/issues"
 mesh = ["gmsh>=4.11"]                       # unstructured meshing (GPL-2.0+; optional, not bundled)
 tetwild = ["pytetwild[all]>=0.4"]           # robust tets from messy surface models (fTetWild, MPL-2.0; pytetwild imports PyVista, hence [all])
 continuum = ["scikit-fem>=10", "pyamg>=5.2"]  # plane / solid linear elasticity
-opensees = ["openseespy>=3.5"]              # nonlinear frames (OpenSees: free for education, research and non-profit use)
+opensees = ["openseespy>=3.7.1.2"]              # nonlinear frames (OpenSees: free for education, research and non-profit use)
 cfd = ["mlx>=0.21; sys_platform == 'darwin' and platform_machine == 'arm64'", "pillow>=10"]  # 2D lattice Boltzmann on Apple GPUs
 io = ["meshio>=5.3"]                        # read / write ~30 mesh formats; export results for ParaView
 sections = ["sectionproperties>=3.4"]       # cross-section properties and fiber sections of any shape (mesher: Triangle, non-commercial)

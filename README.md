@@ -35,6 +35,9 @@ pip install "femotion[sections]"     # + sectionproperties: cross-sections of an
 pip install "femotion[all]"
 ```
 
+On Linux, gmsh's wheel needs a few system libraries: `sudo apt install libglu1-mesa libxcursor1 libxft2 libxinerama1`
+(Debian / Ubuntu).
+
 ## Quick tour
 
 ```python

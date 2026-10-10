@@ -30,6 +30,8 @@ pip install "femotion[sections]"     # + sectionproperties：任意形状截面�
 pip install "femotion[all]"
 ```
 
+Linux 上 gmsh 需要几个系统库：`sudo apt install libglu1-mesa libxcursor1 libxft2 libxinerama1`（Debian / Ubuntu）。
+
 ## 和其他软件交换
 
 - **`femotion.io`**（meshio）：读 gmsh、Abaqus、Ansys、Nastran、VTK 等格式的网格，gmsh 的物理分组直接变成分组；
