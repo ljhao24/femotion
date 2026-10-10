@@ -28,9 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - name: system libraries for gmsh
+      - name: system libraries (gmsh; OpenSeesPy's Linux build before Python 3.12)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libglu1-mesa libxcursor1 libxft2 libxinerama1
+        run: sudo apt-get update && sudo apt-get install -y libglu1-mesa libxcursor1 libxft2 libxinerama1 libblas3 liblapack3
       - name: install
         shell: bash
         run: |
