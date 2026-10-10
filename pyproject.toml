@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "femotion"
+version = "0.1.0.dev0"
+description = "Finite-element and simulation results made for animation: compute with mature open-source solvers, export a compact result format, draw it frame by frame."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+authors = [{ name = "The femotion authors" }]
+keywords = ["finite element", "structural analysis", "bridge", "visualization", "animation", "opensees", "topology optimization"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = ["numpy>=1.24", "scipy>=1.10"]
+
+[project.urls]
+Homepage = "https://github.com/ljhao24/femotion"
+Issues = "https://github.com/ljhao24/femotion/issues"
+
+[project.optional-dependencies]
+# Each extra pulls in one mature open-source tool. Install only what you need.
+mesh = ["gmsh>=4.11"]                       # unstructured meshing (GPL-2.0+; optional, not bundled)
+tetwild = ["pytetwild[all]>=0.4"]           # robust tets from messy surface models (fTetWild, MPL-2.0; pytetwild imports PyVista, hence [all])
+continuum = ["scikit-fem>=10", "pyamg>=5.2"]  # plane / solid linear elasticity
+opensees = ["openseespy>=3.5"]              # nonlinear frames (OpenSees: free for education, research and non-profit use)
+cfd = ["mlx>=0.21; sys_platform == 'darwin' and platform_machine == 'arm64'", "pillow>=10"]  # 2D lattice Boltzmann on Apple GPUs
+io = ["meshio>=5.3"]                        # read / write ~30 mesh formats; export results for ParaView
+sections = ["sectionproperties>=3.4"]       # cross-section properties and fiber sections of any shape (mesher: Triangle, non-commercial)
+all = ["femotion[mesh,tetwild,continuum,opensees,cfd,io,sections]"]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/femotion"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: takes more than a few seconds",
+]

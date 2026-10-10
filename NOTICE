@@ -1,0 +1,19 @@
+femotion
+Copyright 2026 The femotion authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+femotion does not bundle third-party solvers. Optional extras install them from
+their own distributions, under their own licenses:
+  - gmsh (extra "mesh"): GNU GPL v2 or later, with exceptions
+  - fTetWild through pytetwild (extra "tetwild"): MPL-2.0; pulls in PyVista and
+    VTK (MIT, BSD-3)
+  - scikit-fem, pyamg (extra "continuum"): BSD-3-Clause, MIT
+  - OpenSeesPy (extra "opensees"): OpenSees license, free for educational,
+    research and non-profit use; commercial use requires a license from the
+    Regents of the University of California
+  - MLX (extra "cfd"): MIT, Apple silicon only
+  - meshio (extra "io"): MIT
+  - sectionproperties (extra "sections"): MIT; its mesher, Shewchuk's Triangle
+    (through cytriangle, LGPL-3.0), is free for non-commercial use only and needs
+    a license from its author for commercial use

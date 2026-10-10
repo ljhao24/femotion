@@ -1,0 +1,58 @@
+# Tests on every push and pull request, and every Monday against the newest releases of all dependencies, so that an
+# upstream release that breaks femotion shows up before users meet it.
+name: test
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  python:
+    name: python ${{ matrix.python }} · ${{ matrix.os }} · ${{ matrix.extras || 'core' }} · ${{ matrix.resolution }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # the declared lower bounds must really work
+          - {os: ubuntu-latest, python: "3.10", resolution: lowest-direct, extras: ""}
+          - {os: ubuntu-latest, python: "3.10", resolution: lowest-direct, extras: all}
+          # newest releases of everything
+          - {os: ubuntu-latest, python: "3.13", resolution: highest, extras: all}
+          - {os: windows-latest, python: "3.12", resolution: highest, extras: all}
+          # Apple silicon: the only runner where the MLX flow solver runs
+          - {os: macos-14, python: "3.12", resolution: highest, extras: all}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: install
+        shell: bash
+        run: |
+          uv venv --python ${{ matrix.python }}
+          uv pip install --resolution ${{ matrix.resolution }} ".${{ matrix.extras && format('[{0}]', matrix.extras) || '' }}" "pytest>=8"
+          uv pip freeze
+      - name: test
+        shell: bash
+        run: uv run --no-project pytest -q
+
+  js:
+    name: js · node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci --legacy-peer-deps
+      - run: npm test
+      - run: npm run typecheck -w core

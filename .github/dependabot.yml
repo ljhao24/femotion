@@ -1,0 +1,12 @@
+# Weekly pull requests for new versions of the GitHub actions and of the JavaScript dev tools; each one runs the tests.
+# Python dependencies have no lock file here (femotion is a library): the weekly scheduled test run covers their releases.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /js
+    schedule:
+      interval: weekly

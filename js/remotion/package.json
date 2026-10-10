@@ -1,0 +1,37 @@
+{
+  "name": "@femotion/remotion",
+  "version": "0.1.0-dev.0",
+  "description": "Remotion components for femotion results: load fem-result/1 files, colour fields on a canvas, draw mesh lines, polylines, colour bars and stiffness-matrix grids.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/ljhao24/femotion/tree/main/js/remotion#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ljhao24/femotion.git",
+    "directory": "js/remotion"
+  },
+  "bugs": "https://github.com/ljhao24/femotion/issues",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "finite element",
+    "fem",
+    "remotion",
+    "video",
+    "animation"
+  ],
+  "dependencies": {
+    "@femotion/core": "0.1.0-dev.0"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "remotion": ">=4"
+  }
+}

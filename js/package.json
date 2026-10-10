@@ -1,0 +1,15 @@
+{
+  "name": "femotion-js",
+  "private": true,
+  "description": "JavaScript packages of femotion (npm workspaces)",
+  "workspaces": [
+    "core",
+    "remotion"
+  ],
+  "scripts": {
+    "test": "npm test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
