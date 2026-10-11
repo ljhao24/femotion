@@ -32,6 +32,9 @@
                  temperature), shear flow of single cells, in-plane principal stresses, transverse stress checks
     devices      JTG 3362-2018 8.6–8.8, 9.7, 9.8: concrete hinges, laminated elastomeric bearings (incl. PTFE sliding),
                  movements at bearings and joints, expansion joints, lifting loops; braking force of D60 4.3.5 in actions
+    detailing    JTG 3362-2018 4.5, 9.1, 9.2.5–9.2.8, 9.3: durability (environment classes, minimum concrete classes),
+                 cover, bundles, anchorage, hooks, splices, clear spacing, web side bars, stirrups, cut-off and bent-up
+                 bars, curved soffits, girder slabs, diaphragms, composite and hinged slabs, composite beams
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
 
@@ -63,6 +66,9 @@ from .composite import (COMPOSITE_CAMBER_LONG_TERM, Composite, composite, compos
                         composite_long_term_factor, composite_principal_compression, composite_principal_stresses, composite_service_stresses,
                         composite_shear, composite_stiffness, interface_shear, interface_shear_slab,
                         shrinkage_difference_profile)
+from .detailing import (ENVIRONMENTS, anchorage_length, cover_min, durability, lap_length,  # noqa: F401
+                        min_concrete_class, section_detailing, stirrup_detailing)
+from . import detailing  # noqa: F401
 from .external import deviation_radius_min, external_detailing  # noqa: F401
 from .flange import (box_flange_coefficient, box_flange_width, box_theoretical_span, tee_flange_width,  # noqa: F401
                      tee_flange_width_outer)
