@@ -1,8 +1,9 @@
-"""Highway traffic actions and the combinations of JTG D60-2015.
+"""Highway traffic actions, crowd load and the combinations of JTG D60-2015.
 
 Units: kN, m, Hz. Clauses (docs/codes/JTG_D60-2015.md): 4.1.5 (basic combination), 4.1.6 (frequent and
 quasi-permanent combinations), 4.1.8 (characteristic values for elastic stresses), 4.3.1 (lane and vehicle loads,
-design lanes, transverse and longitudinal reduction), 4.3.2 (impact factor); γ0 by design safety class (4.1.5).
+design lanes, transverse and longitudinal reduction), 4.3.2 (impact factor), 4.3.6 (crowd load); γ0 by design safety
+class (4.1.5). Temperature actions (4.3.12): femotion.codes.jtg.temperature.
 
     from femotion.codes import jtg
     q, P = jtg.lane_load(L0=20.0)                        # Class I: 10.5 kN/m, 300 kN
@@ -140,6 +141,43 @@ class LiveLoad:
         mx, mn = il.axles(comp, VEHICLE_AXLES, VEHICLE_SPACINGS)
         f = self.factor()
         return mx * f, mn * f
+
+
+# ── crowd load (人群荷载), 4.3.6 ──
+SIDEWALK_SLAB_LOAD = 4.0  # kN/m², sidewalk slabs as local members (4.3.6 item 3)
+RAILING_LOADS = (0.75, 1.0)  # kN/m: horizontal on the post tops, vertical on the handrail (4.3.6 item 4)
+
+
+def crowd_load(L0: float, *, dense: bool = False, footbridge: bool = False) -> float:
+    """crowd load (kN/m², table 4.3.6) from the computed span L0 (m; continuous structures with unequal spans: the largest
+    computed span): 3.0 up to 50 m, 2.5 from 150 m, 3.25 − 0.005 L0 between. dense: bridges with crowded pedestrian and
+    non-motor traffic, × 1.15 (item 1-1); footbridge: 3.5 kN/m² (item 1-2)"""
+    if footbridge:
+        return 3.5
+    w = 3.0 if L0 <= 50 else 2.5 if L0 >= 150 else 3.25 - 0.005 * L0
+    return 1.15 * w if dense else w
+
+
+@dataclass
+class CrowdLoad:
+    """crowd on the sidewalks of a spine model (4.3.6): the intensity × the loaded clear sidewalk width (m, both
+    sidewalks together when both load the girder) × distribution, laid as a uniform load over the parts of the influence
+    line of one sign (item 2), no point load. For one girder of a multi-girder deck pass width=1 and the girder's lateral
+    distribution factor (per m² of crowd) as `distribution`.
+    L0: computed span (m); with unequal continuous spans the largest one (item 1)."""
+    L0: float
+    width: float
+    distribution: float = 1.0
+    dense: bool = False
+    footbridge: bool = False
+
+    def intensity(self) -> float:
+        return crowd_load(self.L0, dense=self.dense, footbridge=self.footbridge)
+
+    def effects(self, il, comp: str):
+        """(max, min) effects of every section of `il` (femotion.frame.influence.InfluenceLines); combine as another
+        variable action: basic_combination(..., others=[crowd]), frequent_combination(..., kinds=["crowd"])"""
+        return il.lane(comp, self.intensity() * self.width * self.distribution, 0.0)
 
 
 def _is_pair(it) -> bool:

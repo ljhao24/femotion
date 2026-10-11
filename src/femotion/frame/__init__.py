@@ -8,6 +8,7 @@
     post      reactions, internal-force diagrams, mode classification on plain arrays (works with either solver)
     influence influence lines of many sections at once, lane-load and axle-train envelopes, exact distributed-load forces
     prestress tendons: equivalent loads, total / primary / secondary effects on statically indeterminate frames
+    thermal   imposed strains and curvatures (temperature, shrinkage): secondary effects on statically indeterminate frames
 
 Linear problems solved many times go to `linear` once `check.crosscheck` passes; anything nonlinear goes to `opensees`.
 """

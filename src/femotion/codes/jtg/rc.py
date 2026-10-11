@@ -123,13 +123,14 @@ class RCSection:
     bars: np.ndarray  # (n, 2): area mm², depth mm
     h: float
     ring: float | None = None  # circular sections: radius of the bar circle rs (h0 = r + rs for the η formula)
-    kind: str = "general"  # "rect", "tee", "box", "circle", "annulus", "general"
+    kind: str = "general"  # "rect", "tee", "box", "circle", "annulus", "composite", "general"
     tendons: np.ndarray | None = None  # (n, 4): area mm², depth mm, σp0 MPa, duct area mm² (bonded internal tendons)
     tendon: Tendon | None = None
     pretensioned: bool = False
     sigma_l6: float | tuple = 0.0  # σl6 at the bars below / above the centroid (6.1.7, for Np0 and Np)
     bar_d: np.ndarray | None = None  # (n,): bar diameter of each bar point (mm), NaN when unknown (crack width, 6.4.3)
     sigma_pe: np.ndarray | float | None = None  # effective prestress σpe of each tendon (MPa, 6.1.6-3, -6), for 6.3, 7.1
+    rules_concrete: Concrete | None = None  # concrete for the minimum classes of 3.1.2 when it differs (composite members)
 
     def __post_init__(self):
         self.bars = np.asarray(self.bars, float).reshape(-1, 2)
@@ -153,10 +154,11 @@ class RCSection:
         """3.1.2: reinforced concrete at least C25 (jtg.concrete enforces it), at least C30 with bars of characteristic
         strength ≥ 400 MPa; prestressed concrete at least C40"""
         out = []
-        if self.steel.fsk >= 400 and self.concrete.grade < 30 and len(self.bars):
-            out.append(f"C{self.concrete.grade} with {self.steel.name}: at least C30 for bars of 400 MPa and above (3.1.2)")
-        if self.prestressed and self.concrete.grade < 40:
-            out.append(f"prestressed concrete in C{self.concrete.grade}: at least C40 (3.1.2)")
+        c = self.rules_concrete or self.concrete
+        if self.steel.fsk >= 400 and c.grade < 30 and len(self.bars):
+            out.append(f"C{c.grade} with {self.steel.name}: at least C30 for bars of 400 MPa and above (3.1.2)")
+        if self.prestressed and c.grade < 40:
+            out.append(f"prestressed concrete in C{c.grade}: at least C40 (3.1.2)")
         return out
 
     # geometry
@@ -619,7 +621,7 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
 # ── shear ───────────────────────────────────────────────────────────────────
 def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogging: bool = False, alpha1: float = 1.0,
           alpha3: float | None = None, bent=(), slab: bool = False, stirrup_steel: str | Rebar | None = None,
-          pc_class: str | None = None, bent_tendons=(), vertical=None) -> Check:
+          pc_class: str | None = None, bent_tendons=(), vertical=None, alpha2: float | None = None) -> Check:
     """inclined-section shear resistance of a beam (5.2.9), with the upper limit on the section (5.2.11), the threshold
     below which detailing stirrups suffice (5.2.12) and the stirrup rules of 9.3.12 (ratio, diameter ≥ 8 mm, spacing
     ≤ h/2 and ≤ 400 mm). Take Vd at the sections listed in 5.2.8 (e.g. h/2 from the support centre).
@@ -633,16 +635,17 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
     Prestressed sections: pc_class ("full", "A" or "B") is required; α2 = 1.25, but 1.0 for class B (cracking allowed)
     or when the moment of the prestressing force (Np0 from the tendons' σp0) acts in the same direction as the external
     moment. bent_tendons: rows of (area mm², angle °) of bent-up tendons (Vpb, 5.2.9-4); vertical: (area per section mm²,
-    spacing mm, steel) of vertical prestressing bars (ρpv fpv in 5.2.9-2)."""
+    spacing mm, steel) of vertical prestressing bars (ρpv fpv in 5.2.9-2). alpha2: override of α2 (e.g. 1.0 for
+    prestressed composite members, 8.1.5)."""
     s = sec.flipped() if hogging else sec
     if s.kind in ("circle", "annulus"):
         raise NotImplementedError("shear of circular sections is not implemented")
     c, st = s.concrete, s.steel
     b, h0 = s.web(), s.h0()
     t, _ = s.groups()
-    alpha2 = 1.0
+    alpha2_given, alpha2 = alpha2, 1.0
     notes = []
-    if s.prestressed:
+    if s.prestressed and alpha2_given is None:
         if pc_class is None or pc_class.upper() not in ("FULL", "A", "B"):
             raise ValueError("prestressed sections need pc_class='full', 'A' or 'B' (α2, 5.2.9)")
         Mp = -(s.tendons[:, 2] * s.tendons[:, 0] * (s.tendons[:, 1] - s.zg)).sum()  # on the concrete, sagging +
@@ -652,6 +655,9 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
             notes.append("prestressing moment in the direction of the external moment: α2 = 1.0")
         else:
             alpha2 = 1.25
+    if alpha2_given is not None:
+        alpha2 = alpha2_given
+        notes.append(f"α2 = {alpha2:g} given")
     vmin = 0.50e-3 * alpha2 * c.ftd * b * h0
     if stirrups is None:
         if not slab:
@@ -673,7 +679,7 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
         Apv, sp, vt = vertical
         vt = vt if isinstance(vt, Tendon) else _tendon(vt)
         rho_pv, fpv = Apv / (sp * b), vt.fpd
-    a3 = alpha3 if alpha3 is not None else (1.1 if (s.kind in ("tee", "box") and s.width(0.01 * s.h) > b * 1.01) else 1.0)
+    a3 = alpha3 if alpha3 is not None else (1.1 if s.width(0.01 * s.h) > b * 1.01 else 1.0)
     Vcs = alpha1 * alpha2 * a3 * 0.45e-3 * b * h0 * math.sqrt((2 + 0.6 * P) * math.sqrt(c.fcuk) * (rho_sv * sst.fsv + 0.6 * rho_pv * fpv))
     Vsb = sum(0.75e-3 * st.fsd * A * math.sin(math.radians(th)) for A, th in bent)
     Vpb = 0.0

@@ -28,6 +28,7 @@ import math
 import numpy as np
 from scipy.optimize import brentq
 
+from .actions import PSI
 from .materials import Rebar, rebar as _rebar, strength_at
 from .rc import Check, RCSection, Rect, cracking_moment
 
@@ -62,7 +63,7 @@ def _bounds(s: RCSection):
 
 # ── 6.3 crack resistance of prestressed members ───────────────────────────────
 def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, segmental: bool = False,
-                     M_p2: float = 0.0, M_G: float | None = None) -> Check:
+                     M_p2: float = 0.0, M_G: float | None = None, temperature=None, psi_t: float | None = None) -> Check:
     """normal-section crack resistance of a prestressed flexural member (6.3.1 item 1, 6.3.2) at both edges. At each
     edge σst = Ms / W0 and σlt = Ml / W0 are the tensile stresses from the frequent and quasi-permanent moments (W0 of
     the transformed section at that edge; negative where the loads compress it) and σpc is the stress from the prestress
@@ -72,8 +73,14 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
     segmental=True (6.3.1-2); where σpc is a tension the factor is taken as 1.0 (program convention: no tension under the
     frequent combination, 6.1.2). "A": σst − σpc ≤ 0.7 ftk (6.3.1-3) and σlt − σpc ≤ 0 (6.3.1-4). "B": the self-weight
     M_G (kN·m) must not decompress the edges in tension under the frequent combination (the most tensioned one when
-    neither is): σG − σpc ≤ 0 (6.3.1 item 1-3)."""
+    neither is): σG − σpc ≤ 0 (6.3.1 item 1-3).
+    temperature: the temperature gradient (femotion.codes.jtg.thermal_stresses at this section, with its secondary
+    moment), not part of Ms or Ml. Its stress joins σst at each edge × ψ (psi_t, default ψq = 0.8 of D60 4.1.6: another
+    variable action in the frequent combination), the positive or negative gradient whichever puts that edge in more
+    tension, neither where both compress it; σlt does not take it (6.3.2: Ml holds self-weight and direct live loads
+    only). Class B: not used (self-weight only)."""
     k_ = _pc_class(pc_class)
+    pt = PSI["temperature gradient"][1] if psi_t is None else psi_t
     if not sec.prestressed:
         raise ValueError("crack resistance (6.3) is checked for prestressed members")
     if k_ == "B" and M_G is None:
@@ -85,6 +92,9 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
         t = (z - z0) / I0 * 1e6  # tension per kN·m of sagging moment at this fibre
         e = {"W0": I0 / abs(z - z0), "sigma_st": Ms * t, "sigma_lt": Ml * t,
              "sigma_pc": float(sec.prestress_stress(z, M_p2))}
+        if temperature is not None and k_ != "B":
+            e["sigma_t"] = -pt * temperature.unfavourable(z, "tension")  # tension +
+            e["sigma_st"] += e["sigma_t"]
         if k_ == "FULL":
             f = (0.80 if segmental else 0.85) if e["sigma_pc"] > 0 else 1.0
             e["demand"], e["limit"] = e["sigma_st"], f * e["sigma_pc"]
@@ -101,6 +111,8 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
     gov = max(cand, key=lambda n: edges[n]["demand"] - edges[n]["limit"])
     g = edges[gov]
     d = {k: g[k] for k in ("sigma_st", "sigma_lt", "sigma_pc", "W0")} | {"edge": gov, **edges}
+    if temperature is not None and k_ != "B":
+        d["sigma_t"] = g["sigma_t"]
     if k_ == "FULL":
         chk = Check(f"crack resistance (normal section, full prestress, {gov} edge)", g["demand"], g["limit"], "MPa",
                     f"JTG 3362-2018 6.3.1-{2 if segmental else 1}", d, limit_check=True, symbol="σst")
@@ -123,7 +135,7 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
 
 def principal_stresses(sec: RCSection, M: float, V: float, *, N: float = 0.0, M_p2: float = 0.0, V_p2: float = 0.0,
                        depths=None, bent_tendons=(), vertical=None, sigma_cx: float = 0.0, sigma_cy: float = 0.0,
-                       tau_t: float = 0.0) -> list[dict]:
+                       tau_t: float = 0.0, temperature=None, psi_t: float = 1.0, worst: str = "tension") -> list[dict]:
     """principal stresses of 6.3.3 at points of the depth, for the frequent Ms, Vs (6.3.1 item 2) or the characteristic
     Mk, Vk (7.1.6):
         σcx = σpc + M y0 / I0 (6.3.3-2) + N / A0 + sigma_cx, σcy = 0.6 n σ'pe Apv / (b sp) + sigma_cy (6.3.3-3, -4),
@@ -139,7 +151,11 @@ def principal_stresses(sec: RCSection, M: float, V: float, *, N: float = 0.0, M_
     prestressing bars. N: axial force of the same combination (kN, compression +, e.g. restraint forces in a rigid frame),
     on the transformed section; sigma_cx: any further normal stress (MPa) computed separately, as the commentary to 6.3.3
     asks for actions that cause axial force as well as moment. sigma_cy: σcy,ph + σcy,t + σcy,l (MPa) from transverse
-    prestress, transverse temperature gradient and vehicle loads; tau_t: shear stress from torsion (MPa)."""
+    prestress, transverse temperature gradient and vehicle loads; tau_t: shear stress from torsion (MPa).
+    temperature: the vertical temperature gradient (femotion.codes.jtg.thermal_stresses, with its secondary moment, not
+    part of M), × psi_t into σcx at each point, the positive or negative gradient whichever is unfavourable there:
+    worst="tension" the smaller σcx (larger σtp), "compression" the larger σcx (larger σcp). Set by
+    inclined_crack_resistance (ψ 0.8, tension) and principal_compression (1.0, compression)."""
     A0, z0, I0 = sec.props("transformed")
     kind_p = "transformed" if sec.pretensioned else "net"
     _, _, Ip = sec.props(kind_p)
@@ -157,13 +173,16 @@ def principal_stresses(sec: RCSection, M: float, V: float, *, N: float = 0.0, M_
     for z in sorted(set(float(v) for v in zs)):
         b = _b_at(sec, z)
         scx = float(sec.prestress_stress(z, M_p2)) + M * 1e6 * (z0 - z) / I0 + N * 1e3 / A0 + sigma_cx
+        st = psi_t * temperature.unfavourable(z, worst) if temperature is not None else 0.0
+        scx += st
         scy = sigma_cy
         if vertical is not None:
             Apv, sp_v, spe_v = vertical
             scy += 0.6 * spe_v * Apv / (b * sp_v)
         tau = abs(V + V_p2) * 1e3 * sec.first_moment(z) / (b * I0) - Pv * sec.first_moment(z, kind_p) / (b * Ip) + tau_t
         m, r = (scx + scy) / 2, math.hypot((scx - scy) / 2, tau)
-        out.append({"z": z, "b": b, "sigma_cx": scx, "sigma_cy": scy, "tau": tau, "sigma_tp": r - m, "sigma_cp": m + r})
+        out.append({"z": z, "b": b, "sigma_cx": scx, "sigma_cy": scy, "tau": tau, "sigma_tp": r - m, "sigma_cp": m + r,
+                    "sigma_t": st})
     return out
 
 
@@ -172,8 +191,12 @@ def inclined_crack_resistance(sec: RCSection, Ms: float, Vs: float, *, pc_class:
     """inclined-section crack resistance of a prestressed flexural member (6.3.1 item 2): the largest principal tensile
     stress σtp of 6.3.3 (principal_stresses, frequent Ms, Vs; further arguments as there) against: full prestress
     0.6 ftk precast (6.3.1-5), 0.4 ftk cast in place, including precast segmental members (precast=False, 6.3.1-6);
-    classes A and B 0.7 ftk precast (6.3.1-7), 0.5 ftk cast in place (6.3.1-8)."""
+    classes A and B 0.7 ftk precast (6.3.1-7), 0.5 ftk cast in place (6.3.1-8). A temperature gradient (temperature=)
+    enters σcx × ψ = 0.8 (frequent combination; the commentary to 6.3.1 asks for solar temperature differences in
+    continuous girders), taking the more tensile gradient at each point."""
     k_ = _pc_class(pc_class)
+    kw.setdefault("psi_t", PSI["temperature gradient"][1])
+    kw.setdefault("worst", "tension")
     pts = principal_stresses(sec, Ms, Vs, **kw)
     w = max(pts, key=lambda p: p["sigma_tp"])
     f = (0.6 if precast else 0.4) if k_ == "FULL" else (0.7 if precast else 0.5)
@@ -186,11 +209,16 @@ def principal_compression(sec: RCSection, Mk: float, Vk: float, *, stirrups=None
     """principal stresses in service (7.1.6) under the characteristic Mk, Vk and the prestress (principal_stresses,
     further arguments as there): σcp ≤ 0.6 fck (7.1.6-1). Stirrups: where σtp ≤ 0.5 ftk detailing suffices; above it
     the spacing must not exceed sv = fsk Asv / (σtp b) (7.1.6-2), checked when stirrups = (legs, diameter mm, spacing
-    mm) are given (b: web width at the point). The stirrups needed for shear resistance (5.2.9) govern if more."""
+    mm) are given (b: web width at the point). The stirrups needed for shear resistance (5.2.9) govern if more.
+    A temperature gradient (temperature=) enters σcx at its characteristic value (ψ 1.0): for σcp the more compressive
+    gradient at each point, for σtp (stirrups) the more tensile one."""
     c = sec.concrete
-    pts = principal_stresses(sec, Mk, Vk, **kw)
+    kw.setdefault("psi_t", 1.0)
+    kw.pop("worst", None)
+    pts = principal_stresses(sec, Mk, Vk, worst="compression", **kw)
+    pts_t = principal_stresses(sec, Mk, Vk, worst="tension", **kw) if kw.get("temperature") is not None else pts
     wc = max(pts, key=lambda p: p["sigma_cp"])
-    wt = max(pts, key=lambda p: p["sigma_tp"])
+    wt = max(pts_t, key=lambda p: p["sigma_tp"])
     chk = Check("principal compressive stress (service)", wc["sigma_cp"], 0.6 * c.fck, "MPa", "JTG 3362-2018 7.1.6",
                 {"at": wc, "sigma_tp": wt["sigma_tp"], "points": pts}, limit_check=True, symbol="σcp")
     if wt["sigma_tp"] <= 0.5 * c.ftk:
@@ -261,7 +289,7 @@ def crack_width_limit(env: str, sec: RCSection | None = None) -> float | None:
 def crack_width(sec: RCSection, Ms: float, Ml: float, *, N: float = 0.0, Nl: float | None = None, env: str = "I",
                 l0: float | None = None, slab: bool = False, epoxy: bool = False, pc_class: str | None = None,
                 M_p2: float = 0.0, tendon_bundles=None, d: float | None = None, c: float | None = None,
-                welded_cage: bool = False, C1: float | None = None) -> Check:
+                welded_cage: bool = False, C1: float | None = None, C3: float | None = None) -> Check:
     """maximum crack width (6.4.3) Wcr = C1 C2 C3 σss/Es · (c + d)/(0.36 + 1.7 ρte) against table 6.4.2, under the
     frequent combination (Ms, N) with the long-term factor C2 = 1 + 0.5 Ml/Ms (Ml quasi-permanent; Nl/N for an axial
     tension member; for eccentric members with Nl given the larger of the two ratios; C2 ≥ 1). Reinforced concrete
@@ -279,7 +307,10 @@ def crack_width(sec: RCSection, Ms: float, Ml: float, *, N: float = 0.0, Nl: flo
     dse = √n d; × 1.3 for welded cages, 9.3.11); c: cover of the outermost tension row, at most 50 (override c=…);
     ρte = As / Ate within 0.01 … 0.1, Ate = 2 as b with b the width at the tension face. C1 from the bars' steel: 1.0
     ribbed, 1.4 plain (HPB300), 1.15 epoxy-coated ribbed (epoxy=True); class B the same (override C1=…).
-    Circular sections: eccentric compression only."""
+    Circular sections: eccentric compression only. C3: override of the factor for the nature of the forces, e.g. cap
+    beams with 2.5 < l/h ≤ 5.0 (8.4.8, femotion.codes.jtg.regions.cap_beam_C3).
+    """
+    C3_given = C3
     k_ = None
     if sec.prestressed:
         k_ = _pc_class(pc_class)
@@ -426,6 +457,8 @@ def crack_width(sec: RCSection, Ms: float, Ml: float, *, N: float = 0.0, Nl: flo
             raise ValueError("axial tension: pass Nl, the quasi-permanent axial force, for C2 (6.4.3)")
         r = Nl / N
     C2 = 1 + 0.5 * max(r, 0.0)
+    if C3_given is not None:
+        C3 = C3_given
     W = C1 * C2 * C3 * sss / E * (c + d) / (0.36 + 1.7 * rho_c)
     dd.update(sigma_ss=sss, C1=C1, C2=C2, C3=C3, c=c, d=d, rho_te=rho_te, rho_te_used=rho_c, E=E)
     chk = Check("crack width", W, lim if lim is not None else 0.0, "mm", "JTG 3362-2018 6.4.3, table 6.4.2", dd, notes,
@@ -589,7 +622,8 @@ def precamber_pc(f_s: float, f_pe: float) -> float:
 
 
 # ── 7.1 stresses in service of prestressed members ─────────────────────────────
-def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 0.0) -> Check:
+def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 0.0, temperature=None,
+                     psi_t: float = 1.0) -> Check:
     """normal stresses of a prestressed flexural member in service under the characteristic Mk (vehicle load with
     impact, 7.1.1) and the prestress after all losses (7.1.3–7.1.5):
     full and class A: σkc = Mk y0 / I0 on the transformed section (7.1.3-1) plus the prestress stress σpt / σpc of
@@ -598,8 +632,13 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
     threaded bars (7.1.5-4); every tendon row is checked (the code asks for the outermost layer).
     class B: cracked section under Np0 at eN = (Mk ± Mp2)/Np0 − hps (7.1.4, appendix J): σcc ≤ 0.5 fck (the larger of
     the two edges when the whole section stays compressed); tendons σp0 + σp with σp = αEP [Np0/Acr − Np0 e0N (hp − c)
-    /Icr] (7.1.4-5, a tension increment where negative)."""
+    /Icr] (7.1.4-5, a tension increment where negative).
+    temperature (full and class A): the temperature gradient (thermal_stresses, with its secondary moment, not in Mk) at
+    its characteristic value × psi_t (1.0): the more compressive gradient added at each edge, the more tensile one at
+    each tendon (σkt). Class B with a temperature gradient is not implemented."""
     k_ = _pc_class(pc_class)
+    if temperature is not None and k_ == "B":
+        raise NotImplementedError("temperature gradient on the cracked section of class B members (7.1.4)")
     if not sec.prestressed:
         raise ValueError("7.1 covers prestressed members")
     c, t = sec.concrete, sec.tendon
@@ -610,8 +649,12 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
         edge = {}
         for name, z in (("top", 0.0), ("bottom", sec.h)):
             edge[name] = Mk * 1e6 * (z0 - z) / I0 + float(sec.prestress_stress(z, M_p2))
+            if temperature is not None:
+                edge[name] += psi_t * temperature.unfavourable(z, "compression")
         gov = max(edge, key=edge.get)
         skt = -Mk * 1e6 * (z0 - sec.tendons[:, 1]) / I0  # tension +
+        if temperature is not None:
+            skt = skt - psi_t * np.array([temperature.unfavourable(d, "tension") for d in sec.tendons[:, 1]])
         sp = sec._sigma_pe() + aEP * skt
         d = {"edge_stress": edge, "tendon_stress": sp, "sigma_kt": skt}
         chk = Check(f"concrete compression in service ({gov} edge)", edge[gov], 0.5 * c.fck, "MPa",

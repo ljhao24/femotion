@@ -1,12 +1,13 @@
 """Prestressed concrete girder to JTG D60-2015 / JTG 3362-2018 (illustrative values).
 
 One post-tensioned I girder of a two-span continuous deck (2 × 30 m, C50, 4 tendons of 9 × φs15.2 strand 1860, jacked
-at both ends), Class I lane load, designed as class A:
-    tendon profile → losses along the tendon (friction, anchorage set with reverse friction, elastic shortening,
-    relaxation, creep and shrinkage) → σpe, σp0 → secondary moments on the frame → basic combination with the
-    secondary effect → flexure (span, pier), shear (α2 for prestressed members, bent tendons) → serviceability
-    (normal and inclined crack resistance), stresses in service (characteristic combination with impact), stresses at
-    transfer, deflection, camber and pre-camber.
+at both ends), Class I lane load and crowd, 100 mm asphalt surfacing, designed as class A:
+    effective flange width → tendon profile → losses along the tendon (friction, anchorage set with reverse friction,
+    elastic shortening, relaxation, creep and shrinkage) → σpe, σp0 → secondary moments of the prestress and of the
+    temperature gradient on the frame → basic combination with both → flexure (span, pier), shear (α2 for prestressed
+    members, bent tendons) → serviceability (normal and inclined crack resistance with the temperature gradient), stresses
+    in service (characteristic combination with impact), stresses at transfer, deflection, camber and pre-camber →
+    anchorage zone: local compression under the anchors, bursting and spalling forces.
 
     uv run python examples/jtg_pc_girder.py
 
@@ -24,6 +25,8 @@ from femotion.codes.jtg import prestress as ps
 from femotion.frame import Model, Section, Solver
 from femotion.frame.influence import InfluenceLines, chain_sections, uniform_load_forces
 from femotion.frame.prestress import Tendon, effects, equivalent_loads
+from femotion.frame.thermal import effects as thermal_effects
+from femotion.codes.jtg import regions
 
 L, n = 30.0, 60  # span (m), elements per span
 geo = dict(b=200, h=2000, bf=2200, hf=180, bf_bottom=800, hf_bottom=300, concrete="C50", steel="HRB400")
@@ -33,6 +36,11 @@ strand = jtg.tendon("strand", 1860)
 n_tendons, Ap = 4, 4 * 9 * 139.0  # mm²
 duct = math.sqrt(n_tendons) * 90.0  # one equivalent duct for the four 90 mm ducts (same area)
 gamma0 = jtg.GAMMA_0[1]  # safety class 1 (large bridge)
+
+# effective flange width (4.3.3): girders at 2.2 m, no haunch; 0.27 L of the end spans, 0.07 (L1 + L2) over the pier
+bf_span = jtg.tee_flange_width(b=geo["b"], hf=geo["hf"], spacing=2200, L=L * 1e3, region="end span")
+bf_pier = jtg.tee_flange_width(b=geo["b"], hf=geo["hf"], spacing=2200, region="support", spans=(L * 1e3, L * 1e3))
+assert bf_span == bf_pier == geo["bf"]  # the girder spacing governs: the whole flange counts
 
 gross = jtg.tee(**geo, **bars)
 c = gross.concrete
@@ -118,11 +126,24 @@ live = lambda mu_: jtg.LiveLoad(L0=L, lanes=1, transverse=1.0, distribution=0.5,
 G_M, G_V = uniform_load_forces(sv, secs, "My"), uniform_load_forces(sv, secs, "Vz")
 Q_M = (live(mu1).effects(il, "My")[0], live(mu2).effects(il, "My")[1])
 Q_V = live(mu1).effects(il, "Vz")
-# secondary effect of prestress as a permanent action, γ 1.2 / 1.0 (D60 table 4.1.5-2, 预加力)
-Mmax, Mmin = jtg.basic_combination([G_M, (M_sec, (1.2, 1.0))], Q_M)
-Vmax, Vmin = jtg.basic_combination([G_V, (V_sec, (1.2, 1.0))], Q_V)
+# crowd (D60 4.3.6) on two 1.5 m sidewalks, 0.2 of it on this girder
+crowd = jtg.CrowdLoad(L0=L, width=3.0, distribution=0.2)
+C_M, C_V = crowd.effects(il, "My"), crowd.effects(il, "Vz")
+
+# temperature gradient (D60 4.3.12, 100 mm asphalt: T1 = 14, T2 = 5.5 °C) and its secondary moment on the continuous
+# girder (3362 4.3.10, D.0.2): the free curvature of the span section imposed on every element
+grad = jtg.temperature_gradient(geo["h"], surfacing="asphalt", asphalt=100)
+_, kappa = jtg.thermal_stresses(gross, grad).free_strain()
+Mt2 = thermal_effects(sv, beams, secs, "My", curvature=kappa)  # positive gradient; the negative one is −0.5 ×
+T_M = (np.maximum(Mt2, jtg.NEGATIVE_GRADIENT * Mt2), np.minimum(Mt2, jtg.NEGATIVE_GRADIENT * Mt2))
+
+# secondary effect of prestress as a permanent action, γ 1.2 / 1.0 (D60 table 4.1.5-2, 预加力); crowd and temperature
+# gradient as other variable actions (γ 1.4 × ψc 0.75)
+Mmax, Mmin = jtg.basic_combination([G_M, (M_sec, (1.2, 1.0))], Q_M, [C_M, T_M])
+Vmax, Vmin = jtg.basic_combination([G_V, (V_sec, (1.2, 1.0))], Q_V, [C_V])
 k_pier = int(np.argmin(np.abs(x_sec - L)))
-print(f"\nsecondary moment at the pier: {M_sec[k_pier]:.0f} kN·m (primary {M_pri[k_pier]:.0f}, total {M_tot[k_pier]:.0f})")
+print(f"\nsecondary moment at the pier: prestress {M_sec[k_pier]:.0f} kN·m (primary {M_pri[k_pier]:.0f}, total "
+      f"{M_tot[k_pier]:.0f}); temperature gradient {Mt2[k_pier]:.0f} kN·m (T1 = {grad.t[0]:g}, T2 = {grad.t[1]:g} °C)")
 
 
 def girder_at(i):
@@ -157,18 +178,22 @@ for x_v, hog, a1 in [(h_half, False, 1.0), (L - 1.0, True, 0.9)]:
 # ── serviceability (JTG 3362-2018 chapter 6, class A) and stresses (chapter 7) ──
 # The prestress is in the section (σp0, σpe, σl6); its secondary moment and shear go in separately (M_p2, V_p2), so the
 # combinations below hold the self-weight and the live load only. Chapter 6: no impact (6.1.1); 7.1: with impact.
+# The temperature gradient (its self-equilibrating and secondary stresses) goes in through temperature=, not through the
+# moments: ψ = 0.8 in the frequent combination, none in the quasi-permanent one (6.3.2), 1.0 in the characteristic one.
 Q0_M, Q0_V = live(0.0).effects(il, "My"), live(0.0).effects(il, "Vz")
-Ms_max, Ms_min = jtg.frequent_combination(G_M, Q0_M)
-Ml_max, Ml_min = jtg.quasi_permanent_combination(G_M, Q0_M)
-Vs_max, Vs_min = jtg.frequent_combination(G_V, Q0_V)
-Mk_max, Mk_min = jtg.characteristic_combination(G_M, Q_M)
-Vk_max, Vk_min = jtg.characteristic_combination(G_V, Q_V)
+Ms_max, Ms_min = jtg.frequent_combination(G_M, Q0_M, [C_M], kinds=["crowd"])
+Ml_max, Ml_min = jtg.quasi_permanent_combination(G_M, Q0_M, [C_M], kinds=["crowd"])
+Vs_max, Vs_min = jtg.frequent_combination(G_V, Q0_V, [C_V], kinds=["crowd"])
+Mk_max, Mk_min = jtg.characteristic_combination(G_M, Q_M, [C_M])
+Vk_max, Vk_min = jtg.characteristic_combination(G_V, Q_V, [C_V])
 print("\nserviceability and stresses (class A, precast girder)")
 for k_, Ms, Ml, Mk in [(k_span, Ms_max, Ml_max, Mk_max), (k_pier, Ms_min, Ml_min, Mk_min)]:
     s, _ = girder_at(node_of[k_])
-    print(f"  x = {x_sec[k_]:5.1f} m  Mp2 = {M_sec[k_]:.0f} kN·m")
-    print(f"      {jtg.crack_resistance(s, Ms[k_], Ml[k_], pc_class='A', M_p2=M_sec[k_])}")
-    print(f"      {jtg.service_stresses(s, Mk[k_], pc_class='A', M_p2=M_sec[k_])}")
+    th = jtg.thermal_stresses(s, grad, M_sec=Mt2[k_])
+    print(f"  x = {x_sec[k_]:5.1f} m  Mp2 = {M_sec[k_]:.0f} kN·m, Mt' = {Mt2[k_]:.0f} kN·m")
+    r = jtg.crack_resistance(s, Ms[k_], Ml[k_], pc_class='A', M_p2=M_sec[k_], temperature=th)
+    print(f"      {r}  (temperature {r.details['sigma_t']:+.2f} MPa at that edge)")
+    print(f"      {jtg.service_stresses(s, Mk[k_], pc_class='A', M_p2=M_sec[k_], temperature=th)}")
 # principal stresses along the girder (6.3.1 item 2, 7.1.6): every section from h/2 off the supports, each shear extreme
 # with the moment extreme of the same combination (envelopes: the pairs are not concurrent loadings)
 worst_t = worst_c = None
@@ -179,7 +204,8 @@ for k_ in range(len(secs)):
     for Vs, Ms, Vk, Mk in [(Vs_max[k_], Ms_max[k_], Vk_max[k_], Mk_max[k_]), (Vs_min[k_], Ms_min[k_], Vk_min[k_], Mk_min[k_])]:
         # the inclined tendon relieves the shear where its own (primary) shear opposes the load shear (6.3.3-5)
         ang = math.degrees(math.atan(abs(slope[node_of[k_]]))) * (1 if V_pri[k_] * Vs < 0 else -1)
-        kw = dict(M_p2=M_sec[k_], V_p2=V_sec[k_], bent_tendons=[(Ap, ang)])
+        kw = dict(M_p2=M_sec[k_], V_p2=V_sec[k_], bent_tendons=[(Ap, ang)],
+                  temperature=jtg.thermal_stresses(s, grad, M_sec=Mt2[k_]))
         t = jtg.inclined_crack_resistance(s, Ms, Vs, pc_class="A", **kw)
         p_ = jtg.principal_compression(s, Mk, Vk, stirrups=(2, 12, 150), **kw)
         if worst_t is None or t.ratio > worst_t[1].ratio:
@@ -226,9 +252,26 @@ fG = -uniform_load_forces(sv_B, secs, None)[1][2::6][i_m] * 1e3
 infl = np.array([-sv_B.solve(np.eye(sv_B.m.ndof)[6 * j + 2] * -1.0)[2::6][i_m] for j in range(len(xs))]) * 1e3
 q, Pk = jtg.lane_load(L)
 pos = np.maximum(infl, 0.0)
-fQ = 0.7 * live(0.0).factor() * (q * float(((pos[:-1] + pos[1:]) / 2 * np.diff(xs)).sum()) + Pk * pos.max())
+area_pos = float(((pos[:-1] + pos[1:]) / 2 * np.diff(xs)).sum())
+# vehicle (ψf 0.7, no impact) and crowd (another variable action: ψq 0.4) of the frequent combination (6.5.3)
+fQ = 0.7 * live(0.0).factor() * (q * area_pos + Pk * pos.max()) + 0.4 * crowd.intensity() * crowd.width * \
+    crowd.distribution * area_pos
 f_pe = sv_E.solve(equivalent_loads(sv_E, Tendon(beams_E, e, P)))[2::6][i_m] * 1e3  # upward +
 print(f"  deflection at x = {xs[i_m]:.1f} m (ηθ = {eta:.3f}): {jtg.deflection_check(eta * fQ, L * 1e3)}")
 f_s, f_c = eta * (fG + fQ), jtg.CAMBER_LONG_TERM * f_pe
 print(f"  long-term: frequent combination {f_s:.1f} mm down, prestress camber {f_c:.1f} mm up → pre-camber "
       f"{jtg.precamber_pc(f_s, f_c):.1f} mm (6.5.5)")
+
+# ── anchorage zone at the girder end (5.7, 8.2): the four anchors one above the other at 450 mm in the 550 mm end block,
+# plates 230 × 230 with a 110 mm trumpet, spirals φ12 (core 250 mm, pitch 50 mm, 6 turns), f'cu = 0.9 fcu,k at jacking
+Pd = regions.anchor_force(s_con * Ap / n_tendons / 1e3)  # 1.2 × the jacking force of one tendon (kN)
+Al = 230.0 * 230.0
+Ab = jtg.bearing_base_area(230, 230, cx=(550 - 230) / 2, cy=(450 - 230) / 2)
+print(f"\nanchorage zone (Pd = {Pd:.0f} kN per anchor)")
+print("  " + str(jtg.local_bearing(c, Pd, Al=Al, Aln=Al - math.pi * 55 ** 2, Ab=Ab, gamma0=gamma0, fcu=0.9 * c.fcuk,
+                                    spiral=(113.1, 250, 50), layers=6)))
+# dense anchors (450 mm < 2 × 230 mm apart): the group as one, a = the outer edges of the outer plates (8.2.2)
+alpha = -math.degrees(math.atan(slope[0]))  # at the centroid and leaving it: negative (figure 8-5)
+Tb, db = regions.bursting_force(n_tendons * Pd, a=3 * 450 + 230, h=geo["h"], e=0.0, alpha=alpha)
+print(f"  bursting force {Tb:.0f} kN at {db:.0f} mm from the end face; spalling {regions.spalling_force([Pd] * 4):.0f} kN")
+print("  " + str(regions.tie_check(Tb, As=16 * math.pi * 16 ** 2 / 4, gamma0=gamma0, name="bursting steel (16 legs φ16)")))

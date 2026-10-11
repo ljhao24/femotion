@@ -134,7 +134,8 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | `femotion.models` | ready-made illustrative structures (a 500 m cable-stayed bridge) | — |
 | `femotion.frame.influence` | influence lines of every section from one factorisation, lane-load and axle-train envelopes, exact section forces under distributed loads | own (linear) |
 | `femotion.frame.prestress` | tendons on frame models: equivalent loads, total, primary and secondary effects | own (linear) |
-| `femotion.codes.jtg` | Chinese highway bridge codes: traffic actions and combinations (JTG D60-2015); ultimate-limit-state resistance of reinforced and prestressed concrete sections, prestress losses, crack resistance, crack width, deflection and stress checks (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
+| `femotion.frame.thermal` | imposed strains and curvatures (temperature, shrinkage) on frame models: secondary effects | own (linear) |
+| `femotion.codes.jtg` | Chinese highway bridge codes: traffic, crowd and temperature actions and combinations (JTG D60-2015); effective flange widths, ultimate-limit-state resistance of reinforced and prestressed concrete sections (flexure, shear, compression, torsion, local compression), prestress losses, crack resistance with temperature gradients, crack width, deflection and stress checks, composite flexural members, strut-and-tie models, anchorage zones, diaphragms, cap beams and pile caps (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
 
 ### Which frame solver?
 
@@ -162,10 +163,14 @@ k = Ms.argmax()
 print(jtg.crack_width(sec, Ms[k], Ml[k], env="I"))   # crack width: Wcr = … mm, limit 0.200 mm, ratio …
 ```
 
-Reinforced and prestressed (bonded internal tendons) concrete: ultimate limit state, serviceability (crack resistance
-of prestressed members, crack width, stiffness and deflection) and stresses in service and in construction stages.
-`examples/jtg_pc_girder.py` runs a post-tensioned continuous girder from tendon profile and losses to secondary moments
-and the ultimate, serviceability and stress checks. Values and formulas have been checked clause by
+Reinforced and prestressed (bonded internal tendons) concrete: ultimate limit state (including torsion and local
+compression), serviceability (crack resistance of prestressed members with the temperature gradient, crack width,
+stiffness and deflection), stresses in service and in construction stages, composite girders (precast girder + deck),
+and the disturbed regions of chapter 8 and appendix B (strut-and-tie models, anchorage zones, cap beams, pile caps).
+`examples/jtg_pc_girder.py` runs a post-tensioned continuous girder from tendon profile and losses to the secondary
+moments of prestress and temperature and the ultimate, serviceability, stress and anchorage-zone checks;
+`examples/jtg_composite_girder.py` a precast girder with its deck slab; `examples/jtg_substructure.py` a pier cap and
+pile caps. Values and formulas have been checked clause by
 clause against the official texts. [docs/codes/](docs/codes/) has one file per code (in Chinese) with every clause,
 formula, table and parameter the program uses, page references and the function using each. `examples/jtg_rc_girder.py` checks a two-span continuous girder.
 
