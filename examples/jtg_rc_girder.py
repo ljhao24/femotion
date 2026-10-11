@@ -13,7 +13,8 @@ import numpy as np
 
 from femotion.codes import jtg
 from femotion.frame import Model, Section, Solver
-from femotion.frame.influence import InfluenceLines, chain_sections, uniform_load_forces
+from femotion.frame.influence import InfluenceLines, chain_sections
+from femotion.frame.loads import LoadCase
 
 L, n = 16.0, 32  # span (m), elements per span
 gamma0 = jtg.GAMMA_0[2]  # safety class 2
@@ -55,8 +56,12 @@ il = InfluenceLines(sv, nodes, secs)
 
 # one girder of a five-girder deck: lateral distribution factor 0.55 (it already counts the lanes)
 live = lambda mu: jtg.LiveLoad(L0=L, lanes=1, transverse=1.0, distribution=0.55, mu=mu)
-G_M = uniform_load_forces(sv, secs, "My")
-G_V = uniform_load_forces(sv, secs, "Vz")
+# the permanent load as a load case: Section.mass × g (girder, pavement and railing share), exact at the element ends;
+# the lane load stays on the influence lines (live.layouts(il, comp) gives the placements, see jtg_loads_figures.py)
+dead = LoadCase("dead load").self_weight()
+G = dead.solve(sv)
+G_M = G.section_forces(secs, "My")
+G_V = G.section_forces(secs, "Vz")
 Qs = live(mu1).effects(il, "My")
 Qh = live(mu2).effects(il, "My")
 Q_M = (Qs[0], Qh[1])  # sagging with μ(f1), hogging with μ(f2)
@@ -170,8 +175,7 @@ m2.fix(nodes2[0], (1, 1, 1, 1, 0, 0))
 m2.fix(nodes2[n], (0, 1, 1, 1, 0, 0))
 m2.fix(nodes2[-1], (0, 1, 1, 1, 0, 0))
 sv2 = Solver(m2)
-_, Ug = uniform_load_forces(sv2, secs, None)
-fG = -Ug[2::6] * 1e3  # self-weight deflection (mm, down +)
+fG = -dead.solve(sv2).U[2::6] * 1e3  # self-weight deflection (mm, down +): the same load case on the cracked frame
 D = np.zeros((len(xs), len(xs)))  # D[i, j]: deflection at node i under a unit load at node j (symmetric)
 for j in range(len(xs)):
     F = np.zeros(m2.ndof)

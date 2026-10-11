@@ -52,6 +52,8 @@ Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_gir
     Q = jtg.LiveLoad(L0=20, lanes=2, mu=mu).effects(il, "My")              # lane load, (max, min)
     C = jtg.CrowdLoad(L0=20, width=1.5).effects(il, "My")                  # crowd on the sidewalks
     Mmax, Mmin = jtg.basic_combination(G, Q, [C])
+    lay = jtg.LiveLoad(L0=20, lanes=2, mu=mu).layouts(il, "My", k)[0]     # the placement behind Q[0][k]
+    femotion.frame.figures.influence_figure(il, lay)                       # drawn: placement above, line below
     jtg.flexure(section, Mmax[k], gamma0=1.0)
     Q0 = jtg.LiveLoad(L0=20, lanes=2).effects(il, "My")                    # no impact
     Ms = jtg.frequent_combination(G, Q0, [C], kinds=["crowd"])[0]

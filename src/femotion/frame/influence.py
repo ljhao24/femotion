@@ -11,6 +11,10 @@ separate sections.
     Mmax, Mmin = il.lane("My", q=10.5, P=300.0)         # uniform load on the same-sign parts + one point load at the peak
     Vmax, Vmin = il.axles("Vz", [30, 120, 120, 140, 140], [3.0, 1.4, 7.0, 1.4])   # a vehicle, both directions
     Mg = uniform_load_forces(sv, secs, "My")             # self-weight (section mass × g), exact at the element ends
+    lay = il.lane_layout(k, "My", 10.5, 300.0, "max")     # where q and P go for that extreme of section k
+    lay.segments, lay.P_at, lay.value                    # loaded parts (s0, s1), position of P, the effect
+    case = lay.load_case(il)                             # the placement as a femotion.frame.loads.LoadCase
+    vl = il.axle_layout(k, "Vz", [30, 120, 120, 140, 140], [3.0, 1.4, 7.0, 1.4], "min")   # vl.positions, vl.heading
 
 Components and signs are those of femotion.frame.post.chain_force: "N" (tension +), "Vy", "Vz", "T", "My" (vertical
 bending, sagging + with the default reference vector), "Mz".
@@ -21,6 +25,8 @@ correct side. Between nodes the line is taken as linear: refine the deck element
 cubic between its nodes).
 """
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -119,6 +125,12 @@ class InfluenceLines:
     def line(self, k: int, comp: str):
         """(s, η) of section k: positions along the path and ordinates, with two ordinates where the section's own node is
         loaded and the force jumps"""
+        s, eta, _ = self._line(k, comp)
+        return s, eta
+
+    def _line(self, k: int, comp: str):
+        """(s, η, jump): jump = None, or (index of the ordinate with the load inside the element, side of that element
+        along the path: +1 after the node, −1 before it)"""
         e, end = self.sections[k]
         i, j, sec, ref, tag = self.sv.m.beams[e]
         a, b = _COMP[comp]
@@ -132,9 +144,10 @@ class InfluenceLines:
             inside = eta[kh] - sg * (R @ self.direction)[a]  # load just inside the element: end force minus the load
             if ko > kh:  # the element lies after the node along the path
                 s = np.insert(s, kh + 1, s[kh]); eta = np.insert(eta, kh + 1, inside)
-            else:
-                s = np.insert(s, kh, s[kh]); eta = np.insert(eta, kh, inside)
-        return s, eta
+                return s, eta, (kh + 1, 1)
+            s = np.insert(s, kh, s[kh]); eta = np.insert(eta, kh, inside)
+            return s, eta, (kh, -1)
+        return s, eta, None
 
     def lines(self, comp: str):
         return [self.line(k, comp) for k in range(len(self.sections))]
@@ -169,6 +182,193 @@ class InfluenceLines:
                     best_hi, best_lo = max(best_hi, v.max()), min(best_lo, v.min())
             mx[k], mn[k] = best_hi, best_lo
         return mx, mn
+
+    # ── the placements behind the extremes ──
+    def lane_layout(self, k: int, comp: str, q: float, P: float, sense: str = "max", *, factor: float = 1.0,
+                    kind: str | None = None) -> "LaneLayout":
+        """the placement behind lane(): for section k and sense "max" (or "min"), the parts of the line of that sign
+        loaded with q and the position of P (the largest ordinate of that sign). value = factor × (P η + q Ω), the same
+        number as lane() × factor"""
+        s, eta, jump = self._line(k, comp)
+        ap, an = _signed_areas(s, eta)
+        hi = _sense(sense)
+        if hi:
+            i = int(np.argmax(eta))
+            raw = P * max(eta.max(), 0.0) + q * ap
+            on, area = eta[i] > 0, ap
+        else:
+            i = int(np.argmin(eta))
+            raw = P * min(eta.min(), 0.0) + q * an
+            on, area = eta[i] < 0, an
+        at = side = None
+        if on and P != 0:
+            at, side = float(s[i]), (jump[1] if jump is not None and i == jump[0] else 0)
+        return LaneLayout(k, comp, sense, raw * factor, q, P, _runs(s, eta, 1 if hi else -1) if q != 0 else [],
+                          area, at, side or 0, float(eta[i]) if at is not None else 0.0, factor, kind, s, eta,
+                          self.direction.copy())
+
+    def lane_layouts(self, comp: str, q: float, P: float, **kw) -> list[tuple["LaneLayout", "LaneLayout"]]:
+        """(max, min) lane_layout of every section"""
+        return [(self.lane_layout(k, comp, q, P, "max", **kw), self.lane_layout(k, comp, q, P, "min", **kw))
+                for k in range(len(self.sections))]
+
+    def axle_layout(self, k: int, comp: str, loads, spacings, sense: str = "max", both_ways: bool = True, *,
+                    factor: float = 1.0, kind: str | None = None) -> "AxleLayout":
+        """the placement behind axles(): for section k and sense "max" (or "min"), where every axle stands and which
+        way the train runs. value = factor × Σ Pi ηi, the same number as axles() × factor"""
+        loads = np.asarray(loads, float)
+        off = np.r_[0.0, np.cumsum(spacings)]
+        trains = [off, off[-1] - off] if both_ways else [off]
+        s, eta = self.line(k, comp)
+        hi = _sense(sense)
+        best, arg = 0.0, None
+        for t, o in enumerate(trains):
+            x0 = (s[:, None] - o[None, :]).ravel()
+            for side in (-1e-9, 1e-9):
+                x = x0[:, None] + o[None, :] + side
+                v = (_interp(x, s, eta) * loads[None, :]).sum(axis=1)
+                j = int(np.argmax(v) if hi else np.argmin(v))
+                if (v[j] > best) if hi else (v[j] < best):
+                    best, arg = v[j], (t, x[j], j, side)
+        if arg is None:
+            return AxleLayout(k, comp, sense, best * factor, loads, np.asarray(spacings, float), None, None, None, 0,
+                              factor, kind, s, eta, self.direction.copy())
+        t, x, r, side = arg
+        o = trains[t]
+        ords = _interp(x[None, :], s, eta)[0]
+        # the axle the search put on a vertex stands exactly there, the others at their spacings; the tiny shift that
+        # picked the side of a jump becomes the side of every axle standing on a vertex
+        pos = s[r // len(o)] - o[r % len(o)] + o
+        sides = np.zeros(len(pos), int)
+        tol = 1e-9 * max(abs(s[-1] - s[0]), 1.0)
+        for a, p in enumerate(pos):
+            if np.min(np.abs(s - p)) <= tol:
+                pos[a] = s[int(np.argmin(np.abs(s - p)))]
+                sides[a] = 1 if side > 0 else -1
+        heading = -1 if t == 0 else 1  # train 0: the leading axle at the smallest s, running towards smaller s
+        return AxleLayout(k, comp, sense, best * factor, loads, np.asarray(spacings, float), pos, sides, ords,
+                          heading, factor, kind, s, eta, self.direction.copy())
+
+    def axle_layouts(self, comp: str, loads, spacings, both_ways: bool = True, **kw):
+        """(max, min) axle_layout of every section"""
+        return [(self.axle_layout(k, comp, loads, spacings, "max", both_ways, **kw),
+                 self.axle_layout(k, comp, loads, spacings, "min", both_ways, **kw)) for k in range(len(self.sections))]
+
+
+def _sense(sense: str) -> bool:
+    if sense not in ("max", "min"):
+        raise ValueError("sense: 'max' or 'min'")
+    return sense == "max"
+
+
+def _runs(s, eta, sign: int) -> list[tuple[float, float]]:
+    """the parts of a piecewise-linear line with the given sign, as merged (s0, s1) ranges (zero crossings
+    interpolated; the same parts _signed_areas counts)"""
+    out = []
+    for i in range(len(s) - 1):
+        d = s[i + 1] - s[i]
+        if d <= 0:
+            continue
+        a, b = sign * eta[i], sign * eta[i + 1]
+        if a * b >= 0:
+            if a + b <= 0:
+                continue
+            lo, hi = s[i], s[i + 1]
+        else:
+            t = a / (a - b)
+            lo, hi = (s[i], s[i] + t * d) if a > 0 else (s[i] + t * d, s[i + 1])
+        if out and lo <= out[-1][1] + 1e-12 * max(abs(lo), 1.0):
+            out[-1] = (out[-1][0], hi)
+        else:
+            out.append((float(lo), float(hi)))
+    return [(float(a), float(b)) for a, b in out]
+
+
+@dataclass
+class LaneLayout:
+    """the worst placement of a uniform load q and one point load P for one section (InfluenceLines.lane_layout).
+    segments: the loaded parts along the path (s0, s1); area: Ω, the signed area of the line over them; P_at: the
+    position of P (None when no ordinate has that sign, or P = 0), P_side: on a jump of the line −1 / +1 = P on the
+    element before / after the node along the path (inside the section's element), 0 on the node; eta_P its ordinate.
+    value = factor × (P η_P + q Ω). kind: a name for drawings ("lane", "crowd", …); s, eta: the line; direction: the
+    unit load's direction."""
+    section: int
+    comp: str
+    sense: str
+    value: float
+    q: float
+    P: float
+    segments: list
+    area: float
+    P_at: float | None
+    P_side: int
+    eta_P: float
+    factor: float = 1.0
+    kind: str | None = None
+    s: np.ndarray = None
+    eta: np.ndarray = None
+    direction: np.ndarray = None
+
+    def load_case(self, il: "InfluenceLines", name: str | None = None):
+        """the placement as an ordinary femotion.frame.loads.LoadCase (with the factor): q × factor over the segments,
+        P × factor at P_at, along the unit load's direction. Solving it gives `value` exactly where the line is linear
+        between nodes (statically determinate structures); elsewhere the true line is cubic inside the elements and the
+        two differ by O(h²) (refine the deck)."""
+        from .loads import LoadCase, path_beams
+        beams = path_beams(il.sv.m, il.path)
+        lc = LoadCase(name or f"{self.kind or 'lane'} {self.sense} @ {self.section}")
+        for s0, s1 in self.segments:
+            lc.line(beams, self.q * self.factor, start=s0, end=s1, direction=self.direction)
+        if self.P_at is not None:
+            lc.point(beams, self.P_at, self.P * self.factor, side=self.P_side, direction=self.direction)
+        return lc
+
+
+@dataclass
+class AxleLayout:
+    """the worst placement of an axle train for one section (InfluenceLines.axle_layout). positions: s of every axle,
+    front to rear (axles off the path carry nothing); sides: −1 / +1 = on the element before / after a node the axle
+    stands on (the side of a jump), 0 elsewhere; ordinates: η under every axle; heading: +1 the train runs towards
+    larger s (its leading axle has the largest s), −1 towards smaller s. positions is None when no placement gives an
+    effect of that sign. value = factor × Σ Pi ηi."""
+    section: int
+    comp: str
+    sense: str
+    value: float
+    loads: np.ndarray
+    spacings: np.ndarray
+    positions: np.ndarray | None
+    sides: np.ndarray | None
+    ordinates: np.ndarray | None
+    heading: int
+    factor: float = 1.0
+    kind: str | None = None
+    s: np.ndarray = None
+    eta: np.ndarray = None
+    direction: np.ndarray = None
+
+    @property
+    def lead(self) -> float | None:
+        """position of the leading axle (车头)"""
+        return None if self.positions is None else float(self.positions[0])
+
+    def on_path(self) -> np.ndarray:
+        """which axles stand on the path"""
+        if self.positions is None:
+            return np.zeros(len(self.loads), bool)
+        return (self.positions >= self.s[0]) & (self.positions <= self.s[-1])
+
+    def load_case(self, il: "InfluenceLines", name: str | None = None):
+        """the axles on the path as point loads × factor (femotion.frame.loads.LoadCase); exact where the line is
+        linear between nodes, as LaneLayout.load_case"""
+        from .loads import LoadCase, path_beams
+        beams = path_beams(il.sv.m, il.path)
+        lc = LoadCase(name or f"{self.kind or 'axles'} {self.sense} @ {self.section}")
+        if self.positions is not None:
+            for P, x, sd, on in zip(self.loads, self.positions, self.sides, self.on_path()):
+                if on:
+                    lc.point(beams, x - self.s[0], P * self.factor, side=int(sd), direction=self.direction)
+        return lc
 
 
 def _interp(x, s, eta):
