@@ -298,3 +298,52 @@ alpha = -math.degrees(math.atan(slope[0]))  # at the centroid and leaving it: ne
 Tb, db = regions.bursting_force(n_tendons * Pd, a=3 * 450 + 230, h=geo["h"], e=0.0, alpha=alpha)
 print(f"  bursting force {Tb:.0f} kN at {db:.0f} mm from the end face; spalling {regions.spalling_force([Pd] * 4):.0f} kN")
 print("  " + str(regions.tie_check(Tb, As=16 * math.pi * 16 ** 2 / 4, gamma0=gamma0, name="bursting steel (16 legs φ16)")))
+
+# ── the tendon jacked at both ends (appendix G.0.3) and construction stages (7.2.1–7.2.3) ──
+# G.0.3: each end in turn as the jacking end over the whole 60 m tendon (friction from that end, 6.2.2; reverse friction,
+# G.0.2); where the two reverse-friction lengths overlap the larger stress is taken. Here they do not overlap, so the
+# result is the halves' calculation used above.
+theta_a = np.r_[0, np.cumsum(np.abs(np.diff(np.arctan(slope))))]  # angle turned from the left end over the whole tendon
+theta_b = theta_a[-1] - theta_a
+l1_a = np.array([ps.friction_loss(s_con, mu, th, k, x) for th, x in zip(theta_a, xs)])
+l1_b = np.array([ps.friction_loss(s_con, mu, th, k, 2 * L - x) for th, x in zip(theta_b, xs)])
+l12, (lf_a, lf_b) = ps.anchorage_loss_two_ends(s_con, s_con - l1_a[-1], 2 * L * 1000, ps.ANCHOR_SET["wedge"], strand.Ep,
+                                               xs * 1000, friction=(l1_a, l1_b))
+print(f"\ntendon jacked at both ends (G.0.3): lf = {lf_a / 1000:.1f} m / {lf_b / 1000:.1f} m of {2 * L:.0f} m, "
+      f"{'overlapping' if lf_a + lf_b > 2 * L * 1000 else 'no overlap'}; σl1 + σl2 differs from the halves above by "
+      f"{np.abs(l12 - l1 - l2).max():.1f} MPa at most (Δσd of G.0.2-2 over the whole tendon instead of each half)")
+# what-if: a straight 30 m tendon with little friction (k only) jacked at both ends: the reverse-friction lengths overlap;
+# the loss jumps at the edges of the overlap (the clause takes the larger stress inside it only)
+l_s = 30000.0
+x_s = np.linspace(0, l_s, 7)
+l1s = np.array([ps.friction_loss(s_con, mu, 0.0, k, x / 1000) for x in x_s])
+l12_s, (lf_s, _) = ps.anchorage_loss_two_ends(s_con, s_con - l1s[-1], l_s, ps.ANCHOR_SET["wedge"], strand.Ep, x_s,
+                                              friction=(l1s, l1s[::-1]))
+print(f"  straight 30 m tendon: lf = {lf_s / 1000:.1f} m from each end, overlap {(l_s - lf_s) / 1000:.1f}–{lf_s / 1000:.1f} m;"
+      " σl1 + σl2 (MPa) at x = " + ", ".join(f"{x / 1000:.0f} m: {v:.0f}" for x, v in zip(x_s, l12_s)))
+
+# construction stages: the girder after grouting with σpe = σcon − σlI − 0.5 σlII (assumed: some months after jacking),
+# f'cu = fcu,k, the transfer secondary moment kept for the prestress (illustrative)
+print("\nconstruction stages (7.2)")
+# 7.2.2: had the girder been cast beside the piers and lifted onto its bearings by its three bearing points, its own weight
+# would take the dynamic factor of D60 4.1.10: 1.2 where unfavourable, 0.85 where favourable; both are tried
+# 7.2.1: afterwards a truck crane (axles 60 + 2 × 120 kN at 3.6 m and 1.4 m, half of it on this girder) drives along the
+# girder to place the deck elements: × 1.15
+M_crane = il.axles("My", [0.5 * 60, 0.5 * 120, 0.5 * 120], [3.6, 1.4])
+for k_ in (k_span, k_pier):
+    i = node_of[k_]
+    s, _ = girder_at(i)
+    s_c = s.replace(sigma_pe=s_con - lI[i] - 0.5 * lII[i], sigma_l6=0.0)
+    lift = jtg.transient_pc(s_c, fcu=c.fcuk, M_G=G_M_t[k_], lifting=True, grouted=True, M_p2=M_sec_t[k_])
+    tc = lift.details.get("dynamic_factor_tension")
+    print(f"  x = {x_sec[k_]:5.1f} m  lifting: {lift}  (weight × {lift.details['dynamic_factor']} for the compression"
+          + (f", × {tc} for the tension" if tc else "") + ")")
+    Mc = M_crane[0][k_] if k_ == k_span else M_crane[1][k_]
+    crane = jtg.transient_pc(s_c, G_M_t[k_], fcu=c.fcuk, M_crane=Mc, grouted=True, M_p2=M_sec_t[k_])
+    print(f"               crane {Mc:.0f} kN·m × 1.15: {crane}")
+# 7.2.3: at transfer the cube strength must be at least 0.8 of C50 and the modulus at least 0.8 of its 28-day value; a
+# what-if jacking at f'cu = 35 MPa with E'c = 0.75 Ec flags both (warnings, the stresses use E'c)
+s, _ = girder_at(node_of[k_span])
+early = jtg.transient_pc(s.replace(sigma_pe=s_con - lI[node_of[k_span]], sigma_l6=0.0), G_M_t[k_span], fcu=35.0,
+                         Ec=0.75 * c.Ec, M_p2=M_sec_t[k_span])
+print(f"  jacking early: {early}")

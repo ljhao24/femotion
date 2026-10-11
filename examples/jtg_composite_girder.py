@@ -7,7 +7,9 @@ lane load (stage 2):
     two-stage design moments and shears (8.1.4, 8.1.5) → flexure of the precast girder and of the composite member →
     shear (lower concrete, α2 = 1.0) and the joint (8.1.6) → normal and inclined crack resistance (8.1.8, 8.1.9) →
     stresses and principal stresses in service (8.1.17) → stiffness, long-term deflection and camber (8.1.13–8.1.15) →
-    differential shrinkage taken as a temperature drop in the deck (8.1.3, the drop assumed).
+    differential shrinkage taken as a temperature drop in the deck (8.1.3, the drop assumed); what-ifs: the girders made
+    continuous over a pier for stage 2 (negative-moment region, deck tendons stressed on the composite girder, 8.1.8) and
+    a class B girder (6.3.1 item 1-3 in the two-stage form of 8.1.8, 8.1.9).
 
     uv run python examples/jtg_composite_girder.py
 
@@ -97,3 +99,37 @@ print(f"  long-term camber {jtg.COMPOSITE_CAMBER_LONG_TERM * camber:.1f} mm (× 
 th = jtg.thermal_stresses(comp.elastic, jtg.shrinkage_difference_profile(comp, -5.0))
 print(f"\ndifferential shrinkage (deck −5 °C): deck top {comp.n * th.sigma(0):+.2f} MPa, precast bottom "
       f"{th.sigma(comp.h):+.2f} MPa (compression +)")
+
+# ── what-if: the girders made continuous over a pier after the deck has hardened (2 × 30 m): negative-moment region ──
+# Stage 1 is as before (each precast girder simply supported: no moment at the pier); stage 2 (deck finishes and the lane
+# load) acts on the continuous composite girders and puts the deck in tension over the pier: −w L²/8 for the uniform
+# loads, −0.0962 Pk L for the point load at its worst place (two equal spans, elastic). The deck carries negative-moment
+# tendons stressed on the composite girder (2 × 5 φs15.2 at 90 mm, σpe 1000 MPa, flat ducts as 60 mm round ones);
+# their secondary moment is left out (illustrative). 8.1.8 places the crack-check edge in the precast girder; the deck's
+# own edge is checked the same way with the deck's ftk and no precompression from the girder's tendons (program
+# convention).
+qk_, Pk_ = jtg.lane_load(L)
+M_lane0_p = -(qk_ * L ** 2 / 8 + 0.0962 * Pk_ * L) * live.factor() / (1 + live.mu)
+M2Gk_p = -g2 * L ** 2 / 8
+M2s_p, M2l_p = M2Gk_p + 0.7 * M_lane0_p, M2Gk_p + 0.4 * M_lane0_p
+deck_tendons = [(5 * 139.0, 90.0, 1000.0, 60.0)] * 2
+sigma_deck = jtg.composite_prestress_stress(comp_end, deck_tendons)
+print(f"\nnegative-moment region over a pier (stage 2: M2s = {M2s_p:.0f}, M2l = {M2l_p:.0f} kN·m)")
+bare = jtg.composite_crack_resistance(comp_end, M1k=0.0, M1Gk=0.0, M2s=M2s_p, M2l=M2l_p, pc_class="A")[1]
+print(f"  without deck tendons: {bare}")
+r = jtg.composite_crack_resistance(comp_end, M1k=0.0, M1Gk=0.0, M2s=M2s_p, M2l=M2l_p, pc_class="A", sigma_pc2=sigma_deck)[1]
+print(f"  with deck tendons:    {r}  (deck top precompression {sigma_deck(0.0):.2f} MPa)")
+print("  " + str(jtg.composite_service_stresses(comp_end, M1k=0.0, M2k=M2Gk_p + M_lane0_p * (1 + live.mu), pc_class="A",
+                                                 sigma_pc2=sigma_deck)))
+
+# ── what-if: a class B girder with 3 of the 4 tendons (6.3.1 item 1-3 in the two-stage form of 8.1.8; 8.1.9) ──
+pre_B = pre.replace(tendons=pre.tendons * [0.75, 1, 1, 0.75])
+comp_B = jtg.composite(pre_B, b=b_deck, t=180, concrete="C40", top=[(14, 12, 50)])
+print("\nclass B what-if (3 of 4 tendons)")
+for r in jtg.composite_crack_resistance(comp_B, M1k=M1Gk + M1Qk, M1Gk=M1Gk, M2s=M2s, M2l=M2l, pc_class="B", M2Gk=M2Gk):
+    print("  " + str(r))
+comp_end_B = jtg.composite(pre_end.replace(tendons=pre_end.tendons * [0.75, 1, 1, 0.75]), b=b_deck, t=180,
+                           concrete="C40", top=[(14, 12, 50)])
+r = jtg.composite_inclined_crack_resistance(comp_end_B, M_at(g_pre + g_deck, x_v), V1Gk, M_at(g2, x_v), V2s, pc_class="B",
+                                            bent_tendons=[(0.75 * Ap, 6.0)])
+print(f"  {r}  (class A limits, 6.3.1-7)")

@@ -165,42 +165,125 @@ def interface_shear_slab(Vd: float, *, b: float, h0: float, gamma0: float = 1.0,
 
 
 # ── 8.1.8, 8.1.9 crack resistance of prestressed composite members ───────────
+def _at(v, z: float) -> float:
+    """a number, or a function of the depth z (mm from the composite top)"""
+    return float(v(z)) if callable(v) else float(v)
+
+
+def composite_prestress_stress(comp: Composite, tendons, *, M_p2: float = 0.0):
+    """concrete stress (MPa, compression +) at depth z (mm from the composite top) from tendons stressed on the
+    composite member, after the topping hardened (e.g. negative-moment tendons in the deck or the precast top flange of
+    girders made continuous): rows (Ap mm², depth mm from the composite top, σpe MPa, duct diameter mm, as the
+    tendon rows of jtg.rect). Their force
+    Σ σpe Ap acts on the composite section transformed to the precast concrete (comp.elastic, the precast girder's ducts
+    grouted) less their own ducts (× n in the topping), the net section of a post-tensioned member (6.1.5 item 2,
+    6.1.6-4), with their secondary moment M_p2 (kN·m, sagging +); in the topping the stress is × n (comp.n). Returns
+    σ(z), for sigma_pc2 of composite_crack_resistance and composite_service_stresses and sigma_cx of
+    composite_principal_stresses."""
+    rows = np.asarray(tendons, float).reshape(-1, 4)
+    A, zc, I = comp.elastic.props("transformed")
+    Q, It = A * zc, I + A * zc * zc
+    for _, d, _, dd in rows:
+        a = math.pi * dd * dd / 4 * (comp.n if d < comp.t else 1.0)
+        A, Q, It = A - a, Q - a * d, It - a * d * d
+    zc = Q / A
+    I = It - A * zc * zc
+    F = rows[:, 0] * rows[:, 2]
+    N, zN = F.sum(), (F * rows[:, 1]).sum() / F.sum()
+
+    def sigma(z):
+        z = np.asarray(z, float)
+        s = (N / A + N * (zN - zc) * (z - zc) / I - M_p2 * 1e6 * (z - zc) / I) * np.where(z < comp.t, comp.n, 1.0)
+        return float(s) if s.ndim == 0 else s
+
+    return sigma
+
+
+def _edge_check(title: str, edges: dict, k_: str, segmental: bool, clause: str) -> Check:
+    """6.3.1 item 1 at every edge (as jtg.crack_resistance): edges name → sigma_st, sigma_lt (None: not checked),
+    sigma_pc, ftk[, sigma_G]; the governing edge reported"""
+    f = 0.80 if segmental else 0.85
+    for e in edges.values():
+        if k_ == "FULL":
+            e["demand"], e["limit"] = e["sigma_st"], (f if e["sigma_pc"] > 0 else 1.0) * e["sigma_pc"]
+        elif k_ == "A":
+            e["demand"], e["limit"] = e["sigma_st"], e["sigma_pc"] + 0.7 * e["ftk"]
+        else:
+            e["demand"], e["limit"] = e["sigma_G"], e["sigma_pc"]
+    cand = list(edges)
+    if k_ == "B":
+        cand = [n for n in edges if edges[n]["sigma_st"] > edges[n]["sigma_pc"]] or \
+            [max(edges, key=lambda n: edges[n]["sigma_st"] - edges[n]["sigma_pc"])]
+    gov = max(cand, key=lambda n: edges[n]["demand"] - edges[n]["limit"])
+    g = edges[gov]
+    d = {k: g.get(k) for k in ("sigma_st", "sigma_lt", "sigma_pc", "ftk", "W01", "W0")} | {"edge": gov, "edges": edges}
+    kind = {"FULL": "full prestress", "A": "class A", "B": "class B under self-weight"}[k_]
+    sym = "σG" if k_ == "B" else "σst"
+    if k_ == "B":
+        d["sigma_G"] = g["sigma_G"]
+    chk = Check(f"crack resistance ({title}, {kind}, {gov})", g["demand"], g["limit"], "MPa", clause, d,
+                limit_check=True, symbol=sym)
+    for n in cand:
+        e = edges[n]
+        if n != gov and e["demand"] > e["limit"] + 1e-9:
+            chk.failed.append(f"{n}: {sym} = {e['demand']:.2f} > {e['limit']:.2f} MPa")
+    if k_ == "A":
+        for n, e in edges.items():
+            if e["sigma_lt"] is not None and e["sigma_lt"] > e["sigma_pc"] + 1e-9:
+                chk.failed.append(f"{n}: σlt = {e['sigma_lt']:.2f} > σpc = {e['sigma_pc']:.2f} MPa (6.3.1-4)")
+    return chk
+
+
 def composite_crack_resistance(comp: Composite, *, M1k: float, M1Gk: float, M2s: float, M2l: float, pc_class: str,
-                               segmental: bool = False, sigma_extra: float = 0.0) -> list[Check]:
-    """normal-section crack resistance of a prestressed composite member not allowed to crack (8.1.8), at the precast
-    girder's tension (bottom) edge, sagging: precast girder σst = M1k / W01 (8.1.8-1); composite member
-    σst = M1Gk / W01 + M2s / W0 (8.1.8-2), σlt = M1Gk / W01 + M2l / W0 (8.1.8-3); σpc the precast girder's prestress at that
-    edge, ftk of the precast concrete, the limits of 6.3.1 (full: σst − 0.85 σpc ≤ 0, 0.80 segmental; A: σst − σpc ≤
-    0.7 ftk and, for the composite member, σlt − σpc ≤ 0). M1k = M1Gk + M1Qk (stage 1), M2s, M2l: stage-2 frequent and
-    quasi-permanent moments (deck finishes + ψ live loads). W01: precast transformed section, W0: composite section
-    transformed to the precast concrete. sigma_extra: a further tensile stress (MPa, tension +) at that edge in the
-    frequent combination of the composite member, e.g. ψ × the differential shrinkage or temperature gradient
-    (thermal_stresses on comp.elastic) with their secondary moments; added to σst only."""
+                               segmental: bool = False, sigma_extra=0.0, sigma_pc2=0.0,
+                               M2Gk: float | None = None) -> list[Check]:
+    """normal-section crack resistance of a prestressed composite member (8.1.8) at every edge, moments sagging +
+    (hogging moments of negative-moment regions put the topping and the precast top in tension):
+    the precast girder alone (stage 1) at its top and bottom: σst = M1k / W01 (8.1.8-1);
+    the composite member at the precast top and bottom: σst = M1Gk / W01 + M2s / W0 (8.1.8-2), σlt = M1Gk / W01 + M2l / W0
+    (8.1.8-3); at the topping's top: σst = n M2s / W0, σlt = n M2l / W0 (the topping carried nothing in stage 1; n =
+    comp.n, W0 on the section transformed to the precast concrete).
+    M1k = M1Gk + M1Qk (stage 1); M2s, M2l: stage-2 frequent and quasi-permanent moments (deck finishes + ψ live loads).
+    σpc: at the precast edges the precast girder's prestress (8.1.8); at the topping 0 (the precast tendons were stressed
+    before it was cast); sigma_pc2 adds the prestress applied to the composite member at every composite edge (MPa,
+    compression +, actual stress, a number or a function of the depth z from the composite top; tendons stressed after
+    the topping hardened: composite_prestress_stress). ftk: the precast concrete's at the precast edges (8.1.8), the
+    topping's at its own edge (program convention: 8.1.8 places the edge in the precast girder).
+    Limits of 6.3.1 at each edge, the governing one reported (details hold all): full σst − 0.85 σpc ≤ 0 (0.80 segmental;
+    1.0 where σpc is a tension); A σst − σpc ≤ 0.7 ftk and, for the composite member, σlt − σpc ≤ 0.
+    Class B (program convention: 8.1.8 covers members not allowed to crack; here 6.3.1 item 1-3 in the two-stage form of
+    8.1.8): under the self-weight alone the edges in tension under the frequent combination stay compressed: precast
+    girder M1Gk / W01 ≤ σpc, composite member M1Gk / W01 + M2Gk / W0 ≤ σpc (n M2Gk / W0 at the topping); M2Gk the stage-2
+    self-weight (deck finishes).
+    sigma_extra: a further tensile stress (MPa, tension +) of the composite member in the frequent combination, e.g. ψ ×
+    the differential shrinkage or temperature gradient (thermal_stresses on comp.elastic, × n in the topping) with
+    their secondary moments; a number (the same at every edge) or a function of the depth z; added to σst only."""
     k_ = _pc_class(pc_class)
-    if k_ == "B" or not comp.precast.prestressed:
-        raise ValueError("8.1.8 covers prestressed composite members not allowed to crack (full or class A)")
+    if not comp.precast.prestressed:
+        raise ValueError("8.1.8 covers prestressed composite members")
+    if k_ == "B" and M2Gk is None:
+        raise ValueError("class B: pass M2Gk, the stage-2 self-weight moment (6.3.1 item 1-3)")
     p, e = comp.precast, comp.elastic
     _, z01, I01 = p.props("transformed")
     _, z0, I0 = e.props("transformed")
-    W01, W0 = I01 / (p.h - z01), I0 / (e.h - z0)
-    spc = float(p.prestress_stress(p.h))
-    ftk = p.concrete.ftk
-    f = 0.80 if segmental else 0.85
-    out = []
-    for name, sst, slt in (("precast girder", M1k * 1e6 / W01, None),
-                           ("composite member", M1Gk * 1e6 / W01 + M2s * 1e6 / W0 + sigma_extra,
-                            M1Gk * 1e6 / W01 + M2l * 1e6 / W0)):
-        d = {"sigma_st": sst, "sigma_lt": slt, "sigma_pc": spc, "W01": W01, "W0": W0}
-        if k_ == "FULL":
-            chk = Check(f"crack resistance ({name}, full prestress)", sst, f * spc, "MPa", "JTG 3362-2018 8.1.8, 6.3.1",
-                        d, limit_check=True, symbol="σst")
-        else:
-            chk = Check(f"crack resistance ({name}, class A)", sst, spc + 0.7 * ftk, "MPa", "JTG 3362-2018 8.1.8, 6.3.1",
-                        d, limit_check=True, symbol="σst")
-            if slt is not None and slt > spc + 1e-9:
-                chk.failed.append(f"σlt = {slt:.2f} > σpc = {spc:.2f} MPa (6.3.1-4)")
-        out.append(chk)
-    return out
+    t, n = comp.t, comp.n
+    t1 = lambda zp: (zp - z01) / I01 * 1e6  # tension per kN·m of sagging moment, stage 1 at precast depth zp
+    t2 = lambda z: (z - z0) / I0 * 1e6 * (n if z < t else 1.0)  # stage 2 at composite depth z, actual stress
+    pre, cmp = {}, {}
+    for name, zp in (("precast top", 0.0), ("precast bottom", p.h)):
+        spc = float(p.prestress_stress(zp))
+        pre[name] = {"sigma_st": M1k * t1(zp), "sigma_lt": None, "sigma_pc": spc, "ftk": p.concrete.ftk,
+                     "W01": I01 / abs(zp - z01), "sigma_G": M1Gk * t1(zp)}
+        z = zp + t
+        cmp[name] = {"sigma_st": M1Gk * t1(zp) + M2s * t2(z) + _at(sigma_extra, z), "sigma_lt": M1Gk * t1(zp) + M2l * t2(z),
+                     "sigma_pc": spc + _at(sigma_pc2, z), "ftk": p.concrete.ftk, "W01": I01 / abs(zp - z01),
+                     "W0": I0 / abs(z - z0), "sigma_G": M1Gk * t1(zp) + (M2Gk or 0.0) * t2(z)}
+    cmp["topping top"] = {"sigma_st": M2s * t2(0.0) + _at(sigma_extra, 0.0), "sigma_lt": M2l * t2(0.0),
+                          "sigma_pc": _at(sigma_pc2, 0.0), "ftk": comp.topping.ftk, "W01": None, "W0": I0 / z0,
+                          "sigma_G": (M2Gk or 0.0) * t2(0.0)}
+    clause = "JTG 3362-2018 8.1.8, 6.3.1" + (" item 1-3" if k_ == "B" else "")
+    return [_edge_check("precast girder", pre, k_, segmental, clause),
+            _edge_check("composite member", cmp, k_, segmental, clause)]
 
 
 def composite_principal_stresses(comp: Composite, M1: float, V1: float, M2: float, V2: float, *, depths=None,
@@ -248,10 +331,10 @@ def composite_inclined_crack_resistance(comp: Composite, M1: float, V1: float, M
                                         precast: bool = True, **kw) -> Check:
     """inclined-section crack resistance of a prestressed composite member (8.1.9): the largest σtp of
     composite_principal_stresses (frequent combination for stage 2) against 6.3.1 for full (0.6 / 0.4 ftk) and class A
-    (0.7 / 0.5 ftk) members; ftk of the precast concrete"""
+    (0.7 / 0.5 ftk) members; ftk of the precast concrete. Class B members take the class A limits, which 6.3.1-7, -8
+    give for both classes (8.1.9 names the full and class A requirements). Stage-2 prestress (composite_prestress_stress)
+    goes in sigma_cx."""
     k_ = _pc_class(pc_class)
-    if k_ == "B":
-        raise ValueError("8.1.9 refers to the requirements for full and class A members")
     pts = composite_principal_stresses(comp, M1, V1, M2, V2, **kw)
     w = max(pts, key=lambda q: q["sigma_tp"])
     f = (0.6 if precast else 0.4) if k_ == "FULL" else (0.7 if precast else 0.5)
@@ -355,13 +438,16 @@ def composite_long_term_factor(precast_concrete) -> float:
 
 
 # ── 8.1.17 stresses in service ───────────────────────────────────────────────
-def composite_service_stresses(comp: Composite, *, M1k: float, M2k: float, pc_class: str) -> Check:
+def composite_service_stresses(comp: Composite, *, M1k: float, M2k: float, pc_class: str, sigma_pc2=0.0) -> Check:
     """normal stresses of a full or class A prestressed composite member in service (8.1.17, 7.1.3, 7.1.5): stage 1 on the
     precast transformed section, stage 2 on the composite one: at the precast top and bottom σ = σpc + M1k y01 / I01 +
     M2k y0 / I0 ≤ 0.5 fck (precast), at the topping's top n M2k y0 / I0 ≤ 0.5 fck (topping, n its modulus ratio); tendons
     σpe + αEP (σkt1 + σkt2) ≤ 0.65 fpk (0.75 fpk threaded bars). M1k, M2k: characteristic moments of the two stages in
     service (stage 1: the precast girder's and the topping's own weight, the construction loads being gone; stage 2 with
-    impact, 7.1.1). Principal stresses in service: composite_principal_compression."""
+    impact, 7.1.1). Moments sagging +. sigma_pc2: the prestress applied to the composite member (MPa, compression +, a
+    number or a function of the depth from the composite top: composite_prestress_stress) added at the three edges; its
+    effect on the precast tendons' σpe is the user's (losses). Principal stresses in service:
+    composite_principal_compression."""
     k_ = _pc_class(pc_class)
     if k_ == "B" or not comp.precast.prestressed:
         raise ValueError("composite_service_stresses: full and class A prestressed composite members")
@@ -371,9 +457,9 @@ def composite_service_stresses(comp: Composite, *, M1k: float, M2k: float, pc_cl
     t = comp.t
     edges = {}
     for name, zp in (("precast top", 0.0), ("precast bottom", p.h)):
-        edges[name] = (float(p.prestress_stress(zp)) + M1k * 1e6 * (z01 - zp) / I01 + M2k * 1e6 * (z0 - (zp + t)) / I0,
-                       0.5 * p.concrete.fck)
-    edges["topping top"] = (comp.n * M2k * 1e6 * z0 / I0, 0.5 * comp.topping.fck)
+        edges[name] = (float(p.prestress_stress(zp)) + M1k * 1e6 * (z01 - zp) / I01 + M2k * 1e6 * (z0 - (zp + t)) / I0
+                       + _at(sigma_pc2, zp + t), 0.5 * p.concrete.fck)
+    edges["topping top"] = (comp.n * M2k * 1e6 * z0 / I0 + _at(sigma_pc2, 0.0), 0.5 * comp.topping.fck)
     gov = max(edges, key=lambda k: edges[k][0] / edges[k][1])
     tn = p.tendon
     dp = p.tendons[:, 1]
