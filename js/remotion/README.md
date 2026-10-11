@@ -24,4 +24,4 @@ return (
 | `FieldCanvas` | per-pixel field colouring with reveal order, banding, 3D depth buffer and shading, mesh lines in the same canvas |
 | `MeshLines`, `Polylines`, `ColorBar`, `MatrixGrid` | SVG line art: mesh and boundaries, stress trajectories and contours, colour bars, stiffness-matrix fill |
 
-Peer dependencies: `react` ≥ 18, `remotion` ≥ 4. Licence: Apache-2.0.
+Peer dependencies: `react` ≥ 18, `remotion` ≥ 4. Licence: AGPL-3.0-or-later.

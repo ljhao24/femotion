@@ -2,8 +2,8 @@
 
 femotion leans on mature open-source tools and adds glue, a uniform mesh and model format, and the `fem-result/1` file.
 This page lists what is wired in, and what has been evaluated but is left until a concrete need comes up, with the gap
-each one would fill. Licences matter because femotion is Apache-2.0: optional extras may be GPL or non-commercial, but
-nothing is bundled.
+each one would fill. Licences matter because femotion is AGPL-3.0-or-later: optional extras may be GPL or non-commercial, but nothing is
+bundled; each is installed from its own distribution under its own licence.
 
 ## In use
 

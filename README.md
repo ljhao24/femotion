@@ -195,7 +195,12 @@ cd js && npm ci && npm test     # JavaScript
 
 ## Licence
 
-Apache-2.0 (see [LICENSE](LICENSE) and [NOTICE](NOTICE)). Optional back-ends are installed from their own
+GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE](NOTICE)).
+Commercial use is allowed; if you distribute femotion, a modified version, or software built on it, or let users
+interact with it over a network, you must make the corresponding source available under the same licence.
+Releases up to and including commit `1be6a41` were published under Apache-2.0 and stay available under it.
+
+Optional back-ends are installed from their own
 distributions under their own licences: gmsh is GPL-2.0-or-later; OpenSees is free for education, research and
 non-profit use (commercial use requires a licence from the Regents of the University of California); MLX runs on Apple
 silicon only; sectionproperties meshes with Shewchuk's Triangle, which is free for non-commercial use only.

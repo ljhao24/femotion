@@ -2,7 +2,7 @@
   "name": "@femotion/remotion",
   "version": "0.1.0-dev.0",
   "description": "Remotion components for femotion results: load fem-result/1 files, colour fields on a canvas, draw mesh lines, polylines, colour bars and stiffness-matrix grids.",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/ljhao24/femotion/tree/main/js/remotion#readme",
   "repository": {
     "type": "git",

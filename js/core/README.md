@@ -24,4 +24,4 @@ const proj = projector2d(fit2d(lo, hi, {x: 0, y: 0, w: 1920, h: 1080}));
 Tests (Node ≥ 22.18 runs TypeScript directly): `npm test`. They decode the same fixed sample
 (`tests/data/golden_v1.*`) that the Python writer must reproduce byte for byte.
 
-Licence: Apache-2.0.
+Licence: AGPL-3.0-or-later.

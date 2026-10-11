@@ -1,7 +1,9 @@
 femotion
 Copyright 2026 The femotion authors
 
-This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+This product is licensed under the GNU Affero General Public License, version 3
+or (at your option) any later version (see LICENSE). Versions up to and
+including commit 1be6a41 were published under the Apache License, Version 2.0.
 
 femotion does not bundle third-party solvers. Optional extras install them from
 their own distributions, under their own licenses:

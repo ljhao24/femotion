@@ -2,7 +2,7 @@
   "name": "@femotion/core",
   "version": "0.1.0-dev.0",
   "description": "Read femotion's fem-result/1 files and turn finite-element results into drawable geometry: triangles, edges, contours, projections, colour maps. No dependencies, no framework.",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/ljhao24/femotion/tree/main/js/core#readme",
   "repository": {
     "type": "git",

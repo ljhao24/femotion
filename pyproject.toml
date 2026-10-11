@@ -7,7 +7,7 @@ name = "femotion"
 version = "0.1.0.dev0"
 description = "Finite-element and simulation results made for animation: compute with mature open-source solvers, export a compact result format, draw it frame by frame."
 readme = "README.md"
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 authors = [{ name = "The femotion authors" }]

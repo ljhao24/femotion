@@ -81,6 +81,8 @@ Python 写出、JavaScript 读回，两边用同一份标准样例（`tests/data
 
 ## 许可
 
-Apache-2.0（见 [LICENSE](LICENSE)、[NOTICE](NOTICE)）。可选后端按各自的许可另行安装：gmsh 为 GPL-2.0 或更高版本；
+GNU Affero 通用公共许可证第 3 版或更高版本（AGPL-3.0-or-later，见 [LICENSE](LICENSE)、[NOTICE](NOTICE)）。允许商用；分发 femotion、修改版或基于它的软件，或者让用户通过网络使用它时，必须按同一许可公开相应的源代码。提交 `1be6a41` 及以前的版本以 Apache-2.0 发布，仍可按 Apache-2.0 使用。
+
+可选后端按各自的许可另行安装：gmsh 为 GPL-2.0 或更高版本；
 OpenSees 教学、研究、非营利用途免费，商业使用需向加州大学董事会取得许可；MLX 只能在苹果芯片上运行；
 sectionproperties 用的网格剖分器 Triangle 只允许非商业使用。
