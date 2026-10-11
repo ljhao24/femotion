@@ -51,12 +51,14 @@ def impact_factor(f: float) -> float:
 
 
 def simple_beam_frequency(L: float, EI: float, m: float) -> float:
-    """fundamental frequency of a simply supported beam, f = π / (2 L²) √(EI / m): L m, EI kN·m², m t/m (mass per length)"""
+    """fundamental frequency of a simply supported beam, f = π / (2 L²) √(EI / m) (commentary to 4.3.2, eq. 4-3):
+    L m, EI kN·m², m t/m (mass per length)"""
     return math.pi / (2 * L * L) * math.sqrt(EI / m)
 
 
 def design_lanes(width: float, two_way: bool = True) -> int:
-    """number of design lanes from the carriageway width (m), table 4.3.1-4"""
+    """number of design lanes from the carriageway width (m), table 4.3.1-4 (two-way below 6.0 m the table is blank;
+    1 is returned)"""
     if two_way:
         edges = [(6.0, 1), (14.0, 2), (21.0, 4), (28.0, 6), (35.0, 8)]
     else:
@@ -76,8 +78,11 @@ def transverse_reduction(lanes: int) -> float:
 
 
 def longitudinal_reduction(L0: float) -> float:
-    """longitudinal reduction factor for long spans, table 4.3.1-6 (1.0 below 150 m)"""
-    for lim, v in [(150, 1.0), (400, 0.97), (600, 0.96), (800, 0.95), (1000, 0.94)]:
+    """longitudinal reduction factor for long spans, table 4.3.1-6: none up to 150 m, then 0.97 / 0.96 / 0.95 / 0.94 /
+    0.93 from 150 (exclusive) / 400 / 600 / 800 / 1000 m. Continuous structures: the largest computed span."""
+    if L0 <= 150:
+        return 1.0
+    for lim, v in [(400, 0.97), (600, 0.96), (800, 0.95), (1000, 0.94)]:
         if L0 < lim:
             return v
     return 0.93
@@ -97,9 +102,16 @@ class LiveLoad:
     longitudinal: float | None = None  # default: table 4.3.1-6 for L0
 
     def factor(self) -> float:
-        tr = transverse_reduction(self.lanes) if self.transverse is None else self.transverse
+        """multiplier on one lane's effect. With more than two lanes the loaded lanes are never taken below two lanes'
+        effect (4.3.1 item 7), when the default transverse reduction is used."""
+        if self.transverse is None:
+            lanes = self.lanes * transverse_reduction(self.lanes)
+            if self.lanes > 2:
+                lanes = max(lanes, 2 * transverse_reduction(2))
+        else:
+            lanes = self.lanes * self.transverse
         lo = longitudinal_reduction(self.L0) if self.longitudinal is None else self.longitudinal
-        return (1 + self.mu) * self.lanes * tr * lo * self.distribution
+        return (1 + self.mu) * lanes * lo * self.distribution
 
     def effects(self, il, comp: str):
         """(max, min) effects of every section of `il` (femotion.frame.influence.InfluenceLines); Pk × 1.2 for shear"""
@@ -121,10 +133,12 @@ def basic_combination(G, Q, others=(), *, gamma_G: tuple[float, float] = (1.2, 1
     """basic combination (基本组合) of the ultimate limit state, without γ0 (apply γ0 in the check: γ0 Sd ≤ R).
 
     G: permanent effects (array, or a list of arrays summed: self-weight, superimposed dead load);
-    Q: (max, min) of the leading variable action, normally traffic; others: list of (max, min) of the other variable
-    actions (crowd, …), each × γQj × ψc. gamma_G: (unfavourable, favourable) = (1.2, 1.0) for concrete self-weight;
+    Q: (max, min) of the leading variable action, normally traffic (when another variable action's effect exceeds the
+    traffic effect it replaces traffic as the leading action, 4.1.5: pass it as Q and traffic in others);
+    others: list of (max, min) of the other variable actions (crowd, …), each × γQj × ψc. gamma_G: (unfavourable, favourable) = (1.2, 1.0) for concrete self-weight;
     the favourable factor is used where the permanent effect has the opposite sign to the extreme sought.
-    gamma_Q: 1.4 for the lane load, 1.8 for the vehicle load (vehicle=True). gamma_others: one value or one per action.
+    gamma_Q: 1.4 for the lane load, 1.8 for the vehicle load (vehicle=True). gamma_others: one value or one per action;
+    1.4 in general, 1.1 for wind.
     Returns (max, min) design effects."""
     if isinstance(G, (list, tuple)) and len(G) and np.ndim(G[0]) > 0:
         G = np.sum([np.asarray(g, float) for g in G], axis=0)

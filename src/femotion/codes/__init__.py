@@ -6,6 +6,6 @@
 Codes only add the code-specific parts (loads, factors, resistance formulas). The generic parts they rely on live in
 the analysis modules, e.g. influence lines and moving-load envelopes in femotion.frame.influence.
 
-Every value is a transcription of a code, so check it against the text before relying on it for real design:
-docs/jtg.md lists each clause used and the values to verify. femotion is not a substitute for a qualified engineer.
+docs/jtg.md lists every clause used and the review against the official texts. femotion is not a substitute for a
+qualified engineer.
 """

@@ -156,8 +156,8 @@ sec = jtg.tee(200, 1100, 1600, 160, concrete="C40", bottom=[(10, 28, 110)], top=
 print(jtg.flexure(sec, Mmax.max()))      # flexure: γ0Sd = …, R = …, ratio … → OK
 ```
 
-Reinforced concrete only for now (no prestress, no serviceability). The code values are an unverified transcription:
-check [docs/jtg.md](docs/jtg.md) before relying on them. `examples/jtg_rc_girder.py` checks a two-span continuous girder.
+Reinforced concrete only for now (no prestress, no serviceability). Values and formulas have been checked clause by
+clause against the official texts, see [docs/jtg.md](docs/jtg.md). `examples/jtg_rc_girder.py` checks a two-span continuous girder.
 
 ## Validation
 

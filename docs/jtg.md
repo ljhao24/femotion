@@ -7,11 +7,10 @@ Ultimate-limit-state checks of reinforced-concrete highway bridges to
 - **JTG 3362-2018** *Specifications for Design of Highway Reinforced Concrete and Prestressed Concrete Bridges and
   Culverts*: materials and section resistance.
 
-> **Status: alpha, unverified transcription.** Every value and formula below was transcribed into code from the code
-> texts as the author of this module knows them, not copied from an official copy, and has not yet been checked
-> against the printed clauses. The tests verify that the formulas are *implemented* as written here (hand calculations,
-> closed forms), not that they are *the code*. Check the "verify" items before using results for anything that matters.
-> femotion does not replace a qualified engineer's design or review.
+> **Status: alpha, checked against the official text.** Every table value, formula and clause number used here was
+> compared with the official texts published by the Ministry of Transport (2026-10-11); the deviations found were fixed
+> and each has a test. Clause numbers below refer to the 2018 and 2015 editions. The tests verify the implementation
+> against hand calculations and closed forms. femotion does not replace a qualified engineer's design or review.
 
 ## Workflow
 
@@ -44,17 +43,17 @@ Units: frame analysis in m, kN, t; sections in mm, mm², MPa; design forces in k
 | Impact factor from frequency; frequency of a simple beam | `impact_factor`, `simple_beam_frequency` | D60 4.3.2 |
 | Basic combination, γ0 | `basic_combination`, `GAMMA_0` | D60 4.1.5 |
 | Influence lines, lane-load and axle-train envelopes | `femotion.frame.influence` | (generic) |
-| Concrete C25–C80, HPB300 / HRB400 / HRBF400 / RRB400 / HRB500 | `concrete`, `rebar` | 3362 3.1, 3.2 |
-| ξb | `xi_b` | 3362 5.2.1 |
-| Flexure of rectangles, T, I, box girders, circles; x ≤ ξb h0; x < 2as′; ρmin | `flexure` | 3362 5.2.2, 5.2.3, 9.1.12 |
-| Shear (stirrups, bent bars), section limit, detailing threshold, ρsv,min | `shear` | 3362 5.2.9, 5.2.11, 5.2.12, 9.3.13 |
-| Axial compression with φ | `axial`, `stability_factor` | 3362 5.3.1 |
-| Eccentric compression (rectangles, T, box, hollow circles by the general rule set; solid circles by the closed formula), η | `eccentric`, `eta_factor` | 3362 5.3.4–5.3.9 |
+| Concrete C25–C80, HPB300 / HRB400 / HRBF400 / RRB400 / HRB500; β, εcu | `concrete`, `rebar` | 3362 3.1, 3.2, 5.1.4, 5.1.5 |
+| ξb (table 5.2.1; none for ordinary bars in C75 / C80) | `xi_b` | 3362 5.2.1 |
+| Flexure of rectangles, T, I, box girders, circles; x ≤ ξb h0; x < 2as′; ρmin | `flexure` | 3362 5.2.2, 5.2.3, 5.2.4, 9.1.12 |
+| Shear (stirrups, bent bars), section limit, detailing threshold, ρsv,min | `shear` | 3362 5.2.9, 5.2.11, 5.2.12, 9.3.12 |
+| Axial compression with φ (least radius of gyration), minimum longitudinal steel | `axial`, `stability_factor` | 3362 5.3.1, 5.3.10, 9.1.12 |
+| Eccentric compression (rectangles, T, box, hollow circles by the general rule set; solid circles with ≥ 8 bars by the closed formula), η, e0 ≥ max(20 mm, h/30), x < 2as′, reverse failure, minimum longitudinal steel | `eccentric`, `eta_factor` | 3362 5.3.4–5.3.9, 9.1.12 |
 
 Not covered yet: prestressed concrete (losses, creep and shrinkage, construction stages), serviceability (crack width,
-deflection, stress limits), torsion, local bearing, punching, the "reverse failure" check of small-eccentricity
-members, shear of circular sections, crowd and other variable actions beyond passing their effects to
-`basic_combination(others=...)`, accidental and seismic combinations.
+deflection, stress limits), torsion, local bearing, punching, shear of circular sections, web reinforcement of 5.3.7,
+crowd, wind and other variable actions beyond passing their effects to `basic_combination(others=...)` (wind: γQ = 1.1;
+choosing which variable action leads is left to the user, D60 4.1.5), accidental and seismic combinations.
 
 ## The rule set behind the section resistance
 
@@ -64,33 +63,43 @@ fcd over x = β·xc, bar stress σi = εcu·Es·(β·h0i/x − 1) clipped to −
 ξ ≤ ξb, compression bars yield when x ≥ 2as′) this reproduces the closed formulas of 5.2.2 / 5.2.3 / 5.3.5 exactly; the
 tests check this. Where bars do not yield (small eccentricity, high-grade steel) it is the code's general expression.
 
-- **x < 2as′ in flexure**: the code requires x ≥ 2as′ only when compression bars are counted. The resistance is the
-  larger of (a) moments about the compression bars, concrete ignored, and (b) the section as singly reinforced. The
-  result notes which governs.
+- **x < 2as′ in flexure** (5.2.4): 5.2.4 applies "when the compression bars are counted", so the section may also be
+  taken as singly reinforced. The resistance is the larger of (a) moments about the compression bars, concrete
+  ignored, and (b) the singly reinforced section, provided its own x ≤ ξb h0. This follows from the premise of 5.2.4;
+  the code does not state "take the larger" in so many words. The result notes which governs. Eccentric compression
+  (5.3.6) uses (a) only.
 - **Over-reinforced** (x > ξb h0) members fail the check; their resistance from the rule set is reported for
   information only.
-- **Eccentric compression**: e = η·e0 from the gross centroid, x solved from moment equilibrium, Nu read off. Solid
-  circles use the 5.3.8 closed formula by default (`method="code"`); `method="strain"` uses the rule set (they agree
-  within a few per cent, tested).
+- **Eccentric compression**: e0 = Md/Nd, at least max(20 mm, h/30) (5.3.9; there is no separate accidental
+  eccentricity in the 2018 edition). e = η·e0 from the gross centroid, x solved from moment equilibrium, Nu read off.
+  With unequal bars, a load between the gross and the plastic centroid is resisted with the far face more compressed:
+  the section is flipped and solved again. Small eccentricity with the load between the bar groups also gets the
+  reverse-failure check 5.3.4-4 / 5.3.5-3 (moments about A′s of the whole concrete section and As; e0 there without
+  the minimum, the less favourable reading); the smaller resistance governs. Solid circles with at least 8 bars use the
+  5.3.8 closed formula by default (`method="code"`); `method="strain"` uses the rule set (they agree within a few
+  per cent, tested).
 
-## Values to verify against the code text
+## Review against the official text
 
-| Item | Value used | Note |
+The texts (JTG D60-2015, JTG 3362-2018, official PDFs from xxgk.mot.gov.cn) were read clause by clause against this
+module on 2026-10-11. Found and fixed:
+
+| Item | Was | Now (code) |
 |---|---|---|
-| Concrete fck, ftk, fcd, ftd, Ec, C25–C80 | `materials._CONCRETE` | e.g. C30: 20.1, 2.01, 13.8, 1.39, 3.00×10⁴ MPa |
-| Rebar fsk, fsd, fsd′, Es | HPB300 300/250/250/2.1×10⁵; HRB400 400/330/330/2.0×10⁵; HRB500 500/415/400/2.0×10⁵ | |
-| Stirrup strength cap | fsv = min(fsd, 330) | |
-| ξb | β / (1 + fsd/(εcu Es)) rounded down to 0.01 | matches the table up to C50 (0.58 / 0.53 / 0.49); **above C50 the table groups classes and may differ by 0.01** |
-| Lane load | qk = 10.5 kN/m; Pk = 270 (L0 ≤ 5) … 360 (L0 ≥ 50), 2(L0 + 130) between; Class II × 0.75; Pk × 1.2 for shear | |
-| Impact factor | 0.05 (f < 1.5), 0.1767 ln f − 0.0157, 0.45 (f > 14) | |
-| Transverse reduction | 1.20, 1.00, 0.78, 0.67, 0.60, 0.55, 0.52, 0.50 for 1–8 lanes | |
-| Longitudinal reduction | 0.97 / 0.96 / 0.95 / 0.94 / 0.93 from 150 / 400 / 600 / 800 / 1000 m | |
-| Design lanes | table 4.3.1-4 | |
-| Basic combination | γG 1.2 / 1.0, γQ1 1.4 (lane) / 1.8 (vehicle), other variable × 1.4 × ψc 0.75; γ0 1.1 / 1.0 / 0.9 | |
-| Shear | Vcs = α1 α2 α3 · 0.45×10⁻³ · b h0 √((2 + 0.6P) √fcu,k ρsv fsv), P = 100ρ ≤ 2.5; Vsb = 0.75×10⁻³ fsd ΣAsb sin θs | |
-| Section limit / detailing | 0.51×10⁻³ √fcu,k b h0; 0.50×10⁻³ α2 ftd b h0 (× 1.25 for slabs) | |
-| Minimum reinforcement | ρ ≥ max(45 ftd/fsd %, 0.20 %); ρsv ≥ 0.14 % (HPB300), 0.11 % (HRB400 / 500) | |
-| φ table | l0/b 8 … 50, l0/d 7 … 43, l0/i 28 … 174 | |
-| η | 1 + (l0/h)² ζ1 ζ2 / (1300 e0/h0), ζ1 = 0.2 + 2.7 e0/h0 ≤ 1, ζ2 = 1.15 − 0.01 l0/h ≤ 1, when l0/i > 17.5; h0 = r + rs for circles | **check whether 3362-2018 adds an accidental eccentricity ea to e0** (not applied here) |
-| Solid circle formula | Nu = α fcd A (1 − sin 2πα / 2πα) + (α − αt) fsd As; Nu ηe0 = ⅔ fcd A r sin³πα / π + fsd As rs (sin πα + sin παt)/π; αt = 1.25 − 2α ≥ 0 | **check the clause number and form in 3362-2018** |
-| Clause numbers | as in the tables above | from memory; may be off by a sub-clause |
+| e0 minimum | none | e0 ≥ max(20 mm, h/30) (5.3.9) |
+| ξb | formula per class | table 5.2.1 (classes grouped; C75 / C80 with ordinary bars: no value, raises) |
+| Circle formula | "≥ 6 bars", not checked | ≥ 8 bars (5.3.8 note), else the rule set |
+| Reverse failure | not checked | 5.3.4-4, 5.3.5-3 |
+| Compression members, minimum steel | not checked | all bars ≥ 0.5 % (0.6 % from C50), each side ≥ 0.2 % (9.1.12) |
+| φ | radius of gyration in the bending plane | least radius of gyration; T / I / box need `i_min` or `b_min` (table 5.3.1) |
+| More than two lanes | not enforced | effect not below two lanes' (D60 4.3.1 item 7) |
+| Longitudinal reduction at L0 = 150 m | 0.97 | 1.0 (reduction only above 150 m) |
+| Wind in the combination | not mentioned | γQ = 1.1 documented (D60 4.1.5) |
+| Flexure, x < 2as′, singly reinforced alternative | no ξb check | its own x ≤ ξb h0 |
+| Clause numbers | 9.3.13, 3.2.5 | 9.3.12, 3.2.4; frequency formula is in the commentary to 4.3.2 (eq. 4-3) |
+
+Confirmed unchanged: all material values (C25–C80, the reinforcement grades), β, εcu, the bar stress formula, the
+lane and vehicle loads, the impact factor, the lane and reduction tables, γ0, γG, γQ, ψc, the shear formulas, limits
+and coefficients, the axial formula, the φ table, η with ζ1 and ζ2, the circle formula with αt = 1.25 − 2α.
+Note: the official English edition of 3362-2018 has two misprints (C40 ftk printed as 2.51, αt as 1.25 − α); the values
+here follow the Chinese text.

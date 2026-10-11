@@ -1,10 +1,10 @@
 """Material strengths of JTG 3362-2018 (reinforced concrete only; prestressing steel is not covered yet).
 
-Units: MPa. The tables are transcribed from the code (3.1.3, 3.1.4, 3.1.5, 3.2.2, 3.2.3, 3.2.5); docs/jtg.md lists them.
+Units: MPa. Tables 3.1.3, 3.1.4, 3.1.5 (concrete), 3.2.2, 3.2.3-1, 3.2.4 (reinforcement), 5.1.4 (β), 5.1.5 (εcu),
+5.2.1 (ξb); checked against the official text (docs/jtg.md).
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 #                 fck    ftk    fcd    ftd    Ec (MPa)
@@ -73,7 +73,7 @@ class Rebar:
 
     @property
     def rho_sv_min(self) -> float:
-        """minimum stirrup ratio of beams: 0.14 % for HPB300, 0.11 % for HRB400 and HRB500"""
+        """minimum stirrup ratio of beams (9.3.12): 0.14 % for HPB300, 0.11 % for HRB400 and HRB500"""
         return 0.0014 if self.name == "HPB300" else 0.0011
 
 
@@ -92,9 +92,14 @@ def rebar(name: str = "HRB400") -> Rebar:
     return Rebar(n, *_REBAR[n])
 
 
+# table 5.2.1, ordinary reinforcement: classes ≤C50 | C55, C60 | C65, C70 (C75, C80: not given, "—")
+_XI_B = {"HPB300": (0.58, 0.56, 0.54), "HRB400": (0.53, 0.51, 0.49), "HRBF400": (0.53, 0.51, 0.49),
+         "RRB400": (0.53, 0.51, 0.49), "HRB500": (0.49, 0.47, 0.46)}
+
+
 def xi_b(c: Concrete, s: Rebar) -> float:
-    """relative balanced depth ξb = β / (1 + fsd / (εcu Es)), rounded down to 0.01.
-    Up to C50 this reproduces the code's table (HPB300 0.58, HRB400 0.53, HRB500 0.49); above C50 the code groups the
-    classes (C55–C60, C65–C70, C75–C80) and its table can differ from this per-class value by 0.01 (docs/jtg.md)."""
-    v = c.beta / (1 + s.fsd / (c.eps_cu * s.Es))
-    return math.floor(v * 100 + 1e-9) / 100
+    """relative balanced depth ξb from table 5.2.1. The table gives no value for ordinary reinforcement in C75 and C80."""
+    if c.grade >= 75:
+        raise ValueError(f"table 5.2.1 gives no ξb for {s.name} in C{c.grade}")
+    col = 0 if c.grade <= 50 else 1 if c.grade <= 60 else 2
+    return _XI_B[s.name][col]

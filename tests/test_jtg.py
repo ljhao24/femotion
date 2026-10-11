@@ -162,3 +162,61 @@ def test_circle_geometry():
     assert s.I == pytest.approx(math.pi * 1000 ** 4 / 64, rel=1e-12)
     hol = jtg.circle(2000, 30, 25, 60, hollow=1400)
     assert hol.area == pytest.approx(math.pi * (1000 ** 2 - 700 ** 2), rel=1e-12)
+
+
+# ── items from the review against the official text (shared review, 2026-10-11) ──
+def test_xi_b_table_5_2_1():
+    tab = {"HPB300": (0.58, 0.56, 0.54), "HRB400": (0.53, 0.51, 0.49), "HRB500": (0.49, 0.47, 0.46)}
+    for s, (a, b, c) in tab.items():
+        for g, v in [(30, a), (50, a), (55, b), (60, b), (65, c), (70, c)]:
+            assert jtg.xi_b(jtg.concrete(g), jtg.rebar(s)) == v
+    with pytest.raises(ValueError):
+        jtg.xi_b(jtg.concrete(80), jtg.rebar("HRB400"))  # "—" in the table
+
+
+def test_e0_minimum():
+    s = jtg.rect(500, 500, bottom=[(4, 20, 40)], top=[(4, 20, 40)])
+    r = jtg.eccentric(s, 2000.0, 0.0, l0=6000)
+    assert r.details["e0"] == 20.0 and r.notes  # max(20, 500/30 = 16.7)
+    assert r.resistance == pytest.approx(jtg.eccentric(s, 2000.0, 2000.0 * 0.020, l0=6000).resistance)
+    big = jtg.rect(800, 900, bottom=[(6, 25, 50)], top=[(6, 25, 50)])
+    assert jtg.eccentric(big, 3000.0, 0.0).details["e0"] == pytest.approx(30.0)  # h/30
+
+
+def test_reverse_failure():
+    """bars mostly on the compressed side, load close to the centroid: failure from the far face governs (5.3.4-4)"""
+    As_c, As_t = 4 * A25, 2 * math.pi * 16 ** 2 / 4
+    s = jtg.rect(400, 600, top=[(4, 25, 40)], bottom=[(2, 16, 40)])
+    r = jtg.eccentric(s, 3000.0, 3000.0 * 0.025)
+    e1 = 300 - 25 - 40
+    Nr = (13.8 * 400 * 600 * (300 - 40) + 330 * As_t * (560 - 40)) / e1 / 1e3
+    assert r.details["case"] == "small eccentricity"
+    assert r.details["N_reverse"] == pytest.approx(Nr, rel=1e-9)
+    assert r.resistance == pytest.approx(min(Nr, r.resistance), rel=1e-9) and "reverse" in " ".join(r.notes)
+
+
+def test_compression_member_minimum_steel():
+    s = jtg.rect(500, 500, bottom=[(2, 16, 40)], top=[(2, 16, 40)])  # 0.32 %
+    assert any("0.5" in f for f in jtg.axial(s, 1000.0, 3000).failed)
+    assert any("0.5" in f for f in jtg.eccentric(s, 1000.0, 100.0).failed)
+
+
+def test_axial_weak_axis_required_for_tee():
+    t = jtg.tee(400, 1200, 1600, 200, bottom=[(6, 25, 60)], top=[(6, 25, 60)])
+    with pytest.raises(ValueError):
+        jtg.axial(t, 1000.0, l0=10000)
+    assert jtg.axial(t, 1000.0, l0=10000, i_min=150.0).details["phi"] == pytest.approx(np.interp(10000 / 150, [62, 69], [0.81, 0.75]))
+
+
+def test_circle_formula_needs_8_bars():
+    s6 = jtg.circle(1000, 6, 28, 60)
+    assert jtg.eccentric(s6, 3000.0, 300.0).clause == "JTG 3362-2018 5.3.4–5.3.9"  # auto falls back to the rule set
+    with pytest.raises(ValueError):
+        jtg.eccentric(s6, 3000.0, 300.0, method="code")
+
+
+def test_reductions_and_lanes_review():
+    assert jtg.longitudinal_reduction(150) == 1.0 and jtg.longitudinal_reduction(150.1) == 0.97
+    # 3 lanes: 3 × 0.78 = 2.34 ≥ 2; 4 lanes 2.68; the two-lane floor only bites if a table value drops below
+    assert jtg.LiveLoad(L0=30, lanes=3).factor() == pytest.approx(2.34)
+    assert jtg.LiveLoad(L0=30, lanes=1).factor() == pytest.approx(1.2)
