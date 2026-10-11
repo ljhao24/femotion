@@ -9,6 +9,7 @@
     influence influence lines of many sections at once, lane-load and axle-train envelopes, exact distributed-load forces
     prestress tendons: equivalent loads, total / primary / secondary effects on statically indeterminate frames
     thermal   imposed strains and curvatures (temperature, shrinkage): secondary effects on statically indeterminate frames
+    stages    construction stages and creep / shrinkage step by step in time (linear): members, supports, loads by stage
 
 Linear problems solved many times go to `linear` once `check.crosscheck` passes; anything nonlinear goes to `opensees`.
 """

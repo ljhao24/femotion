@@ -19,6 +19,8 @@
                  and deflection, stresses in service and in construction stages
     composite    JTG 3362-2018 8.1: composite flexural members (precast girder + cast-in-place topping, two stages)
     stm          JTG 3362-2018 appendix B: strut-and-tie models (statics, ties, struts, nodes)
+    creep        JTG 3362-2018 4.3.8, 6.5.6, appendix C: creep secondary effects (commentary 4-7…4-20), the appendix C
+                 concrete and later prestress losses for the staged analysis of femotion.frame.stages
     regions      JTG 3362-2018 8.2–8.5: anchorage zones, diaphragms over bearings, cap beams, pile caps
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
@@ -43,6 +45,7 @@ from .actions import (DYNAMIC_FACTOR, GAMMA_0, PSI, RAILING_LOADS, SIDEWALK_SLAB
                       lane_load, longitudinal_reduction, quasi_permanent_combination, simple_beam_frequency,
                       transverse_reduction)
 from . import prestress, regions  # noqa: F401
+from . import creep  # noqa: F401
 from .bearing import bearing_base_area, fcd_at, local_bearing, mesh_ratio, spiral_ratio  # noqa: F401
 from .composite import (COMPOSITE_CAMBER_LONG_TERM, Composite, composite, composite_crack_resistance,  # noqa: F401
                         composite_crack_width, composite_design_moments, composite_inclined_crack_resistance,
