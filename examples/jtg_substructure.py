@@ -127,9 +127,13 @@ print("  " + str(jtg.biaxial(col, None, N_col, M_col, M_long, l0x=l0_t, l0y=l0_l
 print("  " + str(jtg.eccentric(col, N_col, math.hypot(M_col, M_long), max(l0_t, l0_l), gamma0=gamma0, method="table")))
 
 # ── a pile (φ1.2 m, 20Φ25, spiral Φ10 at 150 mm = 2 legs) under a horizontal force (illustrative): 3362 has no shear
-# rule for circular sections; b = 1.76 r, h0 = 1.6 r of GB 50010-2010 6.3.15 in the formulas of 5.2.9 ──
+# rule for circular sections; b = 1.76 r, h0 = 1.6 r of GB 50010-2010 6.3.15 in the formulas of 5.2.9; compression
+# is not counted, tension is deducted ──
 pile = jtg.circle(1200, 20, 25, 70, concrete="C30")
-print("\npile: " + str(jtg.shear_circle(pile, 420.0, (2, 10, 150), gamma0=gamma0, pile=True)))
+print("\npile: " + str(jtg.shear_circle(pile, 420.0, (2, 10, 150), gamma0=gamma0, pile=True, Nd=Nd[0])))
+# the same pile pulled by an uplift of 800 kN (illustrative): Vcs − 0.2 γ0 N after GB 50010 6.3.14, whose minimum
+# fsv Asv h0 / s ≥ 0.36 ftd b h0 asks for denser hoops (spiral Φ12 at 100 mm)
+print("pile in tension: " + str(jtg.shear_circle(pile, 420.0, (2, 12, 100), gamma0=gamma0, pile=True, Nd=-800.0)))
 
 # ── a tie beam between the two pile caps, 0.8 × 1.0 m, pulled apart by the piles' horizontal forces with a moment
 # from the caps' rotation (illustrative values): eccentric tension (5.4.2) ──

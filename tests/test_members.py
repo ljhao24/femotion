@@ -53,6 +53,17 @@ def test_length_factor_classic_cases():
         jtg.length_factor(ends="hinged")
 
 
+def test_length_factor_formula_values():
+    """E.0.2-1 and E.0.3 at single points, worked out by hand (guards the coefficients, which the 8 % band of the next
+    test would not catch): kθ = 1, kF = 2: 0.5 exp(0.35/1.6 + 0.7/1.04 + 0.35/(1.75 × 3.3)) = 1.296004; kθ = 2, kF = 0:
+    0.5 exp(0.35/2.2 + 0.7 + 0.35/2.5) = 1.357906; E.0.3 kF = 4: 2 − 1.3 × 8 / 17.5 = 1.405714, kF = 1: 2 − 1.3/10.5"""
+    assert jtg.length_factor(k_theta=1.0, k_F=2.0) == pytest.approx(1.2960042, abs=1e-7)
+    assert jtg.length_factor(k_theta=2.0, k_F=0.0) == pytest.approx(1.3579059, abs=1e-7)
+    assert jtg.length_factor(k_theta=10.0, k_F=5.0) == pytest.approx(0.9258464, abs=1e-7)
+    assert jtg.length_factor(k_F=4.0) == pytest.approx(2 - 10.4 / 17.5, abs=1e-12)
+    assert jtg.length_factor(k_F=1.0) == pytest.approx(2 - 1.3 / 10.5, abs=1e-12)
+
+
 def test_length_factor_against_buckling_eigenvalue():
     """appendix E fits against the exact elastic buckling of the restrained column (FE eigenvalue; commentary E-8):
     the model reproduces the commentary's characteristic equation E-17 for kθ = 0; E.0.2-1 lies within 8 % of the
@@ -79,16 +90,18 @@ def test_effective_length_from_springs():
 
 # ── 5.3.2 spiral columns ────────────────────────────────────────────────────
 def test_spiral_column_formula():
-    """5.3.2-1, -2 by hand; the spiral term against Richart's confinement law f'cc = f'c + 4.1 fl (Richart, Brandtzaeg
-    and Brown 1928, the basis of k ≈ 2): 4.1 fl Acor = 2.05 fsd Aso"""
+    """5.3.2-1, -2 by hand; the program's resistance against Richart's confined-concrete law f'cc = f'c + 4.1 fl
+    (Richart, Brandtzaeg and Brown 1928, the basis of k ≈ 2) with the lateral pressure fl = 2 fsd Aso1 / (dcor s) of a
+    yielding spiral: at most, and within 2 % of, 0.9 (fcd Acor + f'sd A's + 4.1 fl Acor)"""
     col = jtg.circle(600, 8, 22, 50, concrete="C30")
     r = jtg.axial_spiral(col, 3000, 3000, spiral=(10, 50))
     dcor = 2 * 250 + 22
     Acor, Aso = math.pi * dcor ** 2 / 4, math.pi * dcor * A(10) / 50
     N532 = 0.9 * (13.8 * Acor + 330 * 8 * A(22) + 2.0 * 330 * Aso) / 1e3
     assert r.details["dcor"] == dcor and r.resistance == pytest.approx(N532)
-    fl = 2 * 330 * A(10) / (dcor * 50)  # lateral pressure of a yielding spiral
-    assert 0.9 * 2.0 * 330 * Aso == pytest.approx(0.9 * 4.1 * fl * Acor / 1.025, rel=1e-12)  # k = 2.0 vs 4.1/2 = 2.05
+    fl = 2 * 330 * A(10) / (dcor * 50)
+    richart = 0.9 * (13.8 * Acor + 330 * 8 * A(22) + 4.1 * fl * Acor) / 1e3
+    assert richart * 0.98 <= r.resistance <= richart
     assert r.ok and not r.failed
 
 
@@ -110,6 +123,12 @@ def test_spiral_column_conditions():
     assert r.clause.startswith("JTG 3362-2018 5.3.2") and any("d/4" in f for f in r.failed)  # φ8 < 36/4
     with pytest.raises(ValueError):
         jtg.axial_spiral(jtg.rect(500, 500, bottom=[(3, 20, 40)], top=[(3, 20, 40)]), 1000, 3000, spiral=(10, 50))
+    hollow = jtg.circle(1500, 30, 25, 60, concrete="C40", hollow=900)  # the core would include the hole (+22 %)
+    with pytest.raises(NotImplementedError):
+        jtg.axial_spiral(hollow, 20000, 6000, spiral=(16, 60))
+    with pytest.raises(NotImplementedError):
+        jtg.axial_spiral(jtg.box(1500, 1500, 300, 300, 600, bottom=[(8, 25, 60)], top=[(8, 25, 60)]), 20000, 6000,
+                         spiral=(16, 60), dcor=1300, i_min=500)
 
 
 # ── 5.3.7 bars over the web ─────────────────────────────────────────────────
@@ -168,6 +187,14 @@ def test_web_method_hand_formula_and_conditions():
     assert N * e == pytest.approx(c.fcd * xi * (1 - 0.5 * xi) * 1200 * h0 ** 2 + 330 * As * (h0 - 60) + Msw, rel=1e-6)
     with pytest.raises(ValueError):
         jtg.eccentric(_pier(3), 3000, 3000, method="web")  # 3 web rows
+    mid = jtg.rect(1200, 2000, concrete="C35", top=[(8, 28, 60)], bottom=[(8, 28, 60)],
+                   bars=[(2 * A(20), z) for z in np.linspace(800, 1200, 5)])  # web bars bunched in the middle
+    assert any("only" in n for n in jtg.eccentric(mid, 3000, 3000, method="web").notes)
+    heavy = jtg.rect(1000, 2000, concrete="C30", top=[(5, 16, 60)], bottom=[(5, 16, 60)],
+                     bars=[(2 * A(32), z) for z in np.linspace(260, 1740, 9)])  # Asw = 7.2 (As + A's)
+    r = jtg.eccentric(heavy, 3000, 2100, method="web")
+    assert any("(As + A's)" in n for n in r.notes)
+    assert 1.03 < r.resistance / jtg.eccentric(heavy, 3000, 2100, method="strain").resistance < 1.08
     with pytest.raises(ValueError):
         jtg.eccentric(jtg.circle(1200, 24, 25, 60), 3000, 1000, method="web")
 
@@ -196,13 +223,13 @@ def test_table_F01_cells():
 
 
 def test_table_method_against_formula_and_strain():
-    """method="table" (appendix F, bilinear between cells) within 2 % of the 5.3.8 formula and 3 % of the strain
-    method (the coarse rows ηe0/r 2.0–2.5 cost up to 2 % by interpolation); applicability C30–C50, ρ 0.5 %–4 %, ≥ 8 bars, solid circle"""
+    """method="table" (appendix F, bilinear between cells) within 1 % of the 5.3.8 formula and 3 % of the strain
+    method; applicability C30–C50, ρ 0.5 %–4 %, ≥ 8 bars, solid circle"""
     for D, n, d, cov, cc in [(1500, 28, 28, 75, "C35"), (1200, 24, 25, 60, "C30"), (1800, 36, 32, 90, "C40")]:
         s = jtg.circle(D, n, d, cov, concrete=cc)
         for N, M in [(20000, 500), (12000, 3000), (6000, 4000), (1500, 2500), (800, 2000)]:
             t = jtg.eccentric(s, N, M, method="table")
-            assert t.resistance == pytest.approx(jtg.eccentric(s, N, M, method="code").resistance, rel=0.02)
+            assert t.resistance == pytest.approx(jtg.eccentric(s, N, M, method="code").resistance, rel=0.01)
             assert t.resistance == pytest.approx(jtg.eccentric(s, N, M, method="strain").resistance, rel=0.03)
     with pytest.raises(ValueError):
         jtg.eccentric(jtg.circle(1200, 24, 25, 60, concrete="C25"), 3000, 1000, method="table")
@@ -210,7 +237,45 @@ def test_table_method_against_formula_and_strain():
         jtg.eccentric(jtg.circle(1500, 12, 20, 60, concrete="C30"), 3000, 1000, method="table")  # ρ < 0.5 %
     with pytest.raises(ValueError):
         jtg.circle_nu(12.0, 0.3)
-    assert jtg.circle_nu(0.5, 0.3) == 0.6786 and jtg.circle_nu(0.525, 0.3) == pytest.approx((0.6786 + 0.6347) / 2)
+    assert jtg.circle_nu(0.5, 0.3) == 0.6786 and jtg.circle_nu(0.525, 0.3) == pytest.approx(2 / (1 / 0.6786 + 1 / 0.6347))
+    assert jtg.circle_nu(0.5, 0.35) == pytest.approx((0.6786 + 0.7470) / 2)
+
+
+def _nu_formula(er, lam, g=0.9):
+    """nu from 5.3.8 written as in the commentary of appendix F (F-3, F-4)"""
+    def NM(a):
+        at = max(1.25 - 2 * a, 0.0)
+        n = a * (1 - math.sin(2 * math.pi * a) / (2 * math.pi * a)) + (a - at) * lam
+        m = 2 / 3 * math.sin(math.pi * a) ** 3 / math.pi + lam * g * (math.sin(math.pi * a) + math.sin(math.pi * at)) / math.pi
+        return n, m
+    al = np.linspace(1e-6, 1, 300)
+    f = [NM(a)[1] - er * NM(a)[0] for a in al]
+    k = max(k for k in range(len(al) - 1) if f[k] * f[k + 1] <= 0)
+    return NM(brentq(lambda a: NM(a)[1] - er * NM(a)[0], al[k], al[k + 1], xtol=1e-13))[0]
+
+
+def test_table_interpolation_not_above_the_table_rounding():
+    """between the rows the table is read with 1/nu linear in ηe0/r: against the 5.3.8 formula (rs/r = 0.9) on a grid
+    between all rows and columns, including the wide rows 2.0–2.5 and 2.5–3.0 where a straight line in nu was up to
+    2.7 % too high, the error stays within −1 % … +0.6 %, the size of the table's own 4-decimal rounding where nu < 0.01
+    (+0.59 % at the row 7.5, column 0.06 itself)"""
+    E, R = members.F01_E, members.F01_RHO
+    es = np.concatenate([np.linspace(E[i], E[i + 1], 5)[1:-1] for i in range(len(E) - 1)])
+    worst = max(jtg.circle_nu(er, lam) / _nu_formula(er, lam) - 1 for er in es[::2] for lam in (0.06, 0.135, 0.6, 1.2))
+    lo = min(jtg.circle_nu(er, lam) / _nu_formula(er, lam) - 1 for er in es[::2] for lam in (0.06, 0.135, 0.6, 1.2))
+    assert -0.01 < lo and worst < 0.006
+    for er in (2.1, 2.25, 2.4, 2.75):  # the wide rows
+        assert jtg.circle_nu(er, 0.06) <= _nu_formula(er, 0.06) * 1.002
+
+
+def test_table_note_when_bars_nearer_the_centre():
+    """rs/r < 0.9: the table overestimates; the note gives the formula's shortfall for this section"""
+    s = jtg.circle(1500, 28, 28, 112.5, concrete="C35")  # rs/r = 0.85
+    r = jtg.eccentric(s, 1500, 2500, method="table")
+    code = jtg.eccentric(s, 1500, 2500, method="code").resistance
+    assert r.notes and r.details["formula_own_rs_over_rs_0_9"] < 0.98
+    assert r.resistance > code  # the table, made for rs/r = 0.9, is above this section's formula
+    assert not jtg.eccentric(jtg.circle(1500, 28, 28, 75, concrete="C35"), 1500, 2500, method="table").notes
 
 
 def test_circle_formula_small_eccentricity():
@@ -292,9 +357,58 @@ def test_biaxial_formula_symmetry_and_limits():
     ux, uy = jtg.rect_biaxial(1000, 1000, bars=[(60, 60, 32), (940, 60, 32), (60, 940, 25), (940, 940, 25)])
     with pytest.raises(ValueError):  # not symmetric about the horizontal axis
         jtg.biaxial(ux, uy, 6000, 1200, 500)
+    with pytest.raises(ValueError):
+        jtg.biaxial(sx, None, 6000, 1200, 500)
+
+
+def test_biaxial_not_above_uniaxial():
+    """small eccentricities both ways: Nux, Nuy (no 0.9) exceed Nu0 (with 0.9), and 5.3.11 alone would give more than
+    the uniaxial resistance, which a second eccentricity can only lower; the result is limited to min(Nux, Nuy). The
+    strain-compatibility solution of the same case lies below both (19.8 MN against Nux = 20.2 MN)"""
+    sx, sy = jtg.rect_biaxial(800, 1200, layout=(5, 7, 28, 60), concrete="C40")
+    r = jtg.biaxial(sx, sy, 14000, 300, 200)
+    d = r.details
+    assert d["Nux"] > d["Nu0"] and d["N_5_3_11"] > min(d["Nux"], d["Nuy"])
+    assert r.resistance == pytest.approx(min(d["Nux"], d["Nuy"])) and r.notes
 
 
 # ── 5.4 tension members ─────────────────────────────────────────────────────
+def test_tension_hrb500_capped_at_330():
+    """table 3.2.3-1 note 1: in axial and small-eccentricity tension of reinforced concrete the bars count at most
+    330 MPa (HRB500: 415 → 330), also in Nud of 5.4.3 and 5.4.4; large eccentricity and Mud keep fsd = 415"""
+    s = jtg.rect(400, 800, concrete="C40", steel="HRB500", top=[(4, 25, 50)], bottom=[(4, 25, 50)])
+    As = 4 * A(25)
+    assert jtg.tension(s, 1000).resistance == pytest.approx(330 * 2 * As / 1e3)  # 1295.9, not 1629.7
+    r = jtg.tension(s, 800, 80)  # e0 = 100 mm: small eccentricity
+    assert r.details["case"] == "small eccentricity" and r.notes
+    assert r.resistance == pytest.approx(330 * As * 700 / 450 / 1e3)  # 1007.9 kN
+    assert r.details["fsd_tension"] == 330
+    c = jtg.circle(1200, 24, 25, 60, concrete="C40", steel="HRB500")
+    assert jtg.tension(c, 1000).resistance == pytest.approx(330 * 24 * A(25) / 1e3)  # 3888 kN
+    rc_ = jtg.tension(c, 1000, 300)
+    Nud = 330 * 24 * A(25)
+    assert rc_.resistance == pytest.approx(1 / (1 / Nud + 300 / (rc_.details["Mud"] * 1e6)) / 1e3)
+    assert rc_.details["Mud"] == pytest.approx(jtg.tension(jtg.circle(1200, 24, 25, 60, concrete="C40", steel="HRB500"),
+                                                           1.0, 1e-3).details["Mud"])
+    sx, sy = jtg.rect_biaxial(600, 900, layout=(4, 5, 25, 60), concrete="C40", steel="HRB500")
+    Mux, Muy = jtg.flexure(sx, 1.0).resistance, jtg.flexure(sy, 1.0).resistance
+    r3 = jtg.biaxial_tension(sx, sy, 800, 120, 90)
+    assert r3.details["Nud"] == pytest.approx(330 * 14 * A(25) / 1e3)
+    assert r3.resistance == pytest.approx(1 / (1e3 / (330 * 14 * A(25)) + math.hypot(150 / Mux, 112.5 / Muy) / 1e3))
+    # large eccentricity: 5.4.2-3, -4 with fsd = 415, f'sd = 400 (x ≥ 2a')
+    big = jtg.rect(400, 800, concrete="C40", steel="HRB500", top=[(2, 16, 45)], bottom=[(5, 25, 60)])
+    As, Asc, h0, a_ = 5 * A(25), 2 * A(16), 740.0, 45.0
+    e = 5000 + 400 - h0
+    q = [18.4 * 400 / 2, -18.4 * 400 * (h0 + e), (415 * As - 400 * Asc) * e - 400 * Asc * (h0 - a_)]
+    x = min(v.real for v in np.roots(q) if v.real > 0)
+    rl = jtg.tension(big, 400, 2000)
+    assert rl.details["case"] == "large eccentricity" and x >= 2 * a_
+    assert rl.resistance == pytest.approx((415 * As - 400 * Asc - 18.4 * 400 * x) / 1e3, rel=1e-6)
+    assert rl.details["rho_min"] == pytest.approx(max(0.45 * 1.65 / 415, 0.002))
+    sm = jtg.rect(400, 800, concrete="C40", steel="HRB500", bars=[(680, 50), (680, 750)])  # 0.2125 % each side
+    assert any("9.1.12" in f for f in jtg.tension(sm, 100).failed)  # < 45 ftd / 330 = 0.225 % (not 0.2 % with 415)
+
+
 def test_axial_tension_5_4_1():
     """Nud = fsd As + fpd Ap, all the steel (5.4.1); one side ≥ max(45 ftd/fsd, 0.2) % of the gross area (9.1.12)"""
     s = jtg.rect(400, 800, concrete="C30", top=[(4, 22, 50)], bottom=[(4, 22, 50)], bars=[(2 * A(16), 400)])
@@ -392,6 +506,9 @@ def test_biaxial_tension_5_4_3():
     assert jtg.biaxial_tension(sx, sy, 800, 120, 0).resistance == pytest.approx(1 / (1 / Nud + 150 / Mux / 1e6) / 1e3)
     c = jtg.circle(1200, 24, 25, 60, concrete="C30")
     assert jtg.biaxial_tension(c, None, 1000, 300, 400).resistance == pytest.approx(jtg.tension(c, 1000, 500).resistance)
+    assert any("hollow" in n for n in jtg.tension(jtg.circle(2000, 30, 25, 60, hollow=1400), 2000, 800).notes)
+    with pytest.raises(ValueError):
+        jtg.biaxial_tension(sx, None, 800, 120, 90)
     unsym = jtg.rect(600, 900, top=[(3, 20, 60)], bottom=[(5, 25, 60)])
     with pytest.raises(ValueError):
         jtg.biaxial_tension(unsym, sy, 800, 120, 90)
@@ -418,13 +535,40 @@ def test_circle_shear_equivalent_rectangle():
 
 
 def test_circle_shear_limits_and_detailing():
-    """5.2.11 upper limit, 9.6.1 hoop diameter and column spacing (not for piles); hollow circles are not covered"""
+    """5.2.11 upper limit; hoops of columns by 9.6.1 (≥ 8 mm and ≥ d/4; spacing ≤ 15 d, 0.8 D, 400 mm, or 10 d and 200 mm
+    above 3 % longitudinal steel) and of bored piles by JTG 3363-2019 6.2.2 (≥ 8 mm and ≥ d/4; ≤ 15 d and 300 mm);
+    hollow circles are not covered; jtg.shear refuses inputs that do not apply to circles"""
     c = jtg.circle(1500, 28, 28, 75, concrete="C35")
     assert any("5.2.11" in f for f in jtg.shear_circle(c, 6000, (4, 16, 100)).failed)
-    assert any("9.6.1-4" in f for f in jtg.shear_circle(c, 1000, (2, 12, 450)).failed)
-    assert not jtg.shear_circle(c, 1000, (2, 12, 450), pile=True).failed
+    assert any("0.8 D, 400 mm" in f for f in jtg.shear_circle(c, 1000, (2, 12, 450)).failed)
+    assert any("JTG 3363" in f for f in jtg.shear_circle(c, 1000, (2, 12, 350), pile=True).failed)
+    assert not jtg.shear_circle(c, 1000, (2, 12, 300), pile=True).failed
     assert any("8 mm" in f for f in jtg.shear_circle(c, 1000, (2, 6, 100)).failed)
+    assert any("d/4" in f for f in jtg.shear_circle(jtg.circle(1500, 24, 36, 80), 1000, (2, 8, 100)).failed)  # 8 < 9
+    dense = jtg.circle(600, 16, 32, 50)  # 4.6 % longitudinal steel
+    assert any("3 %" in f for f in jtg.shear_circle(dense, 300, (2, 10, 250)).failed)
+    assert not any("spacing" in f for f in jtg.shear_circle(dense, 300, (2, 10, 200)).failed)
     with pytest.raises(NotImplementedError):
         jtg.shear(jtg.circle(2000, 30, 25, 60, hollow=1400), 1000, (2, 12, 100))
     with pytest.raises(ValueError):
         jtg.shear(c, 1000, None)
+    with pytest.raises(ValueError):
+        jtg.shear(c, 1000, (2, 12, 100), alpha2=1.25)
+    assert any("pile=True" in n for n in jtg.shear(c, 1000, (2, 12, 100)).notes)
+
+
+def test_circle_shear_axial_force():
+    """axial tension (GB 50010 6.3.14, the clause 6.3.15 sends tension members to): Vcs − 0.2 γ0 N, not below the hoops
+    alone fsv Asv h0/s, which must reach 0.36 ftd b h0 (hand calculation, pile φ1.2 m: b = 1056, h0 = 960 mm);
+    compression is not counted"""
+    p = jtg.circle(1200, 20, 25, 70, concrete="C30")
+    V0 = jtg.shear_circle(p, 500, (2, 10, 150), pile=True).resistance
+    Vs = 330 * 2 * A(10) * 960 / 150 / 1e3
+    r = jtg.shear_circle(p, 500, (2, 10, 150), pile=True, Nd=-1500, gamma0=1.1)
+    assert r.resistance == pytest.approx(V0 - 0.2 * 1.1 * 1500) and r.resistance > Vs
+    r2 = jtg.shear_circle(p, 300, (2, 10, 150), pile=True, Nd=-4000, gamma0=1.1)
+    assert r2.resistance == pytest.approx(Vs)
+    assert any("0.36 ftd b h0" in f for f in r2.failed)  # 331.7 < 0.36 × 1.39 × 1056 × 960 = 507.3 kN
+    assert not any("0.36" in f for f in jtg.shear_circle(p, 300, (2, 14, 100), pile=True, Nd=-4000).failed)
+    rc_ = jtg.shear_circle(p, 500, (2, 10, 150), pile=True, Nd=3000)
+    assert rc_.resistance == pytest.approx(V0) and any("compression" in n for n in rc_.notes)

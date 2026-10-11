@@ -21,12 +21,11 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import brentq
 
 from .bearing import k_indirect
 from .materials import Rebar, rebar as _rebar
-from .rc import Check, RCSection, Rect, _circle_NM, _mats, _reverse_failure, axial, eccentric, flexure
+from .rc import Check, RCSection, Rect, _circle_code, _circle_NM, _mats, _reverse_failure, axial, eccentric, flexure
 
 
 # ── appendix E: effective length ────────────────────────────────────────────
@@ -98,9 +97,13 @@ def axial_spiral(sec: RCSection, Nd: float, l0: float | None = None, *, spiral, 
     l0/i ≤ 48, Aso ≥ 0.25 A's and s ≤ 80 mm and ≤ dcor/5, and only when 5.3.2-1 gives more than 5.3.1; then at most
     1.5 × 5.3.1. Otherwise the result is that of 5.3.1 (jtg.axial). With the spiral counted, the detailing of 9.6.2:
     longitudinal bars ≥ 0.5 % of Acor, Acor ≥ 2/3 A, s ≥ 40 mm, spiral diameter ≥ 8 mm and ≥ 1/4 of the longitudinal
-    bars (besides 9.1.12 as for any compression member). Reinforced concrete only."""
+    bars (besides 9.1.12 as for any compression member). Reinforced concrete, solid sections only: 5.3.2 and figure
+    5.3.2 are about a solid core confined by the spiral; a hollow section has no confined core inside (its inner face is
+    free), so hollow circles and other sections with holes raise."""
     if sec.prestressed:
         raise NotImplementedError("5.3.2 covers reinforced-concrete members")
+    if sec.kind in ("annulus", "box") or any(getattr(p, "sign", 1) < 0 for p in sec.pieces):
+        raise NotImplementedError("5.3.2 is for solid sections: a hollow section has no confined core (use jtg.axial)")
     c, st = sec.concrete, sec.steel
     sst = st if spiral_steel is None else (spiral_steel if isinstance(spiral_steel, Rebar) else _rebar(spiral_steel))
     ds, s = spiral
@@ -181,6 +184,13 @@ def _eccentric_web(s: RCSection, chk: Check, e: float, e0_raw: float) -> Check:
     gaps = np.diff(rows)
     if len(gaps) > 1 and gaps.max() > 1.5 * gaps.min():
         chk.notes.append("web bars not at equal spacing: 5.3.7 assumes them spread evenly over hsw")
+    g = hsw / (len(rows) + 1)  # spacing of the same number of rows spread evenly between A's and As
+    if rows[-1] - rows[0] < 0.75 * (len(rows) - 1) * g or abs(rows.mean() - (asc + h0) / 2) > 0.1 * hsw:
+        chk.notes.append(f"web bars over {rows[0]:.0f}–{rows[-1]:.0f} mm only: 5.3.7 spreads them over hsw = "
+                         f"{asc:.0f}–{h0:.0f} mm")
+    if Asw > As + Asc:
+        chk.notes.append(f"Asw = {Asw / (As + Asc):.1f} (As + A's): with this much web steel 5.3.7 can exceed the "
+                         "bar-by-bar rule set (method='strain') by several per cent (up to about 7 %)")
 
     def NM(x):
         """(N, moment about As) of 5.3.7-1, -2 for a block depth x (N, N·mm)"""
@@ -330,21 +340,27 @@ TABLE_F01 = np.array([
     (0.0058, 0.0084, 0.0110, 0.0134, 0.0158, 0.0181, 0.0204, 0.0226, 0.0248,  # 10.00
      0.0319, 0.0387, 0.0453, 0.0517, 0.0580, 0.0641, 0.0702, 0.0763, 0.0822),
 ])
-_F01 = RegularGridInterpolator((F01_E, F01_RHO), TABLE_F01)
 
 
 def circle_nu(eta_e0_r: float, rho_fsd_fcd: float) -> float:
-    """nu of table F.0.1 (appendix F), linear in both directions between the tabulated values (program convention: the
-    code gives no rule); outside the table (η e0/r 0.01–10, ρ fsd/fcd 0.06–1.20) a ValueError"""
+    """nu of table F.0.1 (appendix F) between the tabulated values (program convention, the code gives no rule):
+    1/nu linear in η e0/r, then nu linear in ρ fsd/fcd. nu falls with η e0/r along a convex curve, so a straight line
+    between two rows lies above it (up to +2.7 % in the wide rows 2.0–2.5); 1/nu is nearly linear in η e0/r and stays
+    within the table's own rounding (−0.8 % … +0.5 % against the 5.3.8 formula with rs/r = 0.9; the +0.5 % where
+    nu < 0.01, as at the rows themselves). Outside the table (η e0/r 0.01–10, ρ fsd/fcd 0.06–1.20) a ValueError."""
     if not (F01_E[0] <= eta_e0_r <= F01_E[-1] and F01_RHO[0] <= rho_fsd_fcd <= F01_RHO[-1]):
         raise ValueError(f"η e0/r = {eta_e0_r:.3f}, ρ fsd/fcd = {rho_fsd_fcd:.3f}: outside table F.0.1 "
                          f"({F01_E[0]}–{F01_E[-1]}, {F01_RHO[0]}–{F01_RHO[-1]})")
-    return float(_F01((eta_e0_r, rho_fsd_fcd)))
+    i = min(int(np.searchsorted(F01_E, eta_e0_r, side="right")) - 1, len(F01_E) - 2)
+    t = (eta_e0_r - F01_E[i]) / (F01_E[i + 1] - F01_E[i])
+    row = 1 / ((1 - t) / TABLE_F01[i] + t / TABLE_F01[i + 1])
+    return float(np.interp(rho_fsd_fcd, F01_RHO, row))
 
 
 def _eccentric_table(s: RCSection, chk: Check, e: float) -> Check:
     """appendix F for eccentric(method="table"): γ0 Nd ≤ nu A fcd (F.0.1); solid circle, C30–C50, ρ 0.5 %–4 %, at least
-    8 bars (5.3.8 note). The table was computed with rs/r = 0.9 (commentary p259): a note when the section differs."""
+    8 bars (5.3.8 note). The table was computed with rs/r = 0.9 (commentary p259): with the bars nearer the centre
+    (rs/r < 0.9) it overestimates, and a note gives the 5.3.8 formula's shortfall for this section."""
     if s.kind != "circle" or len(s.bars) < 8:
         raise ValueError("method='table' (appendix F) is for solid circular sections with at least 8 bars")
     c, st = s.concrete, s.steel
@@ -359,23 +375,31 @@ def _eccentric_table(s: RCSection, chk: Check, e: float) -> Check:
     nu = circle_nu(e / r, lam)
     chk.clause = "JTG 3362-2018 appendix F, 5.3.9"
     chk.details.update(nu=nu, eta_e0_r=e / r, rho_fsd_fcd=lam, rs_over_r=s.ring / r)
-    if abs(s.ring / r - 0.9) > 0.05:
-        chk.notes.append(f"table F.0.1 assumes rs/r = 0.9 (commentary); this section has rs/r = {s.ring / r:.3f}")
+    if s.ring / r < 0.9 - 5e-3:  # the table (rs/r = 0.9) then overestimates: say by how much
+        N_own, N_09 = _circle_code(s, e)[0], _circle_code(s.replace(ring=0.9 * r), e)[0]
+        chk.details["formula_own_rs_over_rs_0_9"] = N_own / N_09
+        chk.notes.append(f"table F.0.1 assumes rs/r = 0.9 (commentary); with rs/r = {s.ring / r:.3f} the 5.3.8 formula "
+                         f"gives {1 - N_own / N_09:.1%} less: method='code' is the closer check")
     chk.resistance = nu * A * c.fcd / 1e3
     return chk
 
 
 # ── shear of circular sections: GB 50010-2010 6.3.15 with the formulas of 3362 ──
 def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, alpha1: float = 1.0,
-                 stirrup_steel: str | Rebar | None = None, bent=(), pile: bool = False) -> Check:
+                 stirrup_steel: str | Rebar | None = None, bent=(), pile: bool = False, Nd: float = 0.0) -> Check:
     """shear of a solid circular pier, column or pile. 3362 gives no rule for circles (5.2.9 is for rectangles, T and I
-    sections); program convention: GB 50010-2010 6.3.15, b = 1.76 r and h0 = 1.6 r in the formulas for rectangles, here those of
-    3362: 5.2.9 (α2 = 1, α3 = 1), the upper limit 5.2.11 and the threshold 5.2.12. The longitudinal tension steel
-    for P (5.2.9) is the bars in the half of the circle beyond the centroid. stirrups: (legs, diameter mm, spacing mm),
-    one circular hoop or spiral counting as 2 legs (the reading of GB 6.3.15 "the area found is that of the circular
-    hoop" as for a closed rectangular stirrup), cross-ties adding legs. Detailing: diameter ≥ 8 mm (9.6.1); for columns
-    (pile=False) spacing ≤ 15 d, 0.8 D and 400 mm (9.6.1-4; 9.6.1 excludes driven and bored piles). The beam rules of
-    9.3.12 are not applied. Axial force is not counted (as in 5.2.9). Hollow circles: no code basis, not implemented."""
+    sections); program convention: GB 50010-2010 6.3.15, b = 1.76 r and h0 = 1.6 r in the formulas for rectangles, here
+    those of 3362: 5.2.9 (α2 = 1, α3 = 1), the upper limit 5.2.11 and the threshold 5.2.12. The longitudinal tension
+    steel for P (5.2.9) is the bars in the half of the circle beyond the centroid. stirrups: (legs, diameter mm, spacing
+    mm), one circular hoop or spiral counting as 2 legs (GB 6.3.15 reads the stirrup area of the equivalent rectangle
+    as that of the hoops; ACI 318 likewise takes Av = 2 × the bar area of a hoop or spiral with d = 0.8 D), cross-ties
+    adding legs. Nd: axial force acting with Vd (kN, compression +, tension −). Tension, as in GB 50010 6.3.14 (the
+    clause 6.3.15 sends tension members to): Vcs − 0.2 γ0 |Nd|, but not below the stirrups alone fsv Asv h0 / s, which
+    must be at least 0.36 ftd b h0. Compression is not counted (5.2.9 has none; safe side).
+    Detailing of the hoops: columns (pile=False) 9.6.1: diameter ≥ 8 mm and ≥ d/4, spacing ≤ 15 d, 0.8 D and 400 mm,
+    with more than 3 % longitudinal steel ≤ 10 d and 200 mm; bored piles (pile=True, 9.6.1 excludes piles): JTG
+    3363-2019 6.2.2 item 3 4): diameter ≥ 8 mm and ≥ d/4, spacing ≤ 15 d and 300 mm. The beam rules of 9.3.12 are not
+    applied. Hollow circles: no code basis, not implemented."""
     if sec.kind == "annulus":
         raise NotImplementedError("shear of hollow circular sections: neither 3362 nor GB 50010 6.3.15 covers them")
     if sec.kind != "circle":
@@ -399,33 +423,62 @@ def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, al
     chk = Check("shear (circular section)", gamma0 * Vd, Vcs, "kN", "JTG 3362-2018 5.2.9, 5.2.11, 5.2.12 with "
                 "GB 50010-2010 6.3.15 (b = 1.76 r, h0 = 1.6 r)",
                 {"b": b, "h0": h0, "P": P, "rho_sv": rho_sv, "alpha1": alpha1, "alpha2": 1.0, "alpha3": 1.0,
-                 "Vcs": Vcs, "fsv": sst.fsv, "V_section_max": vmax, "V_detailing": vmin},
+                 "Vcs": Vcs, "fsv": sst.fsv, "V_section_max": vmax, "V_detailing": vmin, "Nd": Nd},
                 ["3362 has no shear rule for circular sections: b, h0 of GB 50010-2010 6.3.15 (program convention)"])
+    if Nd < 0:
+        Vs = sst.fsv * Asv * h0 / sv / 1e3  # the stirrups alone (GB 6.3.14 lower limit)
+        Vt = Vcs - 0.2 * gamma0 * abs(Nd)
+        chk.resistance = max(Vt, Vs)
+        chk.clause += ", GB 50010-2010 6.3.14 (axial tension)"
+        chk.details.update(V_tension=Vt, V_stirrups=Vs)
+        chk.notes.append(f"axial tension {abs(Nd):g} kN: Vcs − 0.2 γ0 N = {Vt:.0f} kN, not below fsv Asv h0/s = {Vs:.0f} kN "
+                         "(GB 50010 6.3.14, program convention)")
+        if Vs < 0.36e-3 * c.ftd * b * h0:
+            chk.failed.append(f"fsv Asv h0/s = {Vs:.0f} kN < 0.36 ftd b h0 = {0.36e-3 * c.ftd * b * h0:.0f} kN "
+                              "(GB 50010 6.3.14)")
+    elif Nd > 0:
+        chk.notes.append("axial compression not counted (5.2.9 has no such term; safe side)")
     if gamma0 * abs(Vd) > vmax:
         chk.failed.append(f"section too small: γ0Vd > 0.51e-3 √fcu,k b h0 = {vmax:.0f} kN (5.2.11)")
-    if gamma0 * abs(Vd) <= vmin:
+    if gamma0 * abs(Vd) <= vmin and Nd >= 0:
         chk.notes.append(f"γ0Vd ≤ {vmin:.0f} kN: detailing hoops suffice (5.2.12)")
-    if dia < 8:
-        chk.failed.append(f"hoop diameter {dia} mm < 8 mm (9.6.1)")
-    if not pile:
-        d_long = _d_long(sec, math.inf)
-        smax = min(15 * d_long, 0.8 * sec.h, 400.0)
-        if sv > smax:
-            chk.failed.append(f"hoop spacing {sv:g} mm > {smax:.0f} mm (15 d, 0.8 D, 400 mm; 9.6.1-4)")
+    d_long = _d_long(sec, 0.0)
+    rule = "JTG 3363-2019 6.2.2" if pile else "9.6.1"
+    if dia < max(8.0, d_long / 4):
+        chk.failed.append(f"hoop diameter {dia:g} mm < max(8 mm, d/4 = {d_long / 4:.1f} mm) ({rule})")
+    d15 = 15 * d_long if d_long else math.inf
+    if pile:
+        smax, why = min(d15, 300.0), "15 d, 300 mm"
+    elif sec.bars[:, 0].sum() > 0.03 * sec.area:
+        smax, why = min(10 * d_long if d_long else math.inf, 200.0), "longitudinal steel > 3 %: 10 d, 200 mm"
+    else:
+        smax, why = min(d15, 0.8 * sec.h, 400.0), "15 d, 0.8 D, 400 mm"
+    if sv > smax:
+        chk.failed.append(f"hoop spacing {sv:g} mm > {smax:.0f} mm ({why}; {rule})")
     chk.failed += sec.material_rules()
     return chk
 
 
 # ── 5.4: tension members ────────────────────────────────────────────────────
-def _steel_forces(s: RCSection):
-    """(design forces N, depths mm) of every bar at fsd and every tendon at fpd"""
-    F = np.r_[s.steel.fsd * s.bars[:, 0], s.tendon.fpd * s.tendons[:, 0] if s.has_internal else []]
+FSD_TENSION_MAX = 330.0  # table 3.2.3-1 note 1: axial and small-eccentricity tension members of reinforced concrete
+
+
+def fsd_tension(s: RCSection) -> float:
+    """design tensile strength of the bars of an axially or slightly eccentrically loaded tension member: at most
+    330 MPa in reinforced concrete (table 3.2.3-1 note 1, which names reinforced-concrete members; prestressed members
+    keep fsd)"""
+    return s.steel.fsd if s.prestressed else min(s.steel.fsd, FSD_TENSION_MAX)
+
+
+def _steel_forces(s: RCSection, fs: float):
+    """(design forces N, depths mm) of every bar at fs and every tendon at fpd"""
+    F = np.r_[fs * s.bars[:, 0], s.tendon.fpd * s.tendons[:, 0] if s.has_internal else []]
     d = np.r_[s.bars[:, 1], s.tendons[:, 1]]
     return F, d
 
 
-def _resultant(s: RCSection, bars_mask, tendon_mask):
-    F = np.r_[s.steel.fsd * s.bars[bars_mask, 0], s.tendon.fpd * s.tendons[tendon_mask, 0] if s.has_internal else []]
+def _resultant(s: RCSection, bars_mask, tendon_mask, fs: float):
+    F = np.r_[fs * s.bars[bars_mask, 0], s.tendon.fpd * s.tendons[tendon_mask, 0] if s.has_internal else []]
     d = np.r_[s.bars[bars_mask, 1], s.tendons[tendon_mask, 1]]
     return (float(np.average(d, weights=F)), F.sum()) if len(F) and F.sum() > 0 else (None, 0.0)
 
@@ -486,31 +539,36 @@ def _tension_large_full(s: RCSection, e0: float):
 def tension(sec: RCSection, Nd: float, Md: float = 0.0, *, gamma0: float = 1.0) -> Check:
     """tension member (5.4). Nd tensile force (kN, > 0) acting with the moment Md (kN·m) about the gross centroid;
     e0 = |Md| / Nd, the sign of Md picks the side (sagging: the load below the centroid, nearer As). No η (tension).
+    Reinforced concrete: the bars count at most 330 MPa in axial and small-eccentricity tension and in Nud of 5.4.4
+    (table 3.2.3-1 note 1, fsd_tension); large eccentricity and the flexural Mud keep fsd.
     - Md = 0: axial tension 5.4.1, Nud = fsd ΣAs + fpd ΣAp (all the steel).
     - circles (5.4.4): γ0 Nd ≤ 1 / (1/Nud + e0/Mud), Mud by 5.3.8 with N = 0 (solid circles with ≥ 8 bars; otherwise
-      the strain method, program convention).
+      the strain method; hollow circles, outside 5.4.4: program convention, a note).
     - other sections (5.4.2, written for rectangles): small eccentricity when the load lies between the resultants of
       As/Ap and A's/A'p: γ0 Nd e ≤ moment about As/Ap of the other steel at fsd / fpd, γ0 Nd e' ≤ moment about A's/A'p
-      (5.4.2-1, -2; program convention: side and web bars are counted too, each at its design strength, which keeps the result
-      continuous with 5.4.1); large eccentricity otherwise: 5.4.2-3, -4 by the rule set of RCSection.forces (T, I and
-      box sections included), x ≤ ξb h0 (5.2.2-3), and 5.2.4 with Md → Nd e' when x < 2a'.
+      (5.4.2-1, -2; program convention: side and web bars are counted too, each at its design strength; the result stays
+      continuous with 5.4.1 and does not exceed the strain-compatibility solution of 5.1.3–5.1.5, whose steel strain is
+      not capped); large eccentricity otherwise: 5.4.2-3, -4 by the rule set of RCSection.forces (T, I and box sections
+      included), x ≤ ξb h0 (5.2.2-3), and 5.2.4 with Md → Nd e' when x < 2a'.
     Minimum reinforcement (9.1.12, reinforced concrete): one side ≥ max(45 ftd/fsd, 0.2) % — of the gross area for axial
-    and small-eccentricity tension (both faces, being both in tension), of b h0 for large eccentricity; compression
-    bars of large eccentricity ≥ 0.2 % of the gross area when the resistance needs them. Circles: half the bars
-    (program convention)."""
+    and small-eccentricity tension (both faces, being both in tension; fsd as capped above), of b h0 for large
+    eccentricity; compression bars of large eccentricity ≥ 0.2 % of the gross area when the resistance needs them.
+    Circles: half the bars (program convention)."""
     if Nd <= 0:
         raise ValueError("Nd must be a tensile force (> 0)")
     if sec.has_external:
         raise NotImplementedError("5.4 has no provisions for tension members with external tendons")
     s = sec if Md >= 0 else sec.flipped()
     c, st = s.concrete, s.steel
-    F, _ = _steel_forces(s)
+    ft = fsd_tension(s)
+    F, _ = _steel_forces(s, ft)
     Nud = F.sum()
     e0 = abs(Md) / Nd * 1e3
     ring = s.kind in ("circle", "annulus")
     chk = Check("tension" + (" (hogging side)" if Md < 0 else ""), gamma0 * Nd, 0.0, "kN", "JTG 3362-2018 5.4.1",
-                {"e0": e0, "Nud": Nud / 1e3})
-    rho_min = max(0.45 * c.ftd / st.fsd, 0.002)
+                {"e0": e0, "Nud": Nud / 1e3, "fsd_tension": ft})
+    capped = (f"bars at {ft:g} MPa instead of fsd = {st.fsd:g} MPa (table 3.2.3-1 note 1)" if ft < st.fsd else None)
+    rho_min = max(0.45 * c.ftd / ft, 0.002)
     A = s.area
     rc_ = not s.prestressed
     if not rc_:
@@ -535,21 +593,26 @@ def tension(sec: RCSection, Nd: float, Md: float = 0.0, *, gamma0: float = 1.0) 
     if e0 == 0:
         chk.resistance = Nud / 1e3
         chk.details["case"] = "axial tension"
+        chk.notes += [capped] if capped else []
         sides_gross("axial tension")
     elif ring:
         Mud, how = _circle_mud(s)
         chk.resistance = 1 / (1 / Nud + e0 / Mud) / 1e3
         chk.clause = "JTG 3362-2018 5.4.4"
         chk.details.update(Mud=Mud / 1e6, Mud_from=how, case="eccentric tension (circle)")
+        chk.notes += [capped + " in Nud; Mud with fsd"] if capped else []
+        if s.kind == "annulus":
+            chk.notes.append("hollow circle: 5.4.4 is written for solid circles, applied here with Mud from the strain "
+                             "method (program convention)")
         sides_gross("eccentric tension")
     else:
         pb, pt = s.tendon_masks()
-        d_t, _ = _resultant(s, bot, pb)
-        d_c, _ = _resultant(s, top, pt)
+        d_t, _ = _resultant(s, bot, pb, ft)
+        d_c, _ = _resultant(s, top, pt, ft)
         if d_t is None:
             raise ValueError("no steel on the tension face")
         z = s.zg + e0  # depth of the load
-        Fs, ds = _steel_forces(s)
+        Fs, ds = _steel_forces(s, ft)
         if d_c is not None and z <= d_t:
             e, e_ = d_t - z, z - d_c
             Mt, Mc = (Fs * (d_t - ds)).sum(), (Fs * (ds - d_c)).sum()
@@ -558,6 +621,7 @@ def tension(sec: RCSection, Nd: float, Md: float = 0.0, *, gamma0: float = 1.0) 
             chk.resistance = min(N1, N2) / 1e3
             chk.clause = "JTG 3362-2018 5.4.2-1, -2"
             chk.details.update(case="small eccentricity", e=e, e_prime=e_, N_5_4_2_1=N1 / 1e3, N_5_4_2_2=N2 / 1e3)
+            chk.notes += [capped] if capped else []
             sides_gross("small-eccentricity tension")
         else:
             Nu, det, notes = _tension_large_full(s, e0)
@@ -570,6 +634,7 @@ def tension(sec: RCSection, Nd: float, Md: float = 0.0, *, gamma0: float = 1.0) 
             if rc_:
                 b, h0 = s.web(), s.h0()
                 rho = s.bars[bot, 0].sum() / (b * h0)
+                rho_min = max(0.45 * c.ftd / st.fsd, 0.002)  # large eccentricity: fsd not capped
                 chk.details.update(rho=rho, rho_min=rho_min)
                 if rho < rho_min:
                     chk.failed.append(f"tension reinforcement ratio {rho:.4%} < minimum {rho_min:.4%} (9.1.12)")
@@ -628,14 +693,19 @@ def biaxial(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: float, Md
     method as there, all bars), Nuy likewise; Nu0 = 0.9 (fcd A + f'sd A's), 5.3.1 without φ. Mdx = Nd e0x: the moment
     whose eccentricity runs along X (the depth of sec_x); sec_x, sec_y from rect_biaxial or any pair describing the same
     section in the two directions. With one moment zero the member is uniaxial (5.3.4–5.3.10): this check then still
-    applies the minimum e0 in the other direction (a note). Circles (program convention): symmetric about every axis, checked
-    with the resultant moment √(Mdx² + Mdy²) by jtg.eccentric, l0 the larger of l0x, l0y; sec_y is not needed."""
+    applies the minimum e0 in the other direction (a note). Program convention: Nu ≤ min(Nux, Nuy). The commentary derives
+    5.3.11 with Nu0 the true axial resistance, above Nux and Nuy; the 0.9 of 5.3.1 in Nu0 (absent from Nux, Nuy) can put
+    Nu0 below them at small eccentricities, and the formula would then give more than the uniaxial resistance, which a
+    second eccentricity can only lower. Circles (program convention): symmetric about every axis, checked with the
+    resultant moment √(Mdx² + Mdy²) by jtg.eccentric, l0 the larger of l0x, l0y; sec_y is not needed."""
     if sec_x.kind in ("circle", "annulus"):
         l0s = [v for v in (l0x, l0y) if v]
         chk = eccentric(sec_x, Nd, math.hypot(Mdx, Mdy), max(l0s) if l0s else None, gamma0=gamma0, method=method)
         chk.name = "biaxial eccentric compression (circle)"
         chk.notes.append("circle: resultant moment √(Mdx² + Mdy²) (5.3.11 not needed; program convention)")
         return chk
+    if sec_y is None:
+        raise ValueError("non-circular sections need sec_y (jtg.rect_biaxial gives both)")
     if sec_x.prestressed or sec_y.prestressed:
         raise NotImplementedError("5.3.11 covers reinforced-concrete members")
     if abs(sec_x.area - sec_y.area) > 1e-6 * sec_x.area or abs(sec_x.bars[:, 0].sum() - sec_y.bars[:, 0].sum()) > 1e-6 * sec_x.bars[:, 0].sum():
@@ -650,9 +720,13 @@ def biaxial(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: float, Md
         A -= As
     Nu0 = 0.9 * (c.fcd * A + st.fsd_c * As) / 1e3
     Nux, Nuy = cx.resistance, cy.resistance
-    Nu = 1 / (1 / Nux + 1 / Nuy - 1 / Nu0)
+    N_formula = 1 / (1 / Nux + 1 / Nuy - 1 / Nu0)
+    Nu = min(N_formula, Nux, Nuy)
     chk = Check("biaxial eccentric compression", gamma0 * Nd, Nu, "kN", "JTG 3362-2018 5.3.11",
-                {"Nux": Nux, "Nuy": Nuy, "Nu0": Nu0, "x": cx.details, "y": cy.details})
+                {"Nux": Nux, "Nuy": Nuy, "Nu0": Nu0, "N_5_3_11": N_formula, "x": cx.details, "y": cy.details})
+    if N_formula > Nu:
+        chk.notes.append(f"5.3.11 gives {N_formula:.0f} kN > min(Nux, Nuy): limited to {Nu:.0f} kN (Nu0 with 0.9 below "
+                         "Nux or Nuy; program convention)")
     if Mdx == 0 or Mdy == 0:
         chk.notes.append("one moment is zero: a uniaxial member (5.3.4–5.3.10); 5.3.11 here keeps the minimum e0 of "
                          "5.3.9 in that direction")
@@ -665,7 +739,8 @@ def biaxial(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: float, Md
 def biaxial_tension(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: float, Mdy: float, *,
                     gamma0: float = 1.0) -> Check:
     """biaxial eccentric tension of a symmetrically reinforced rectangle (5.4.3):
-    γ0 Nd ≤ 1 / (1/Nud + √((e0x/Mux)² + (e0y/Muy)²)), Nud by 5.4.1, Mux, Muy by 5.2 (jtg.flexure of sec_x, sec_y),
+    γ0 Nd ≤ 1 / (1/Nud + √((e0x/Mux)² + (e0y/Muy)²)), Nud by 5.4.1 (bars at most 330 MPa, table 3.2.3-1 note 1),
+    Mux, Muy by 5.2 (jtg.flexure of sec_x, sec_y),
     e0x = Mdx/Nd along X, e0y = Mdy/Nd along Y. The minimum reinforcement comes from jtg.tension in each direction.
     Circles: 5.4.4 with e0 = √(e0x² + e0y²) (the commentary derives 5.4.3 from 5.4.4); sec_y is not needed."""
     if Nd <= 0:
@@ -674,12 +749,14 @@ def biaxial_tension(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: f
         chk = tension(sec_x, Nd, math.hypot(Mdx, Mdy), gamma0=gamma0)
         chk.name = "biaxial eccentric tension (circle)"
         return chk
+    if sec_y is None:
+        raise ValueError("non-circular sections need sec_y (jtg.rect_biaxial gives both)")
     if sec_x.prestressed or sec_y.prestressed:
         raise NotImplementedError("5.4.3 covers reinforced-concrete members")
     for s in (sec_x, sec_y):
         if s.kind != "rect" or not _mirror_symmetric(s):
             raise ValueError("5.4.3 is for symmetrically reinforced rectangles")
-    Nud = sec_x.steel.fsd * sec_x.bars[:, 0].sum()
+    Nud = fsd_tension(sec_x) * sec_x.bars[:, 0].sum()  # 5.4.1 with table 3.2.3-1 note 1
     Mux, Muy = flexure(sec_x, 1.0).resistance * 1e6, flexure(sec_y, 1.0).resistance * 1e6
     e0x, e0y = abs(Mdx) / Nd * 1e3, abs(Mdy) / Nd * 1e3
     Nu = 1 / (1 / Nud + math.hypot(e0x / Mux, e0y / Muy))
