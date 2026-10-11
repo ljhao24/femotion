@@ -234,7 +234,7 @@ def _cracked_thermal(sec: RCSection, profile: Profile, r: dict, *, hogging: bool
     zc = sec.h - zc_s if hogging else zc_s
     z_cut = sec.h - x if hogging else x
     aS = sec.steel.Es / c.Ec
-    aP = sec.tendon.Ep / c.Ec if sec.prestressed else 0.0
+    aP = sec.tendon.Ep / c.Ec if sec.has_internal else 0.0
     wb, wp = r["w_bars"], r["w_tendons"]  # appendix J notes (compression steel limits) as in the cracked section
     steel = [(aS * a * w, d) for (a, d), w in zip(sec.bars, wb)] + \
         [(aP * a * w, d) for (a, d, _, _), w in zip(sec.tendons, wp)]

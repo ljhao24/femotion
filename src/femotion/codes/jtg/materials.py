@@ -157,6 +157,8 @@ class Tendon:
         """largest jacking stress σcon (6.1.4): wire and strand 0.75 fpk inside the concrete, 0.70 fpk external;
         threaded bars 0.85 fpk; + 0.05 fpk for overstressing or when the friction in the anchor is included"""
         if self.kind == "bar":
+            if external:
+                raise ValueError("6.1.4-2: external tendons of wire or strand")
             k = 0.85
         else:
             k = 0.70 if external else 0.75

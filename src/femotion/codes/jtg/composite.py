@@ -87,6 +87,8 @@ def composite(precast: RCSection, *, b: float, t: float, concrete, top=(), bars=
     """the precast section with a cast-in-place topping of width b (effective width, 4.3.3) and thickness t on top, of
     `concrete`; top: rows of (count, diameter, depth of the bar centre from the topping's top); bars: (area, depth from
     the topping's top[, diameter])"""
+    if precast.has_external:
+        raise NotImplementedError("8.1 has no provisions for composite members with external tendons")
     c = concrete if isinstance(concrete, Concrete) else _concrete(concrete)
     pts = list(_bars(top)) + [(q[0], q[1], q[2] if len(q) > 2 else np.nan) for q in bars or ()]
     return Composite(precast, c, b, t, np.array(pts, float).reshape(-1, 3))

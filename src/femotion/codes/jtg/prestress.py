@@ -82,8 +82,17 @@ DUCT_FRICTION_EXTERNAL = {
 
 def friction_loss(sigma_con: float, mu: float, theta: float, k: float, x: float) -> float:
     """σl1 = σcon [1 − e^−(μθ + kx)] (6.2.2): θ sum of the angles turned from the jacking end (rad), x duct length from
-    the jacking end (m, may be its projection on the member axis), k and μ from table 6.2.2 (DUCT_FRICTION)"""
+    the jacking end (m, may be its projection on the member axis), k and μ from table 6.2.2 (DUCT_FRICTION; external
+    tendons: friction_loss_external)"""
     return sigma_con * (1 - math.exp(-(mu * theta + k * x)))
+
+
+def friction_loss_external(sigma_con: float, mu: float, theta) -> float:
+    """σl1 of an external tendon (6.2.2 with the note to table 6.2.2): only the ducts in the deviators and anchorages
+    count and k = 0, so σl1 = σcon [1 − e^(−μ Σθ)]; theta: the angle (rad) or the angles the tendon turns through in the
+    deviators and anchorage ducts from the jacking end to the section. μ from DUCT_FRICTION_EXTERNAL: bare strand the
+    first range, unbonded (greased, sheathed) strand the second (the values in brackets); measured values preferred."""
+    return friction_loss(sigma_con, mu, float(np.sum(theta)), 0.0, 0.0)
 
 
 # ── 6.2.3 anchorage set, Appendix G ─────────────────────────────────────────
