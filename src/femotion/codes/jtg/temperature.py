@@ -252,7 +252,7 @@ def thermal_stresses(sec: RCSection, profile: Profile, *, M_sec: float = 0.0, N_
         zc = sec.h - zc_s if hogging else zc_s
         z_cut = sec.h - x if hogging else x
         aS = s.steel.Es / c.Ec
-        aP = s.tendon.Ep / c.Ec if s.prestressed else 0.0
+        aP = s.tendon.Ep / c.Ec if s.has_internal else 0.0
         wb, wp = r["w_bars"], r["w_tendons"]  # appendix J notes (compression steel limits) as in the cracked section
         steel = [(aS * a * w, d) for (a, d), w in zip(sec.bars, wb)] + \
             [(aP * a * w, d) for (a, d, _, _), w in zip(sec.tendons, wp)]

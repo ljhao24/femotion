@@ -20,6 +20,8 @@
     composite    JTG 3362-2018 8.1: composite flexural members (precast girder + cast-in-place topping, two stages)
     stm          JTG 3362-2018 appendix B: strut-and-tie models (statics, ties, struts, nodes)
     regions      JTG 3362-2018 8.2–8.5: anchorage zones, diaphragms over bearings, cap beams, pile caps
+    external     JTG 3362-2018 9.4.21–9.4.27: detailing of external tendons (the sections take external tendons in rc
+                 and sls: 5.2.5, 5.2.6, 5.2.9-5, 6.1.6-7, 6.1.7-5, 7.1.5-3)
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
 
@@ -35,7 +37,8 @@ Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_gir
     jtg.crack_width(section, Ms[k], Ml[k], env="I")
 
 Secondary effects of prestress on statically indeterminate structures: femotion.frame.prestress; of temperature and
-shrinkage: femotion.frame.thermal. External and unbonded tendons are not covered.
+shrinkage: femotion.frame.thermal (external tendons too: straight between deviators). Unbonded internal tendons are not
+covered (JTG 3362-2018 has no provisions for them).
 """
 from .actions import (DYNAMIC_FACTOR, GAMMA_0, PSI, RAILING_LOADS, SIDEWALK_SLAB_LOAD, VEHICLE_AXLES,  # noqa: F401
                       VEHICLE_SPACINGS, CrowdLoad, LiveLoad, basic_combination, characteristic_combination,
@@ -49,6 +52,7 @@ from .composite import (COMPOSITE_CAMBER_LONG_TERM, Composite, composite, compos
                         composite_long_term_factor, composite_principal_compression, composite_principal_stresses, composite_service_stresses,
                         composite_shear, composite_stiffness, interface_shear, interface_shear_slab,
                         shrinkage_difference_profile)
+from .external import deviation_radius_min, external_detailing  # noqa: F401
 from .flange import (box_flange_coefficient, box_flange_width, box_theoretical_span, tee_flange_width,  # noqa: F401
                      tee_flange_width_outer)
 from .materials import Concrete, Rebar, Tendon, concrete, rebar, strength_at, tendon, xi_b  # noqa: F401

@@ -201,7 +201,7 @@ def torsion(sec: RCSection, Td: float, Vd: float = 0.0, *, stirrups, Ast: float,
         if sec.pieces[1].b / hw < 0.15:
             chk.failed.append(f"web b / hw = {sec.pieces[1].b / hw:.3f} < 0.15 (5.5.5 note)")
     s = sec.flipped() if hogging else sec
-    b, h0 = s.web(), s.h0()
+    b, h0 = s.web(), s.h0(external=False)  # bonded steel, as jtg.shear
     beta_a = w["beta_a"]
     legs, dia, sv = stirrups
     beta_t = None
