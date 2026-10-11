@@ -4,8 +4,10 @@ tendons, true to scale, and the results of a check laid over it, as plain SVG (f
     from femotion.codes import jtg
     from femotion.codes.jtg.figures import section_figure
     sec = jtg.tee(300, 1300, 1800, 150, concrete="C40", bottom=[(4, 28, 55), (4, 28, 115)], top=[(8, 16, 45)])
-    fig = section_figure(sec, check=jtg.flexure(sec, 1700.0), stirrup_d=10)
+    chk = jtg.flexure(sec, 1700.0)
+    fig = section_figure(chk.section, check=chk, stirrup_d=10)   # a Check keeps its section (Check.section, .hogging)
     fig.save("girder.svg")    # or fig.svg(), viz.html([fig, …]); in Jupyter a section shows itself (RCSection._repr_svg_)
+                              # and a check with its drawing (Check._repr_html_)
 
 What is drawn (program conventions: the section stores no horizontal positions):
 - outline: the rectangles stacked symmetric about the vertical centre line (rectangles, T, I; holes centred, e.g. a
@@ -35,17 +37,18 @@ What is drawn (program conventions: the section stores no horizontal positions):
   checks overlays them all.
 - dimensions on the left (x, h0, e nearest, then the pieces, then h), widths above and below; the labels of the steel
   in one column on the right with leaders; the text block and the legend under the drawing. Every label's page box is
-  kept on the page (the margins are solved, see _Figure).
+  kept on the page (femotion.viz solves the page: the largest scale at which everything fits across the width).
 """
 from __future__ import annotations
 
-import html as _html
 import math
 import re
 
 import numpy as np
 
-from ...viz import COLORS as C, TEXT_SIZE, Figure, _fmt, _text_box, text_width
+from ...viz import COLORS as C
+from ...viz import (TEXT_SIZE, Figure, Note, dim_chain, fmt, leader_column, number, svg_circle, svg_line, svg_path,
+                    svg_poly, text_item, text_width)
 from .composite import Composite
 from .rc import Check, Circle, RCSection, Rect
 
@@ -175,26 +178,14 @@ def _clauses(msgs) -> list[str]:
     return out
 
 
-def _n(v: float, nd: int = 0) -> str:
-    """a number for a label: nd decimals, no trailing zeros, a real minus sign"""
-    if not math.isfinite(v):
-        return "∞"
-    s = f"{v:.{nd}f}"
-    if "." in s:
-        s = s.rstrip("0").rstrip(".")
-    if s in ("-0", ""):
-        s = "0"
-    return s.replace("-", "−")
-
-
 def _mm(v: float) -> str:
     """a length for the text: whole millimetres, or one decimal"""
-    return _n(v, 0 if abs(v - round(v)) < 0.05 else 1)
+    return number(v, 0 if abs(v - round(v)) < 0.05 else 1)
 
 
 def _dim(v: float) -> str:
     """a dimension: whole millimetres"""
-    return _n(v, 0)
+    return number(v, 0)
 
 
 # ── outline ─────────────────────────────────────────────────────────────────
@@ -701,121 +692,7 @@ def _external_rows(sec, shape, external_n):
     return out
 
 
-# ── svg snippets (page px) ──────────────────────────────────────────────────
-_HALO = ";paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round"  # a white edge under every label
-
-
-def _txt(x, y, s, cls="label", anchor="start", baseline="middle", rotate=0.0, fill=None, attrs=""):
-    """(svg, page box) of a text, the box measured as femotion.viz measures it"""
-    size = TEXT_SIZE.get(cls, 12.0)
-    rot = f' transform="rotate({_fmt(rotate)} {_fmt(x)} {_fmt(y)})"' if rotate else ""
-    st = f' style="fill:{fill}{_HALO}"' if fill else f' style="{_HALO[1:]}"'
-    svg = (f'<text x="{_fmt(x)}" y="{_fmt(y)}" text-anchor="{anchor}" dominant-baseline="{baseline}"{rot} '
-           f'class="fm-{cls}"{st}{attrs}>{_html.escape(str(s))}</text>')
-    return svg, _text_box(x, y, s, size, anchor, baseline, rotate)
-
-
-def _line(x0, y0, x1, y1, cls="dim", attrs=""):
-    return (f'<line x1="{_fmt(x0)}" y1="{_fmt(y0)}" x2="{_fmt(x1)}" y2="{_fmt(y1)}" class="fm-{cls}"{attrs}/>')
-
-
-def _poly(pts, cls, attrs=""):
-    p = " ".join(f"{_g(x)},{_g(y)}" for x, y in pts)
-    return f'<polygon points="{p}" class="{" ".join("fm-" + c for c in cls.split())}"{attrs}/>'
-
-
-def _g(v: float) -> str:
-    """a page coordinate of the geometry: 4 decimals, so that areas read back from the SVG hold to about 1e-5"""
-    s = f"{v:.4f}".rstrip("0").rstrip(".")
-    return "0" if s in ("-0", "") else s
-
-
-def _path(T, rings, cls, attrs=""):
-    d = " ".join("M" + " L".join("{},{}".format(*map(_g, T(*p))) for p in r) + " Z" for r in rings)
-    return f'<path d="{d}" fill-rule="evenodd" class="{" ".join("fm-" + c for c in cls.split())}"{attrs}/>'
-
-
-def _circ(T, c, r, cls, attrs="", min_px=0.6):
-    x, y = T(*c)
-    return f'<circle cx="{_g(x)}" cy="{_g(y)}" r="{_g(max(r * T.sx, min_px))}" class="fm-{cls}"{attrs}/>'
-
-
-def _wrap(s: str, size: float, width: float) -> list[str]:
-    """lines of s no wider than width px (breaks at spaces, after CJK punctuation or between CJK characters)"""
-    if text_width(s, size) <= width:
-        return [s]
-    out, cur = [], ""
-    cjk = "\\u3000-\\u303f\\uff00-\\uffef\\u4e00-\\u9fff"
-    tokens = re.findall(f"[{cjk}]|[^ {cjk}]+ *| +", s)  # breaks at plain spaces only, not at no-break ones
-    for t in tokens:
-        if cur and text_width(cur + t, size) > width:
-            out.append(cur.rstrip(" "))
-            cur = t.lstrip(" ")
-        else:
-            cur += t
-    if cur.strip():
-        out.append(cur.rstrip())
-    return out
-
-
 # ── the figure ──────────────────────────────────────────────────────────────
-class _Figure(Figure):
-    """viz.Figure with the margins of an equal-scale drawing of free height solved instead of grown: the largest scale
-    at which every page extent fits across the width (bisection; the extents are cheap), then the top and bottom
-    margins exactly. Figure grows all four margins together, so labels that shrink the scale leave the bottom margin
-    of the first, larger drawing (an empty band under the text)."""
-
-    def _transform(self):
-        if not self.equal or self.height is not None:
-            return super()._transform()
-        t0, r0, b0, l0 = self.margin
-        t0 += 24 if self.title else 0
-        x0, _, x1, _ = self._box or self.content_box()
-        dx = max(x1 - x0, 1e-12)
-        W = self.width
-
-        def boxes(m):
-            T = self._make(m)
-            return T, [bx for it in self._items if it.extent for bx in it.extent(T)]
-
-        def fit(s):
-            """(feasible, left margin) at scale s: the left margin grown until nothing sticks out on the left (items at
-            fixed page positions do not move with it), then everything within the right edge"""
-            left = l0
-            for _ in range(4):
-                _, bx = boxes([t0, W - left - dx * s, b0, left])
-                if not bx:
-                    return left + dx * s <= W - r0 + 1e-9, left
-                need = 4 - min(b[0] for b in bx)
-                if need <= 1e-6:
-                    break
-                left += need
-            ok = max(b[2] for b in bx) <= W - 4 + 1e-6 and left + dx * s <= W - r0 + 1e-9
-            return ok, left
-
-        hi = max(W - l0 - r0, 1.0) / dx
-        ok, left = fit(hi)
-        if not ok:
-            lo = 1e-6 * hi
-            for _ in range(40):
-                mid = 0.5 * (lo + hi)
-                if fit(mid)[0]:
-                    lo = mid
-                else:
-                    hi = mid
-            hi = lo
-            left = fit(hi)[1]
-        m = [t0, W - left - dx * hi, b0, left]
-        T, bx = boxes(m)
-        if bx:
-            top = self.margin[0] + 26 if self.title else 4
-            m[0] = t0 + max(0.0, top - min(b[1] for b in bx))
-            T, bx = boxes(m)
-            m[2] = b0 + max(0.0, max(b[3] for b in bx) - (T.H - 4))
-            T = self._make(m)
-        return T
-
-
 def section_figure(sec, *, check=None, lang: str = "zh", width: float = 560, title: str | None = None,
                    hogging: bool | None = None, stirrup_d: float | None = None, side_cover: float | None = None,
                    webs: int | None = None, bar_x=None, tendon_x=None, external_n=None,
@@ -826,8 +703,9 @@ def section_figure(sec, *, check=None, lang: str = "zh", width: float = 560, tit
     sec: an RCSection (jtg.rect, tee, box, circle, …) or a Composite (jtg.composite: drawn as its ultimate section, the
     topping in its own colour). check: a Check of flexure, eccentric, tension, service_stresses, crack_resistance or
     section_detailing, the dict of cracked_section, any other Check (a line of text), or a list of them. lang "zh" or
-    "en". hogging: the compression face of eccentric checks and cracked_section is the bottom (flexure and tension read it
-    from the check's name). stirrup_d: draws the stirrups (diameter mm) and takes them into the bar layout as
+    "en". hogging: True puts the compression face of eccentric checks and of cracked_section at the bottom (by default
+    from Check.hogging: the check was made on the section turned over; flexure, tension and the stresses always follow
+    the check). stirrup_d: draws the stirrups (diameter mm) and takes them into the bar layout as
     section_detailing does; side_cover: cover of the outermost steel on the sides (mm, default as section_detailing);
     webs: number of webs of a box (default 2 for kind "box"); bar_x / tendon_x: {depth: [x, …]} positions (mm from the
     centre line) of a bar row / of the ducts at a depth; external_n: tendons drawn per external row (default 2, or
@@ -872,7 +750,7 @@ class _Drawing:
         self.load = None  # (z, label): the axial force, on the centre line
         self.stress = None  # {"prof": [(z, σ)], "lims": [(σ, label)], "cracked": (edge, x) or None, …}
         self.warn = []  # (kind, payload, number or None, unused, text): what section_detailing rings
-        self.info = []  # (text, class, colour, flag): the text block; flag True heading, ("num", n) a callout
+        self.info = []  # the text block under the drawing: femotion.viz.Note
         self.notes = []
         for r in self.rows:
             if r["layers"] > 1:
@@ -903,23 +781,22 @@ class _Drawing:
         cl = chk.clause.replace("JTG 3362-2018 ", "")
         L = self.L
         nm = _name(chk, self.lang) + (f"{L['lp']}{what}{L['rp']}" if what else "")
-        self.info.append((f"{nm}{L['sep'] if self.lang == 'zh' else ' — '}JTG 3362-2018 {cl}", "label", None, True))
+        self.info.append(Note(f"{nm}{L['sep'] if self.lang == 'zh' else ' — '}JTG 3362-2018 {cl}", "head"))
 
     def _verdict(self, chk, text):
         ok = chk.ok
-        v = f"{text}  → {self.L['ok'] if ok else self.L['not']}"
-        self.info.append((v, "label", None, ok))
+        self.info.append(Note(f"{text} → {self.L['ok'] if ok else self.L['not']}", "ok" if ok else "fail"))
         self._tails(chk)
 
     def _tails(self, chk):
         L = self.L
         if chk.failed:
-            self.info.append((L["failed"].format(n=len(chk.failed)) if self.lang == "zh" else
-                              "not met: " + "; ".join(chk.failed), "small", C["warn"], None))
+            self.info.append(Note(L["failed"].format(n=len(chk.failed)) if self.lang == "zh" else
+                                  "not met: " + "; ".join(chk.failed), "small warn"))
         if chk.warnings:
             cl = _clauses(chk.warnings)
-            self.info.append((L["warnings"] + "、".join(_clause(c, self.lang) for c in cl) if self.lang == "zh" else
-                              L["warnings"] + ", ".join(cl), "small", None, None))
+            self.info.append(Note(L["warnings"] + "、".join(_clause(c, self.lang) for c in cl) if self.lang == "zh" else
+                                  L["warnings"] + ", ".join(cl), "small"))
 
     def _face(self, comp_bottom, z):
         """depth on the drawing of a depth measured from the compression face"""
@@ -932,7 +809,7 @@ class _Drawing:
 
     def _flexure(self, chk):
         L, d, sec = self.L, chk.details, self.sec
-        hog = "(hogging)" in chk.name
+        hog = chk.hogging
         x, h0, xi, xib = d["x"], d["h0"], d["xi"], d["xi_b"]
         beta = sec.concrete.beta
         xc = x / beta
@@ -948,17 +825,17 @@ class _Drawing:
         self.vdims.append((self._face(hog, 0.0), self._face(hog, h0), f"h0 = {_dim(h0)}"))
         self._head(chk, L["hog"] if hog else L["sag"])
         sep = L["sep"]
-        self.info.append((f"x = {_mm(x)} mm{sep}xc = x/β = {_mm(xc)} mm{sep}h0 = {_mm(h0)} mm", "label", None, None))
+        self.info.append(Note(f"x = {_mm(x)} mm{sep}xc = x/β = {_mm(xc)} mm{sep}h0 = {_mm(h0)} mm"))
         rel = ">" if over else "≤"
-        self.info.append((f"ξ = x/h0 = {xi:.3f} {rel} ξb = {xib:.3f}" + (f"{L['lp']}{L['over']}{L['rp']}" if over else ""),
-                          "label", C["warn"] if over else None, None))
+        self.info.append(Note(f"ξ = x/h0 = {xi:.3f} {rel} ξb = {xib:.3f}" + (f"{L['lp']}{L['over']}{L['rp']}" if over
+                                                                            else ""), "warn" if over else ""))
         self._verdict(chk, f"Mu = {chk.resistance:.1f} kN·m{sep}γ0Md = {abs(chk.demand):.1f} kN·m{sep}"
                            f"{L['ratio']} {chk.ratio:.3f}")
 
     def _eccentric(self, chk):
         L, d, sec = self.L, chk.details, self.sec
         far = any("far face is the more compressed" in n for n in chk.notes)
-        bottom = bool(self.hogging) != far
+        bottom = bool(chk.hogging if self.hogging is None else self.hogging) != far
         h = sec.h
         sep = L["sep"]
         if "x" in d:
@@ -977,19 +854,18 @@ class _Drawing:
             self.load = (zN, f"γ0Nd{L['lp']}e = {_mm(e)}{L['rp']}" if self.lang == "zh" else f"γ0Nd (e = {_mm(e)})")
             self.vdims.append((sec.zg, zN, f"e = {_dim(e)}"))
         self._head(chk)
-        self.info.append((f"e0 = {_mm(d['e0'])} mm{sep}η = {d['eta']:.3f}{sep}e = ηe0 = {_mm(e)} mm", "label", None,
-                          None))
+        self.info.append(Note(f"e0 = {_mm(d['e0'])} mm{sep}η = {d['eta']:.3f}{sep}e = ηe0 = {_mm(e)} mm"))
         if "x" in d:
             case = L["small"] if d.get("case", "").startswith("small") else L["large"]
-            self.info.append((f"x = {_mm(d['x'])} mm{sep}ξ = {d['xi']:.3f}{sep}ξb = {d['xi_b']:.3f}{L['lp']}{case}{L['rp']}",
-                              "label", None, None))
+            self.info.append(Note(f"x = {_mm(d['x'])} mm{sep}ξ = {d['xi']:.3f}{sep}ξb = {d['xi_b']:.3f}"
+                                  f"{L['lp']}{case}{L['rp']}"))
         elif "alpha" in d:
-            self.info.append((f"α = {d['alpha']:.3f}{L['lp']}5.3.8{L['rp']}", "label", None, None))
+            self.info.append(Note(f"α = {d['alpha']:.3f}{L['lp']}5.3.8{L['rp']}"))
         self._verdict(chk, f"Nu = {chk.resistance:.1f} kN{sep}γ0Nd = {chk.demand:.1f} kN{sep}{L['ratio']} {chk.ratio:.3f}")
 
     def _tension(self, chk):
         L, d, sec = self.L, chk.details, self.sec
-        hog = "(hogging side)" in chk.name
+        hog = chk.hogging
         sep = L["sep"]
         if "x" in d:
             self._zone(d["x"], not hog)  # the far face (from the load) is compressed
@@ -1009,7 +885,7 @@ class _Drawing:
         if "x" in d:
             line += f"{sep}x = {_mm(d['x'])} mm ≤ ξb h0 = {_mm(d['xi_b_h0'])} mm" if d["x"] <= d["xi_b_h0"] else \
                 f"{sep}x = {_mm(d['x'])} mm > ξb h0 = {_mm(d['xi_b_h0'])} mm"
-        self.info.append((line, "label", None, None))
+        self.info.append(Note(line))
         self._verdict(chk, f"Nu = {chk.resistance:.1f} kN{sep}γ0Nd = {chk.demand:.1f} kN{sep}{L['ratio']} {chk.ratio:.3f}")
 
     def _stresses(self, chk):
@@ -1045,26 +921,26 @@ class _Drawing:
             self.stress = {"prof": prof, "lims": lims, "cracked": cracked, "role": chk.name}
         self._head(chk)
         if cracked is not None:
-            self.info.append(((f"开裂截面受压区高度 x = {_mm(cracked[1])} mm（{L['edge'][cracked[0]]}受压）"
-                               if self.lang == "zh" else
-                               f"cracked section: compression depth x = {_mm(cracked[1])} mm from the {cracked[0]}"),
-                              "label", None, None))
+            self.info.append(Note(f"开裂截面受压区高度 x = {_mm(cracked[1])} mm（{L['edge'][cracked[0]]}受压）"
+                                  if self.lang == "zh" else
+                                  f"cracked section: compression depth x = {_mm(cracked[1])} mm from the {cracked[0]}"))
         if cracked is None and len(prof) == 2 and prof[0][0] == 0.0 and prof[1][0] == h:
             et, eb = L["edge"]["top"], L["edge"]["bottom"]
-            self.info.append((f"{et} σ = {_n(prof[0][1], 2)} MPa{sep}{eb} σ = {_n(prof[1][1], 2)} MPa"
-                              f"{L['lp']}{L['comp_pos']}{L['rp']}", "label", None, None))
+            self.info.append(Note(f"{et} σ = {number(prof[0][1], 2)} MPa{sep}{eb} σ = {number(prof[1][1], 2)} MPa"
+                                  f"{L['lp']}{L['comp_pos']}{L['rp']}"))
         sym = chk.symbol
         lim_sym = {"6.3.1-1": "0.85σpc", "6.3.1-2": "0.80σpc", "6.3.1-3": "σpc + 0.7ftk", "item 1-3": "σpc"}
         ls = next((v for k, v in lim_sym.items() if k in chk.clause), "0.5fck" if "7.1" in chk.clause else L["limit"])
-        self._verdict(chk, f"{sym} = {_n(chk.demand, 2)} MPa {'≤' if chk.ok else '>'} {ls} = {_n(chk.resistance, 2)} MPa")
+        self._verdict(chk, f"{sym} = {number(chk.demand, 2)} MPa {'≤' if chk.ok else '>'} {ls} = "
+                           f"{number(chk.resistance, 2)} MPa")
         if "tendon_stress" in d and len(d["tendon_stress"]) and "tendon_limit" in d:
             sp = float(np.max(d["tendon_stress"]))
-            self.info.append((f"σp,max = {sp:.0f} MPa {'≤' if sp <= d['tendon_limit'] + 1e-9 else '>'} "
-                              f"{d['tendon_limit']:.0f} MPa{L['lp']}7.1.5{L['rp']}", "small", None, None))
+            self.info.append(Note(f"σp,max = {sp:.0f} MPa {'≤' if sp <= d['tendon_limit'] + 1e-9 else '>'} "
+                                  f"{d['tendon_limit']:.0f} MPa{L['lp']}7.1.5{L['rp']}", "small"))
         if "external_stress" in d:
             se = float(np.max(d["external_stress"]))
-            self.info.append((f"σpe,ex = {se:.0f} MPa {'≤' if se <= d['external_limit'] + 1e-9 else '>'} 0.60fpk = "
-                              f"{d['external_limit']:.0f} MPa{L['lp']}7.1.5-3{L['rp']}", "small", None, None))
+            self.info.append(Note(f"σpe,ex = {se:.0f} MPa {'≤' if se <= d['external_limit'] + 1e-9 else '>'} 0.60fpk = "
+                                  f"{d['external_limit']:.0f} MPa{L['lp']}7.1.5-3{L['rp']}", "small"))
 
     def _b_uncracked(self, d, scc, edge):
         """class B with the whole section compressed: the edge stresses from the resultant on the cracked (here the
@@ -1094,8 +970,8 @@ class _Drawing:
         if self.stress is None:
             self.stress = {"prof": prof, "lims": [], "cracked": (edge, x0), "role": "cracked section", "schematic": True}
         name = "开裂截面（7.2.4、6.5.2）" if self.lang == "zh" else "cracked section (7.2.4, 6.5.2)"
-        self.info.append((name, "label", None, True))
-        self.info.append((f"x0 = {_mm(x0)} mm{L['sep']}Icr = {Icr:.4g} mm⁴".replace("e+", "e"), "label", None, None))
+        self.info.append(Note(name, "head"))
+        self.info.append(Note(f"x0 = {_mm(x0)} mm{L['sep']}Icr = {Icr:.4g} mm⁴".replace("e+", "e")))
 
     def _generic(self, chk):
         L = self.L
@@ -1104,13 +980,14 @@ class _Drawing:
             n = len(chk.warnings)
             zh = self.lang == "zh"
             text = (f"{n} 项不满足" if zh else f"{n} rule(s) not met") if n else ("规定均满足" if zh else "rules met")
-            self.info.append((text, "label", C["warn"] if n else None, n == 0))
+            self.info.append(Note(text, "warn" if n else "ok"))
             for w in chk.warnings:
-                self.info.append(("· " + _warning(w, self.lang), "small", C["warn"], None))
+                self.info.append(Note("· " + _warning(w, self.lang), "small warn"))
             return
         if chk.limit_check:
             u = f" {chk.unit}" if chk.unit else ""
-            self._verdict(chk, f"{chk.symbol} = {_n(chk.demand, 3)}{u}{L['sep']}{L['limit']} {_n(chk.resistance, 3)}{u}")
+            self._verdict(chk, f"{chk.symbol} = {number(chk.demand, 3)}{u}{L['sep']}{L['limit']} "
+                               f"{number(chk.resistance, 3)}{u}")
         else:
             self._verdict(chk, f"γ0Sd = {chk.demand:.1f} {chk.unit}{L['sep']}R = {chk.resistance:.1f} {chk.unit}"
                                f"{L['sep']}{L['ratio']} {chk.ratio:.3f}")
@@ -1126,13 +1003,13 @@ class _Drawing:
                 loose.append(w)
         k = len(self.warn) - n0
         tot = k + len(loose)
-        self.info.append(((f"{tot} 项不满足" if lang == "zh" else f"{tot} rule(s) not met") if tot else
-                          ("规定均满足" if lang == "zh" else "rules met"), "label", C["warn"] if tot else None, tot == 0))
+        self.info.append(Note((f"{tot} 项不满足" if lang == "zh" else f"{tot} rule(s) not met") if tot else
+                              ("规定均满足" if lang == "zh" else "rules met"), "warn" if tot else "ok"))
         for kind, payload, num, short, full in self.warn[n0:]:
             if num is not None:
-                self.info.append((f"{num}  {full}", "small", C["warn"], ("num", num)))
+                self.info.append(Note(full, "small warn", num))
         for w in loose:
-            self.info.append(("· " + self._rule_text(w, chk), "small", C["warn"], None))
+            self.info.append(Note("· " + self._rule_text(w, chk), "small warn"))
 
     def _rule_text(self, w, chk):
         """a warning as a short line: the rule's name in the language, value, limit and clause"""
@@ -1237,7 +1114,7 @@ class _Drawing:
 
     def figure(self, title, *, dims, labels, legend, info):
         self.beside = self.stress is None or self._budget(dims, labels)
-        fig = _Figure(width=self.width, margin=(10, 10, 10, 10), title=title)
+        fig = Figure(width=self.width, title=title)
         sh, sec = self.shape, self.sec
         pts = [(sh.xmin, 0.0), (sh.xmax, -sec.h)]
         for e in self.ext:
@@ -1250,8 +1127,12 @@ class _Drawing:
             m = 0.9 * sec.h
             pts += [(min(-m, min(p[0] for p in pts)), -sec.h / 2), (max(m, max(p[0] for p in pts)), -sec.h / 2)]
         fig.raw(self._geometry, pts, self._geometry_extent)
-        fig.raw(lambda T: self._annotations(T, dims, labels, legend, info)[0], None,
-                lambda T: self._annotations(T, dims, labels, legend, info)[1])
+        fig.raw(lambda T: self._annotations(T, dims, labels)[0], None,
+                lambda T: self._annotations(T, dims, labels)[1])
+        if info:
+            fig.notes(self.info + [Note(n, "small") for n in self.notes])
+        if legend:
+            fig.legend(self._legend_entries(), at="below")
         return fig
 
     def _geometry_extent(self, T):
@@ -1264,52 +1145,57 @@ class _Drawing:
                 out.append((x0 - 10, y - 2, x1 + 10, y + 2))
         return out
 
+    @staticmethod
+    def _circ(T, c, r, cls, attrs=""):
+        """a circle of world radius r (at least 0.6 px)"""
+        return svg_circle(*T(*c), max(r * T.sx, 0.6), cls, attrs=attrs)
+
     def _geometry(self, T):
         sh, sec, out = self.shape, self.sec, []
+        page = lambda rings: [[T(*p) for p in r] for r in rings]  # noqa: E731
         for cls, rings in sh.regions():
-            out.append(_path(T, rings, cls, ' data-role="concrete"' + (' data-part="topping"' if cls == "topping" else "")))
+            out.append(svg_path(page(rings), cls, attrs=' data-role="concrete"' +
+                                (' data-part="topping"' if cls == "topping" else "")))
         for zc, r, sg in sorted(sh.circles, key=lambda c: -c[2]):
-            out.append(_circ(T, (0.0, -zc), r, "concrete" if sg > 0 else "void",
-                             ' data-role="concrete"' if sg > 0 else ' data-role="hole"'))
+            out.append(self._circ(T, (0.0, -zc), r, "concrete" if sg > 0 else "void",
+                                  ' data-role="concrete"' if sg > 0 else ' data-role="hole"'))
         if self.zone is not None:
             rings = sh.band(*self.zone)
             if rings:
-                out.append(_path(T, rings, "comp", f' data-role="compression" data-z0="{_fmt(self.zone[0])}" '
-                                                    f'data-z1="{_fmt(self.zone[1])}"'))
+                out.append(svg_path(page(rings), "comp", attrs=f' data-role="compression" data-z0="{fmt(self.zone[0])}" '
+                                                               f'data-z1="{fmt(self.zone[1])}"'))
         if self.stirrup:
             out += self._stirrups(T)
         for g in self.tendons:
             for x, z, D, dp in g["ducts"]:
                 if D > 0:
-                    out.append(_circ(T, (x, -z), D / 2, "duct", ' data-role="duct"'))
-                out.append(_circ(T, (x, -z), min(dp, D) / 2 if D > 0 else dp / 2, "tendon", ' data-role="tendon"'))
+                    out.append(self._circ(T, (x, -z), D / 2, "duct", ' data-role="duct"'))
+                out.append(self._circ(T, (x, -z), min(dp, D) / 2 if D > 0 else dp / 2, "tendon", ' data-role="tendon"'))
             for x, z, dd in g["strands"]:
-                out.append(_circ(T, (x, -z), dd / 2, "tendon", ' data-role="strand"'))
+                out.append(self._circ(T, (x, -z), dd / 2, "tendon", ' data-role="strand"'))
         for k, r in enumerate(self.rows):
             for x, z, dd in r["bars"]:
-                out.append(_circ(T, (x, -z), dd / 2, "bar", f' data-role="bar" data-row="{k}" data-d="{_fmt(dd)}"'))
+                out.append(self._circ(T, (x, -z), dd / 2, "bar", f' data-role="bar" data-row="{k}" data-d="{fmt(dd)}"'))
         for e in self.ext:
             for x, z, D, i in e["items"]:
-                out.append(_circ(T, (x, -z), D / 2, "external", f' data-role="external" data-row="{i}"'))
+                out.append(self._circ(T, (x, -z), D / 2, "external", f' data-role="external" data-row="{i}"'))
         x0p, _ = T(sh.xmin, 0)
         x1p, _ = T(sh.xmax, 0)
         for z, cls, lab, role, col in self.lines:
             y = T(0, -z)[1]
+            data = f' data-role="{role}" data-z="{fmt(z)}"'
             if cls == "na":
-                out.append(f'<line x1="{_fmt(x0p - 8)}" y1="{_g(y)}" x2="{_fmt(x1p + 8)}" y2="{_g(y)}" class="fm-na" '
-                           f'data-role="{role}" data-z="{_g(z)}"/>')
+                out.append(svg_line(x0p - 8, y, x1p + 8, y, "na", attrs=data))
             else:
-                st = f' style="stroke:{col}"' if col else ""
-                out.append(f'<line x1="{_fmt(x0p - 8)}" y1="{_fmt(y)}" x2="{_fmt(x1p + 8)}" y2="{_fmt(y)}" '
-                           f'class="fm-dim" stroke-dasharray="7 2 1.5 2"{st} data-role="{role}" data-z="{_g(z)}"/>')
+                out.append(svg_line(x0p - 8, y, x1p + 8, y, "dim", style="stroke-dasharray:7 2 1.5 2" +
+                                    (f";stroke:{col}" if col else ""), attrs=data))
         if self.load is not None:
             x, y = T(0.0, -self.load[0])
-            out.append(f'<circle cx="{_g(x)}" cy="{_g(y)}" r="5.5" fill="#fff" stroke="{C["load"]}" '
-                       f'stroke-width="1.4" data-role="load"/><circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="2" '
-                       f'fill="{C["load"]}"/>')
+            out.append(svg_circle(x, y, 5.5, "", style=f"fill:{C['paper']};stroke:{C['load']};stroke-width:1.4",
+                                  attrs=' data-role="load"') + svg_circle(x, y, 2, "", style=f"fill:{C['load']}"))
             xg, yg = T(0.0, -sec.zg)
-            out.append(f'<path d="M{_fmt(xg - 5)},{_fmt(yg)} L{_fmt(xg + 5)},{_fmt(yg)} M{_fmt(xg)},{_fmt(yg - 5)} '
-                       f'L{_fmt(xg)},{_fmt(yg + 5)}" class="fm-dim" style="stroke:{C["ink"]}" data-role="centroid"/>')
+            out.append(f'<path d="M{fmt(xg - 5)},{fmt(yg)} L{fmt(xg + 5)},{fmt(yg)} M{fmt(xg)},{fmt(yg - 5)} '
+                       f'L{fmt(xg)},{fmt(yg + 5)}" class="fm-dim" style="stroke:{C["ink"]}" data-role="centroid"/>')
         out += [s for s, _ in self._warn_marks(T)]
         return "".join(out)
 
@@ -1320,7 +1206,7 @@ class _Drawing:
         out = []
         if sec.ring is not None and sec.kind in ("circle", "annulus"):
             d = float(np.nanmax(sec.bar_d)) if not np.isnan(sec.bar_d).all() else 0.0
-            out.append(_circ(T, (0.0, -sec.h / 2), sec.ring + d / 2 + ds / 2, "stirrup", ' data-role="stirrup"'))
+            out.append(self._circ(T, (0.0, -sec.h / 2), sec.ring + d / 2 + ds / 2, "stirrup", ' data-role="stirrup"'))
             return out
         rows = [r for r in self.rows if r["face"] in ("bottom", "top")] or self.rows
         if not rows:
@@ -1341,9 +1227,8 @@ class _Drawing:
             if xb - xa <= 2 * rad or zb - zt <= 2 * rad:
                 continue
             (pa, qa), (pb, qb) = T(xa, -zt), T(xb, -zb)
-            rp = rad * T.sx
-            out.append(f'<rect x="{_g(pa)}" y="{_g(qa)}" width="{_g(pb - pa)}" height="{_g(qb - qa)}" '
-                       f'rx="{_fmt(rp)}" class="fm-stirrup" style="stroke-width:{_fmt(max(ds * T.sx, 0.8))}" '
+            out.append(f'<rect x="{fmt(pa)}" y="{fmt(qa)}" width="{fmt(pb - pa)}" height="{fmt(qb - qa)}" '
+                       f'rx="{fmt(rad * T.sx)}" class="fm-stirrup" style="stroke-width:{fmt(max(ds * T.sx, 0.8))}" '
                        f'data-role="stirrup"/>')
         return out
 
@@ -1356,31 +1241,28 @@ class _Drawing:
             if kind == "rows":
                 for r in payload:
                     xs = [T(x, -z) for x, z, _ in r["bars"]]
+                    rp = r["d"] / 2 * T.sx + 4
                     if id(r) in done:
-                        rp = r["d"] / 2 * T.sx + 4
                         out.append(("", (max(p[0] for p in xs) + rp, sum(p[1] for p in xs) / len(xs), num)))
                         num = None
                         continue
                     done.add(id(r))
-                    rp = r["d"] / 2 * T.sx + 4
                     x0, x1 = min(p[0] for p in xs) - rp, max(p[0] for p in xs) + rp
                     y0, y1 = min(p[1] for p in xs) - rp, max(p[1] for p in xs) + rp
-                    out.append((f'<rect x="{_fmt(x0)}" y="{_fmt(y0)}" width="{_fmt(x1 - x0)}" height="{_fmt(y1 - y0)}" '
-                                f'rx="{_fmt(min(rp, (y1 - y0) / 2))}" class="fm-warn" data-role="warn"/>',
+                    out.append((f'<rect x="{fmt(x0)}" y="{fmt(y0)}" width="{fmt(x1 - x0)}" height="{fmt(y1 - y0)}" '
+                                f'rx="{fmt(min(rp, (y1 - y0) / 2))}" class="fm-warn" data-role="warn"/>',
                                 (x1, (y0 + y1) / 2, num)))
                     num = None
             elif kind == "circle":
                 x, z, r = payload
                 cx, cy = T(x, -z)
                 rp = r * T.sx + 4
-                out.append((f'<circle cx="{_fmt(cx)}" cy="{_fmt(cy)}" r="{_fmt(rp)}" class="fm-warn" data-role="warn"/>',
-                            (cx + rp, cy, num)))
+                out.append((svg_circle(cx, cy, rp, "warn", attrs=' data-role="warn"'), (cx + rp, cy, num)))
             elif kind == "ring":
                 d = float(np.nanmax(self.sec.bar_d)) if not np.isnan(self.sec.bar_d).all() else 0.0
                 cx, cy = T(0.0, -self.sec.h / 2)
                 rp = (payload + d / 2) * T.sx + 4
-                out.append((f'<circle cx="{_fmt(cx)}" cy="{_fmt(cy)}" r="{_fmt(rp)}" class="fm-warn" '
-                            f'stroke-dasharray="5 3" data-role="warn"/>',
+                out.append((svg_circle(cx, cy, rp, "warn", style="stroke-dasharray:5 3", attrs=' data-role="warn"'),
                             (cx + rp * math.cos(math.pi / 4), cy - rp * math.sin(math.pi / 4), num)))
             elif kind == "web":
                 bnd = sh.boundaries()
@@ -1388,20 +1270,20 @@ class _Drawing:
                 _, za, zb = min(cand)
                 for a, b in sh.segments((za + zb) / 2):
                     (p0, q0), (p1, q1) = T(a, -za), T(b, -zb)
-                    out.append((f'<rect x="{_fmt(p0 + 2)}" y="{_fmt(q0 + 2)}" width="{_fmt(p1 - p0 - 4)}" '
-                                f'height="{_fmt(q1 - q0 - 4)}" class="fm-warn" stroke-dasharray="5 3" data-role="warn"/>',
-                                (p1 - 2, (q0 + q1) / 2, num)))
+                    out.append((f'<rect x="{fmt(p0 + 2)}" y="{fmt(q0 + 2)}" width="{fmt(p1 - p0 - 4)}" '
+                                f'height="{fmt(q1 - q0 - 4)}" class="fm-warn" style="stroke-dasharray:5 3" '
+                                f'data-role="warn"/>', (p1 - 2, (q0 + q1) / 2, num)))
                     num = None
         return out
 
     # ── page annotations ────────────────────────────────────────────────────
-    def _annotations(self, T, dims, labels, legend, info):
+    def _annotations(self, T, dims, labels):
+        """the dimensions, the labels of the steel and the stress diagram, on the page: (svg, boxes)"""
         svg, boxes = [], []
 
-        def add(s, b=None):
+        def add(s, b=()):
             svg.append(s)
-            if b is not None:
-                boxes.append(b)
+            boxes.extend(b)
 
         sec, sh = self.sec, self.shape
         xl, _ = T(sh.xmin, 0)
@@ -1419,15 +1301,10 @@ class _Drawing:
             right, low = self._labels(T, add, xr)
             bottom_px = max(bottom_px, low)
         if self.stress is not None and self.beside:
-            bottom_px = max(bottom_px, self._stress_diagram(T, add, right + 16, ytop, ybot))
+            self._stress_diagram(T, add, right + 16, ytop, ybot)
         elif self.stress is not None:  # under the section, same depth scale up to 150 px
             y0 = bottom_px + 36
-            bottom_px = self._stress_diagram(T, add, max(xl, 12.0), y0, y0 + min(ybot - ytop, 150.0), tags=True)
-        y = bottom_px + 14
-        if info and (self.info or self.notes):
-            y = self._info(add, y)
-        if legend:
-            y = self._legend(add, y + 4)
+            self._stress_diagram(T, add, max(xl, 12.0), y0, y0 + min(ybot - ytop, 150.0), tags=True)
         return "".join(svg), boxes
 
     def _dims(self, T, add, xl):
@@ -1444,8 +1321,11 @@ class _Drawing:
             cols.append([(0.0, h, _dim(h))])
         x, low = xl - 12, T(0, -h)[1]
         for col in cols:
-            left, lo = self._vdim_col(T, add, col, x)
-            x, low = left - 9, max(low, lo)
+            zs = [col[0][0]] + [z1 for _, z1, _ in col]  # a chain from z0 to the last z1 (one item: its far end last)
+            s, b = dim_chain([T(0, -z)[1] for z in zs], x, [lab for *_, lab in col], vertical=True,
+                             ext=[T(sh.left(z), -z)[0] for z in zs])
+            add(s, b)
+            x, low = min(v[0] for v in b) - 9, max([low] + [v[3] for v in b[:-1]])
         if circular:
             outer = max((r for _, r, sg in sh.circles if sg > 0), default=h / 2)
             zc = next(zc for zc, r, sg in sh.circles if sg > 0 and r == outer)
@@ -1453,11 +1333,7 @@ class _Drawing:
             for zc, r, sg in sh.circles:
                 if sg < 0:  # the inner diameter across the hole
                     (p0, q), (p1, _) = T(-r, -zc), T(r, -zc)
-                    add(_line(p0, q, p1, q, "dim"))
-                    for p in (p0, p1):
-                        add(_line(p - 3, q + 3, p + 3, q - 3, "dim"))
-                    s, b = _txt((p0 + p1) / 2, q - 8, f"d = {_dim(2 * r)}", "dimtext", "middle")
-                    add(s, b)
+                    add(*dim_chain([p0, p1], q, [f"d = {_dim(2 * r)}"]))
             return low
         top_iv = [iv for iv in sh.outer if iv[0] <= 1e-9]
         bot_iv = [iv for iv in sh.outer if abs(iv[1] - h) < 1e-6 * h]
@@ -1477,75 +1353,22 @@ class _Drawing:
             low = max(low, self._hdim(T, add, a, b, zf, k))
         return low
 
-    def _vdim_col(self, T, add, col, x):
-        """one column of vertical dimensions with its line at page x: extension lines from the concrete's left edge,
-        labels along the line, or beyond its ends where a segment is too short; returns (leftmost, lowest) page x, y
-        used"""
-        sh = self.shape
-        left, low = x - 4, -math.inf
-        for z in sorted({z for z0, z1, _ in col for z in (z0, z1)}):
-            px, py = T(sh.left(z), -z)
-            add(_line(px - 3, py, x - 3, py, "dim"))
-            add(_line(x - 3, py + 3, x + 3, py - 3, "dim"))
-        n = len(col)
-        for k, (z0, z1, lab) in enumerate(col):
-            y0, y1 = T(0, -z0)[1], T(0, -z1)[1]
-            add(_line(x, y0, x, y1, "dim"))
-            w = text_width(lab, TEXT_SIZE["dimtext"])
-            rot = -90
-            if abs(y1 - y0) >= w + 2:
-                xm, ym, anchor = x - 7, (y0 + y1) / 2, "middle"
-            elif n == 1:  # beyond the far end (from z0 to z1)
-                sg = 1.0 if y1 >= y0 else -1.0
-                xm, ym, anchor = x - 7, y1 + sg * (w / 2 + 6), "middle"
-                add(_line(x, y1, x, y1 + sg * 4, "dim"))
-            elif k == 0:
-                xm, ym, anchor = x - 7, min(y0, y1) - w / 2 - 6, "middle"
-            elif k == n - 1:
-                xm, ym, anchor = x - 7, max(y0, y1) + w / 2 + 6, "middle"
-            else:  # the middle of a chain: across, left of the line
-                xm, ym, anchor, rot = x - 5, (y0 + y1) / 2, "end", 0
-            s, b = _txt(xm, ym, lab, "dimtext", anchor, "middle", rotate=rot)
-            add(s, b)
-            left, low = min(left, b[0]), max(low, b[3])
-        return left, low
-
     def _hdim(self, T, add, a, b, zf, k, label=None):
         """a horizontal dimension of the width a…b with extension lines from depth zf, above the top (k < 0) or in row
         k below the bottom; returns the lowest page y used"""
-        sec = self.sec
         (pa, qf), (pb, _) = T(a, -zf), T(b, -zf)
-        if k < 0:
-            q = T(0, 0)[1] - 14
-            add(_line(pa, qf - 3, pa, q - 3, "dim"))
-            add(_line(pb, qf - 3, pb, q - 3, "dim"))
-            ly = q - 7
-        else:
-            q = T(0, -sec.h)[1] + 14 + 18 * k
-            add(_line(pa, qf + 3, pa, q + 3, "dim"))
-            add(_line(pb, qf + 3, pb, q + 3, "dim"))
-            ly = q + 8
-        add(_line(pa, q, pb, q, "dim"))
-        for p in (pa, pb):
-            add(_line(p - 3, q + 3, p + 3, q - 3, "dim"))
-        lab = _dim(b - a) if label is None else label
-        w = text_width(lab, TEXT_SIZE["dimtext"])
-        if pb - pa >= w + 6:
-            s, bx = _txt((pa + pb) / 2, ly, lab, "dimtext", "middle")
-        else:
-            s, bx = _txt(pb + 5, ly, lab, "dimtext", "start")
+        q = T(0, 0)[1] - 14 if k < 0 else T(0, -self.sec.h)[1] + 14 + 18 * k
+        s, bx = dim_chain([pa, pb], q, [_dim(b - a) if label is None else label], ext=qf, side=-1 if k < 0 else 1)
         add(s, bx)
-        return max(q + 3, bx[3])
+        return max(q + 3, max(v[3] for v in bx[:-1]))
 
     def _label_items(self):
-        """[(anchor world (x, z) or page callback, text, cls, colour, kind)] of the steel, the lines and the callouts"""
+        """[(anchor world (x, z, r) or ("line", z), text, cls, colour)] of the steel, the lines and the load"""
         L, items = self.L, []
         dia = L["dia"]
         side = [r for r in self.rows if r["face"] == "side"]
         for r in self.rows:
-            if r["face"] == "side":
-                continue
-            if r["face"] == "ring":
+            if r["face"] in ("side", "ring"):
                 continue
             if r.get("lumped"):
                 txt = f"As = {_mm(r['area'])} mm²"
@@ -1567,22 +1390,20 @@ class _Drawing:
         if ring:
             bars = [b for r in ring for b in r["bars"]]
             ds_ = sorted({d for _, _, d in bars})
-            n = len(bars)
-            txt = f"{n}{dia}{_mm(ds_[0])}" if len(ds_) == 1 else f"{n} bars"
+            txt = f"{len(bars)}{dia}{_mm(ds_[0])}" if len(ds_) == 1 else f"{len(bars)} bars"
             r0 = self.sec.h / 2
-            x, z, d = min(bars, key=lambda b: (b[0] - r0) ** 2 + (b[1] - 0.15 * r0) ** 2 * 4)
             x, z, d = max(bars, key=lambda b: b[0] - abs(b[1] - r0 * 0.45))
             items.append(((x, z, d / 2), txt, "label", None))
         s_d, s_a = self.strand
         for g in self.tendons:
             if g["ducts"]:
-                D = max(D for *_, D, _ in [(x, z, D, dp) for x, z, D, dp in g["ducts"]])
+                D = max(D for _, _, D, _ in g["ducts"])
                 Ap = [self.sec.tendons[i, 0] for i in g["idx"]]
                 m = len(g["ducts"])
                 c = Ap[0] / s_a
                 same = all(abs(a - Ap[0]) < 1e-6 * Ap[0] for a in Ap)
                 if same and abs(c - round(c)) < 0.03 * c and round(c) >= 1:
-                    tail = f"{int(round(c))}{dia}s{_n(s_d, 1)}"
+                    tail = f"{int(round(c))}{dia}s{number(s_d, 1)}"
                 else:
                     tail = f"Ap = {_mm(sum(Ap) / m)}" if same else f"Ap = {_mm(sum(Ap))}"
                 pre = f"{m}×" if m > 1 else ""
@@ -1591,7 +1412,7 @@ class _Drawing:
                 items.append(((x, z, max(D2, 1.0) / 2), txt, "label", None))
             elif g["strands"]:
                 if "n_strands" in g:
-                    txt = f"{g['n_strands']}{dia}s{_n(s_d, 1)}"
+                    txt = f"{g['n_strands']}{dia}s{number(s_d, 1)}"
                 else:
                     txt = f"Ap = {_mm(float(self.sec.tendons[g['idx'], 0].sum()))}"
                 x, z, d = max(g["strands"], key=lambda q: q[0])
@@ -1606,62 +1427,28 @@ class _Drawing:
         for z, cls, lab, role, col in self.lines:
             items.append((("line", z), lab, "small", col))
         if self.load is not None:
-            items.append(((0.0, self.load[0], 6.0 / 1e9), self.load[1], "loadtext", C["load"]))
+            items.append(((0.0, self.load[0], 0.0), self.load[1], "loadtext", C["load"]))
         return items
 
     def _labels(self, T, add, xr):
-        """the labels in one column right of the section, each with a leader to its item; returns (right edge, lowest
-        page y)"""
+        """the labels in one column right of the section, each with a leader to its item (femotion.viz.leader_column);
+        returns (right edge, lowest page y)"""
         items = []
-        col = xr + 22
         for anchor, txt, cls, colour in self._label_items():
             if anchor[0] == "line":
-                y = T(0, -anchor[1])[1]
-                ax, ay, r = xr + 8, y, 0.0
+                items.append((xr + 8, T(0, -anchor[1])[1], 0.0, txt, cls, colour))
             else:
                 x, z, rad = anchor
                 ax, ay = T(x, -z)
-                r = rad * T.sx if rad > 1e-6 else 6.0
-            items.append([ay, ax, r, txt, cls, colour])
-        for s, (ax, ay, num) in self._warn_marks(T):
+                items.append((ax, ay, rad * T.sx if rad > 1e-6 else 6.0, txt, cls, colour))
+        for _, (ax, ay, num) in self._warn_marks(T):
             if num is not None:
-                items.append([ay, ax, 0.0, ("num", num), "warntext", C["warn"]])
+                items.append((ax, ay, 0.0, int(num), "warntext", C["warn"]))
         if not items:
             return xr, T(0, -self.sec.h)[1]
-        items.sort(key=lambda v: v[0])
-        ys, gap = [], 15.0
-        for it in items:
-            ys.append(max(it[0], ys[-1] + gap) if ys else it[0])
-        # pull the column up when it ran past the anchors' span
-        over = ys[-1] - max(items[-1][0], T(0, -self.sec.h)[1])
-        if over > 0:
-            top = T(0, 0)[1] - 6
-            for k in range(len(ys)):
-                ys[k] = ys[k] - over
-            # keep the order and the gaps after shifting, not above the page top region
-            for k in range(len(ys)):
-                lo = top if k == 0 else ys[k - 1] + gap
-                ys[k] = max(ys[k], lo)
-        right, low = col, 0.0
-        for (ay, ax, r, txt, cls, colour), y in zip(items, ys):
-            dx, dy = col - 4 - ax, y - ay
-            dist = math.hypot(dx, dy) or 1.0
-            sx, sy = ax + dx / dist * (r + 1.5), ay + dy / dist * (r + 1.5)
-            st = f' style="stroke:{colour}"' if colour else ""
-            add(f'<polyline points="{_fmt(sx)},{_fmt(sy)} {_fmt(col - 4)},{_fmt(y)}" class="fm-leader"{st}/>')
-            if isinstance(txt, tuple):
-                cx = col + 7
-                add(f'<circle cx="{_fmt(cx)}" cy="{_fmt(y)}" r="7" fill="#fff" stroke="{C["warn"]}" stroke-width="1.2" '
-                    f'data-role="callout"/>', (cx - 7, y - 7, cx + 7, y + 7))
-                s, b = _txt(cx, y + 0.5, str(txt[1]), "small", "middle", "middle", fill=C["warn"])
-                add(s, b)
-                right, low = max(right, cx + 7), max(low, y + 7)
-            else:
-                s, b = _txt(col, y, txt, cls, "start", "middle", fill=colour,
-                            attrs=' data-role="label"')
-                add(s, b)
-                right, low = max(right, b[2]), max(low, b[3])
-        return right, low
+        s, b = leader_column(items, xr + 22, top=T(0, 0)[1] - 6, bottom=T(0, -self.sec.h)[1])
+        add(s, b)
+        return max(v[2] for v in b), max(v[3] for v in b)
 
     def _stress_diagram(self, T, add, x0, ytop, ybot, tags=False):
         """σ over the depth beside the section (from ytop at the top fibre to ybot at the bottom one): compression (+)
@@ -1674,16 +1461,14 @@ class _Drawing:
         W = max(min(0.18 * self.width, 0.7 * (ybot - ytop), 100.0), 50.0)
         k = W / smax  # px per MPa
         cmax = max([v for _, v in prof] + [v for v, _ in lims] + [0.0])
-        lab_w = max([text_width(_n(v, 2), TEXT_SIZE["dimtext"]) for _, v in prof] + [0.0]) / 2
+        lab_w = max([text_width(number(v, 2), TEXT_SIZE["dimtext"]) for _, v in prof] + [0.0]) / 2
         ax = x0 + max(k * cmax, lab_w) + 4
         y = lambda z: ytop + (ybot - ytop) * z / sec.h  # noqa: E731
         # split at zero crossings
-        pts = [(z, v) for z, v in prof]
-        seq = [pts[0]]
-        for (za, va), (zb, vb) in zip(pts[:-1], pts[1:]):
+        seq = [prof[0]]
+        for (za, va), (zb, vb) in zip(prof[:-1], prof[1:]):
             if va * vb < 0:
-                zc = za + (zb - za) * va / (va - vb)
-                seq.append((zc, 0.0))
+                seq.append((za + (zb - za) * va / (va - vb), 0.0))
             seq.append((zb, vb))
         for sign, cls in ((1, "comp"), (-1, "tens")):
             poly, cur = [], []
@@ -1697,125 +1482,64 @@ class _Drawing:
                 poly.append(cur)
             for p in poly:
                 if len(p) >= 2 and any(abs(px - ax) > 1e-6 for px, _ in p):
-                    ring = [(ax, p[0][1])] + p + [(ax, p[-1][1])]
-                    add(_poly(ring, cls))
+                    add(svg_poly([(ax, p[0][1])] + p + [(ax, p[-1][1])], cls))
         line = [(ax, y(prof[0][0]))] + [(ax - k * v, y(z)) for z, v in prof] + [(ax, y(prof[-1][0]))]
-        attrs = (f' data-role="stress" data-axis="{_fmt(ax)}" data-scale="{k:.9g}" data-z="'
-                 + " ".join(_fmt(z) for z, _ in prof) + '" data-sigma="' + " ".join(f"{v:.9g}" for _, v in prof) + '"')
-        add(f'<polyline points="{" ".join(f"{_g(px)},{_g(py)}" for px, py in line)}" class="fm-curve"{attrs}/>')
-        add(_line(ax, ytop - 4, ax, ybot + 4, "axis"))
+        attrs = (f' data-role="stress" data-axis="{fmt(ax)}" data-scale="{k:.9g}" data-z="'
+                 + " ".join(fmt(z) for z, _ in prof) + '" data-sigma="' + " ".join(f"{v:.9g}" for _, v in prof) + '"')
+        add(svg_poly(line, "curve", closed=False, attrs=attrs))
+        add(svg_line(ax, ytop - 4, ax, ybot + 4, "axis"))
         low = ybot + 4
         if st.get("cracked"):
             edge, x = st["cracked"]
             if x < sec.h:
                 za, zb = (x, sec.h) if edge == "top" else (0.0, sec.h - x)
-                s, b = _txt(ax + 5, y((za + zb) / 2), self.L["cracked"], "small", "start", "middle")
-                add(s, b)
-        # values at the ends
-        if not schematic:
-            for (z, v), (dy, base) in zip((prof[0], prof[-1]), ((-8, "auto"), (11, "middle"))):
+                s, b = text_item(ax + 5, y((za + zb) / 2), self.L["cracked"], "small", anchor="start", halo=True)
+                add(s, [b])
+        if not schematic:  # the values at the ends
+            for (z, v), dy in zip((prof[0], prof[-1]), (-8, 11)):
                 if abs(z) < 1e-9 or abs(z - sec.h) < 1e-9:
-                    px, py = ax - k * v, y(z)
-                    s, b = _txt(px, py + dy, _n(v, 2), "dimtext", "middle", "middle",
-                                fill=C["compression"] if v > 0 else C["tension"] if v < 0 else None)
-                    add(s, b)
+                    s, b = text_item(ax - k * v, y(z) + dy, number(v, 2), "dimtext", halo=True,
+                                     fill=C["compression"] if v > 0 else C["tension"] if v < 0 else None)
+                    add(s, [b])
                     low = max(low, b[3])
         for v, lab in lims:  # the label above, running towards the zero line
             px = ax - k * v
-            add(f'<line x1="{_fmt(px)}" y1="{_fmt(ytop)}" x2="{_fmt(px)}" y2="{_fmt(ybot)}" class="fm-dim" '
-                f'stroke-dasharray="4 3" data-role="limit"/>')
-            s, b = _txt(px + (-3 if v < 0 else 3), ytop - 21, f"{lab} = {_n(abs(v), 2)}", "small",
-                        "end" if v < 0 else "start", "middle")
-            add(s, b)
+            add(svg_line(px, ytop, px, ybot, "dim", style="stroke-dasharray:4 3", attrs=' data-role="limit"'))
+            s, b = text_item(px + (-3 if v < 0 else 3), ytop - 21, f"{lab} = {number(abs(v), 2)}", "small",
+                             anchor="end" if v < 0 else "start", halo=True)
+            add(s, [b])
         if tags:
             for yy, e in ((ytop, "top"), (ybot, "bottom")):
-                s, b = _txt(ax + 6, yy, self.L["edge"][e], "small", "start", "middle")
-                add(s, b)
+                s, b = text_item(ax + 6, yy, self.L["edge"][e], "small", anchor="start", halo=True)
+                add(s, [b])
         cap = self.L["sigma"] if not schematic else \
             ("混凝土压应力（示意）" if self.lang == "zh" else "concrete stress (schematic)")
-        s, b = _txt(ax, low + 10, cap, "small", "middle", "middle")
-        add(s, b)
+        s, b = text_item(ax, low + 10, cap, "small")
+        add(s, [b])
         low = b[3]
-        s, b = _txt(ax - 6, low + 8, f"← {self.L['C']}", "small", "end", "middle")
-        add(s, b)
-        s, b2 = _txt(ax + 6, low + 8, f"{self.L['T']} →", "small", "start", "middle")
-        add(s, b2)
-        return max(b[3], b2[3])
+        s, b = text_item(ax - 6, low + 8, f"← {self.L['C']}", "small", anchor="end")
+        s2, b2 = text_item(ax + 6, low + 8, f"{self.L['T']} →", "small", anchor="start")
+        add(s + s2, [b, b2])
 
-    def _info(self, add, y):
-        """the text block under the drawing, left-aligned on the page: (text, class, colour, flag) per item, flag True
-        for a heading, ("num", n) for a numbered callout; a verdict "→ OK" in green, "→ NOT OK" in red"""
-        W, x = self.width - 24, 12.0
-        for text, cls, fill, flag in self.info:
-            size = TEXT_SIZE.get(cls, 12.0)
-            indent = 0.0
-            if isinstance(flag, tuple):
-                add(f'<circle cx="{_fmt(x + 7)}" cy="{_fmt(y)}" r="7" fill="#fff" stroke="{C["warn"]}" '
-                    f'stroke-width="1.2"/>', (x, y - 7, x + 14, y + 7))
-                s, b = _txt(x + 7, y + 0.5, str(flag[1]), "small", "middle", "middle", fill=C["warn"])
-                add(s, b)
-                text = text.split("  ", 1)[1]
-                indent = 20.0
-            if flag is True:
-                y += 4
-            c = fill
-            if text.endswith(f"→ {self.L['ok']}"):
-                c = C["ok"]
-            elif text.endswith(f"→ {self.L['not']}"):
-                c = C["warn"]
-            text = re.sub(r"(\S) (mm|kN|MPa|→)", "\\1\u00a0\\2", text)  # a number keeps its unit on wrapping
-            text = text.replace(" = ", "\u00a0=\u00a0")  # and its symbol
-            for line in _wrap(text, size, W - indent):
-                s, b = _txt(x + indent, y, line, cls, "start", "middle", fill=c,
-                            attrs=' font-weight="600"' if flag is True else "")
-                add(s, b)
-                y += size + 5
-        for note in self.notes:
-            for line in _wrap(note, TEXT_SIZE["small"], W):
-                s, b = _txt(x, y, line, "small", "start", "middle")
-                add(s, b)
-                y += TEXT_SIZE["small"] + 5
-        return y
-
-    def _legend(self, add, y):
+    def _legend_entries(self):
+        """(class, label, kind) of what the drawing shows"""
         L, sec = self.L, self.sec
         ent = [("concrete", L["concrete"])]
         if self.shape.topping:
             ent.append(("topping", L["topping"]))
         if len(sec.bars):
-            ent.append(("bar", L["bar"]))
+            ent.append(("bar", L["bar"], "dot"))
         if self.stirrup:
-            ent.append(("stirrup", L["stirrup"]))
+            ent.append(("stirrup", L["stirrup"], "ring"))
         if self.tendons:
-            ent.append(("duct", L["duct"] if any(g["ducts"] for g in self.tendons) else L["strand"]))
+            ent.append(("duct", L["duct"] if any(g["ducts"] for g in self.tendons) else L["strand"],
+                        lambda x, y: svg_circle(x + 10, y, 5, "duct") + svg_circle(x + 10, y, 2.6, "tendon")))
         if self.ext:
-            ent.append(("external", L["external"]))
+            ent.append(("external", L["external"], "dot"))
         if self.zone is not None:
             ent.append(("comp", L["comp"]))
         if any(c == "na" for _, c, *_ in self.lines):
             ent.append(("na", L["na"]))
         if self.warn:
-            ent.append(("warn", L["warn"]))
-        x0, x, W = 12.0, 12.0, self.width - 12
-        for cls, lab in ent:
-            w = 22 + text_width(lab, TEXT_SIZE["small"]) + 14
-            if x + w > W and x > x0:
-                x, y = x0, y + 16
-            if cls in ("concrete", "topping", "comp"):
-                add(f'<rect x="{_fmt(x)}" y="{_fmt(y - 5)}" width="16" height="10" class="fm-{cls}"/>')
-            elif cls in ("bar", "external"):
-                add(f'<circle cx="{_fmt(x + 8)}" cy="{_fmt(y)}" r="4" class="fm-{cls}"/>')
-            elif cls == "duct":
-                add(f'<circle cx="{_fmt(x + 8)}" cy="{_fmt(y)}" r="5" class="fm-duct"/>'
-                    f'<circle cx="{_fmt(x + 8)}" cy="{_fmt(y)}" r="2.6" class="fm-tendon"/>')
-            elif cls == "stirrup":
-                add(f'<rect x="{_fmt(x + 1)}" y="{_fmt(y - 5)}" width="14" height="10" rx="3" class="fm-stirrup"/>')
-            elif cls == "na":
-                add(_line(x, y, x + 16, y, "na"))
-            elif cls == "warn":
-                add(f'<rect x="{_fmt(x + 1)}" y="{_fmt(y - 5)}" width="14" height="10" rx="5" class="fm-warn"/>')
-            s, b = _txt(x + 22, y, lab, "small", "start", "middle")
-            add(s, b)
-            x += w
-        return y + 10
-
+            ent.append(("warn", L["warn"], "ring"))
+        return ent

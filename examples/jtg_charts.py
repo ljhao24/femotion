@@ -234,12 +234,12 @@ fs2 = charts.stress_chart(x2, top=env(freq["top"]), bottom=env(freq["bottom"]), 
 h = (lambda z, en: f"<h2>{z if zh else en}</h2>")  # noqa: E731
 page = viz.html([
     h("一、钢筋混凝土连续 T 梁（2 × 16 m）", "1. Reinforced-concrete continuous T girder (2 × 16 m)"),
-    h("抗剪：斜截面与剪力包络", "Shear: inclined sections and shear envelope"), charts.stack([el, fv]),
+    h("抗剪：斜截面与剪力包络", "Shear: inclined sections and shear envelope"), viz.stack([el, fv]),
     h("受弯：弯矩包络与抵抗弯矩图", "Flexure: moment envelope and resisting moment"), fm,
     h("验算利用率", "Utilisation"), fu,
-    h("正常使用：裂缝宽度与挠度", "Serviceability: crack width and deflection"), charts.stack([fw, ff]),
+    h("正常使用：裂缝宽度与挠度", "Serviceability: crack width and deflection"), viz.stack([fw, ff]),
     h("二、预应力混凝土连续 I 梁（2 × 30 m，A 类）", "2. Prestressed continuous I girder (2 × 30 m, class A)"),
-    charts.stack([fs1, fs2]),
+    viz.stack([fs1, fs2]),
 ], title=label("沿梁验算图", "Checks along the girder"), css="h2{font-size:16px;margin:28px 0 4px}")
 with open(out, "w", encoding="utf-8") as fh:
     fh.write(page)

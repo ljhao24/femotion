@@ -11,7 +11,8 @@ import pytest
 
 from femotion.codes import jtg
 from femotion.codes.jtg.figures import bar_layout, section_figure
-from femotion.viz import TEXT_SIZE, _text_box
+from femotion.viz import TEXT_SIZE
+from femotion.viz import text_box as _text_box
 
 NS = "{http://www.w3.org/2000/svg}"
 STRAND = jtg.tendon("strand", 1860)

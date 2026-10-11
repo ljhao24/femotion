@@ -117,6 +117,7 @@ def composite_shear(comp: Composite, V1d: float, Vd: float, stirrups, *, gamma0:
     a2 = 1.0 if comp.precast.prestressed else None
     cmp = shear(sec, Vd, stirrups, gamma0=gamma0, pc_class=pc_class, alpha2=a2, **kw)
     cmp.name = "shear (composite member)"
+    cmp.section = comp
     cmp.clause = "JTG 3362-2018 8.1.5, 5.2.9"
     R_pre = shear(comp.precast, 0.0, stirrups, pc_class=pc_class, **kw).resistance
     if R_pre > cmp.resistance:
@@ -142,7 +143,7 @@ def interface_shear(comp: Composite, Vd: float, stirrups, *, gamma0: float = 1.0
     return Check("composite joint shear (beam)", gamma0 * Vd, R, "kN", "JTG 3362-2018 8.1.6",
                  {"b": b, "h0": h0, "fcd": fcd, "Asv": Asv},
                  ["8.1.6 holds with the detailing of 9.3.16, 9.3.17: check it with "
-                  "jtg.detailing.composite_beam_detailing (warnings)"])
+                  "jtg.detailing.composite_beam_detailing (warnings)"], section=comp)
 
 
 def interface_shear_slab(Vd: float, *, b: float, h0: float, gamma0: float = 1.0, s: float | None = None,
@@ -202,10 +203,10 @@ def composite_prestress_stress(comp: Composite, tendons, *, M_p2: float = 0.0):
     return sigma
 
 
-def _edge_check(title: str, edges: dict, k_: str, segmental: bool, clause: str) -> Check:
+def _edge_check(title: str, edges: dict, k_: str, segmental: bool, clause: str, section, hogging: bool) -> Check:
     """6.3.1 item 1 at every edge (as jtg.crack_resistance): edges name → sigma_st, sigma_lt (None: not checked),
     sigma_pc, ftk[, sigma_G]; the governing edge reported: the least margin among the edges in tension under the loads
-    or the prestress (sls._tension_edges)"""
+    or the prestress (sls._tension_edges); section, hogging: those of the Check"""
     f = 0.80 if segmental else 0.85
     for e in edges.values():
         if k_ == "FULL":
@@ -223,7 +224,7 @@ def _edge_check(title: str, edges: dict, k_: str, segmental: bool, clause: str) 
     if k_ == "B":
         d["sigma_G"] = g["sigma_G"]
     chk = Check(f"crack resistance ({title}, {kind}, {gov})", g["demand"], g["limit"], "MPa", clause, d,
-                limit_check=True, symbol=sym)
+                limit_check=True, symbol=sym, section=section, hogging=hogging)
     for n in cand:
         e = edges[n]
         if n != gov and e["demand"] > e["limit"] + 1e-9:
@@ -290,8 +291,8 @@ def composite_crack_resistance(comp: Composite, *, M1k: float, M1Gk: float, M2s:
                           "W0": I0 / z0,
                           "sigma_G": (M2Gk or 0.0) * t2(0.0)}
     clause = "JTG 3362-2018 8.1.8, 6.3.1" + (" item 1-3" if k_ == "B" else "")
-    out = [_edge_check("precast girder", pre, k_, segmental, clause),
-           _edge_check("composite member", cmp, k_, segmental, clause)]
+    out = [_edge_check("precast girder", pre, k_, segmental, clause, p, M1k < 0),
+           _edge_check("composite member", cmp, k_, segmental, clause, comp, M1Gk + M2s < 0)]
     if not callable(sigma_extra) and sigma_extra:
         out[1].notes.append(f"sigma_extra = {float(sigma_extra):g} MPa added at the precast bottom only (pass a function of "
                             "the depth for every edge)")
@@ -351,7 +352,8 @@ def composite_inclined_crack_resistance(comp: Composite, M1: float, V1: float, M
     w = max(pts, key=lambda q: q["sigma_tp"])
     f = (0.6 if precast else 0.4) if k_ == "FULL" else (0.7 if precast else 0.5)
     return Check("crack resistance (inclined section, composite)", w["sigma_tp"], f * comp.precast.concrete.ftk, "MPa",
-                 "JTG 3362-2018 8.1.9, 6.3.1, 6.3.3", {"at": w, "points": pts}, limit_check=True, symbol="σtp")
+                 "JTG 3362-2018 8.1.9, 6.3.1, 6.3.3", {"at": w, "points": pts}, limit_check=True, symbol="σtp",
+                 section=comp, hogging=M1 + M2 < 0)
 
 
 def composite_principal_compression(comp: Composite, M1: float, V1: float, M2: float, V2: float, *, stirrups=None,
@@ -366,7 +368,7 @@ def composite_principal_compression(comp: Composite, M1: float, V1: float, M2: f
     wt = max(pts, key=lambda q: q["sigma_tp"])
     chk = Check("principal compressive stress (service, composite)", wc["sigma_cp"], 0.6 * c.fck, "MPa",
                 "JTG 3362-2018 8.1.17, 7.1.6", {"at": wc, "sigma_tp": wt["sigma_tp"], "points": pts}, limit_check=True,
-                symbol="σcp")
+                symbol="σcp", section=comp, hogging=M1 + M2 < 0)
     if wt["sigma_tp"] <= 0.5 * c.ftk:
         chk.notes.append(f"σtp = {wt['sigma_tp']:.2f} ≤ 0.5 ftk = {0.5 * c.ftk:.2f} MPa: detailing stirrups (7.1.6)")
     elif stirrups is not None:
@@ -416,7 +418,7 @@ def composite_crack_width(comp: Composite, *, M1Gk: float, M2s: float, M2l: floa
     lim = crack_width_limit(env)
     chk = Check("crack width (composite)", W, lim, "mm", "JTG 3362-2018 8.1.11, 6.4.3",
                 {"sigma_s1": s1, "sigma_s2": s2, "sigma_ss": sss, "C1": C1, "C2": C2, "C3": C3, "c": c, "d": d,
-                 "rho_te": rho_te, "h1_used": h1, "M1u": M1u}, limit_check=True, symbol="Wcr")
+                 "rho_te": rho_te, "h1_used": h1, "M1u": M1u}, limit_check=True, symbol="Wcr", section=comp)
     if sss > 0.75 * p.steel.fsk:
         chk.failed.append(f"σss = {sss:.0f} > 0.75 fsk = {0.75 * p.steel.fsk:.0f} MPa (8.1.11-2)")
     return chk
@@ -480,7 +482,7 @@ def composite_service_stresses(comp: Composite, *, M1k: float, M2k: float, pc_cl
     lim_p = (0.75 if tn.kind == "bar" else 0.65) * tn.fpk
     chk = Check(f"concrete compression in service (composite, {gov})", edges[gov][0], edges[gov][1], "MPa",
                 "JTG 3362-2018 8.1.17, 7.1.3, 7.1.5", {"edges": edges, "tendon_stress": sp, "tendon_limit": lim_p},
-                limit_check=True, symbol="σ")
+                limit_check=True, symbol="σ", section=comp, hogging=M1k + M2k < 0)
     for k, (v, lim) in edges.items():
         if k != gov and v > lim + 1e-9:
             chk.failed.append(f"{k}: {v:.2f} > {lim:.2f} MPa (7.1.5-1)")

@@ -116,6 +116,7 @@ def girder_detailing(sec: RCSection | None = None, *, kind: str | None = None, h
     pc_class "A" or "B" (partially prestressed): with sec, the tension face needs ordinary bars (9.4.2): the bottom
     rows (edge_masks), or with hogging=True (over interior supports) the top rows."""
     R = _Rules("prestressed girder detailing (9.4.1, 9.4.2)", "JTG 3362-2018 9.4.1, 9.4.2")
+    R.chk.section, R.chk.hogging = sec, hogging
     if kind is None and sec is not None and sec.kind in ("tee", "box"):
         kind = sec.kind
     h = sec.h if h is None and sec is not None else h
@@ -323,6 +324,7 @@ def duct_detailing(sec: RCSection | None = None, *, ds: float | None = None, d_i
     Straight length behind the anchor ≥ anchor_straight_min(F_break) (should). Grout strength ≥ 50 MPa. Curved ducts
     (9.4.9 item 2): curved_spacing; their cover: 9.4.8, curved_duct_detailing."""
     R = _Rules("duct detailing (9.4.9–9.4.12)", "JTG 3362-2018 9.4.9–9.4.12")
+    R.chk.section = sec
     if sec is not None and sec.pretensioned:
         R.note("pretensioned member: no ducts (9.4.9–9.4.12 are for post-tensioned members)")
         return R.report()

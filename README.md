@@ -131,13 +131,15 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | `femotion.post` | principal stresses, stress trajectories, stiffness-matrix patterns | — |
 | `femotion.result` | the `fem-result/1` file | — |
 | `femotion.io` | other formats: read / write meshes, export results (VTU, ParaView `.pvd` collections) | meshio |
-| `femotion.viz` | engineering drawings and charts as plain SVG: shown in Jupyter, saved as .svg or as an HTML page | — |
+| `femotion.viz` | engineering drawings and charts as plain SVG: the page solved so every label fits, labels placed clear of each other, legends, text blocks, dimensions, supports, arrows, charts stacked on one axis; shown in Jupyter, saved as .svg or as an HTML page ([docs/figures.md](docs/figures.md)) | — |
 | `femotion.models` | ready-made illustrative structures (a 500 m cable-stayed bridge) | — |
 | `femotion.frame.influence` | influence lines of every section from one factorisation, lane-load and axle-train envelopes, exact section forces under distributed loads | own (linear) |
 | `femotion.frame.prestress` | tendons on frame models: equivalent loads, total, primary and secondary effects | own (linear) |
 | `femotion.frame.thermal` | imposed strains and curvatures (temperature, shrinkage) on frame models: secondary effects | own (linear) |
+| `femotion.frame.figures` | load cases on a frame in elevation; the worst placement of a lane load or vehicle over a section's influence line | viz |
 | `femotion.frame.stages` | construction stages (members, supports, links, loads, tendons added and removed) and linear creep and shrinkage step by step in time: section forces, reactions, displacements since each node was built | own (linear) |
 | `femotion.codes.jtg` | Chinese highway bridge codes: traffic, crowd and temperature actions and combinations (JTG D60-2015); effective flange widths, ultimate-limit-state resistance of reinforced and prestressed concrete sections with internal and external tendons (flexure, shear, compression, tension, torsion, local compression, punching), prestress losses, crack resistance with temperature gradients, crack width, deflection and stress checks, composite flexural members, deck slabs, box girders across the bridge, creep secondary effects, strut-and-tie models, anchorage zones, diaphragms, cap beams and pile caps, hinges, elastomeric bearings, expansion joints, durability and detailing (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
+| `femotion.codes.jtg.figures`, `.charts` | sections to scale with their reinforcement and the result of a check laid over it (a `Check` keeps its section and shows itself in Jupyter); moment, shear, utilisation, stress, deflection and crack-width charts along a girder ([docs/figures.md](docs/figures.md)) | viz |
 
 ### Which frame solver?
 
@@ -183,7 +185,10 @@ external tendons; `examples/jtg_composite_girder.py` a precast girder with its d
 precast girders made continuous, stage by stage with creep and shrinkage of appendix C to ten years (creep secondary
 moments, pre-camber); `examples/jtg_box_transverse.py` the deck slab of a box girder across the bridge;
 `examples/jtg_substructure.py` a pier cap, pile caps, piles and columns; `examples/jtg_devices.py` bearings, an expansion
-joint and a concrete hinge; `examples/jtg_detailing.py` durability and the detailing of a T girder. Values and formulas have been checked clause
+joint and a concrete hinge; `examples/jtg_detailing.py` durability and the detailing of a T girder. Drawings for the
+report ([docs/figures.md](docs/figures.md)): `examples/jtg_figures_section.py` sections with their checks laid over
+them; `examples/jtg_charts.py` moment, shear, utilisation and serviceability charts along a girder;
+`examples/jtg_loads_figures.py` load cases and influence-line placements. Values and formulas have been checked clause
 by clause against the official texts. [docs/codes/](docs/codes/) has one file per code (in Chinese) with every clause,
 formula, table and parameter the program uses, page references and the function using each, and lists what is not
 covered.

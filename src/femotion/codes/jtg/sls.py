@@ -147,6 +147,7 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
     if transfer is not None:
         chk = crack_resistance(transfer.apply(sec), Ms, Ml, pc_class=pc_class, segmental=segmental, M_p2=M_p2, M_G=M_G,
                                temperature=temperature, psi_t=psi_t)
+        chk.section = sec
         chk.clause += ", 6.1.8"
         chk.details["transfer_factor"] = transfer.factors(len(sec.tendons))
         return chk
@@ -179,17 +180,18 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
         d["sigma_t"] = g["sigma_t"]
     if k_ == "FULL":
         chk = Check(f"crack resistance (normal section, full prestress, {gov} edge)", g["demand"], g["limit"], "MPa",
-                    f"JTG 3362-2018 6.3.1-{2 if segmental else 1}", d, limit_check=True, symbol="σst")
+                    f"JTG 3362-2018 6.3.1-{2 if segmental else 1}", d, limit_check=True, symbol="σst", section=sec,
+                    hogging=Ms < 0)
     elif k_ == "A":
         chk = Check(f"crack resistance (normal section, class A, {gov} edge)", g["demand"], g["limit"], "MPa",
-                    "JTG 3362-2018 6.3.1-3, -4", d, limit_check=True, symbol="σst")
+                    "JTG 3362-2018 6.3.1-3, -4", d, limit_check=True, symbol="σst", section=sec, hogging=Ms < 0)
         for n, e in edges.items():
             if e["sigma_lt"] > e["sigma_pc"] + 1e-9:
                 chk.failed.append(f"{n}: σlt = {e['sigma_lt']:.2f} > σpc = {e['sigma_pc']:.2f} MPa (6.3.1-4)")
     else:
         d["sigma_G"] = g["sigma_G"]
         chk = Check(f"crack resistance (normal section, class B under self-weight, {gov} edge)", g["demand"], g["limit"], "MPa",
-                    "JTG 3362-2018 6.3.1 item 1-3", d, limit_check=True, symbol="σG")
+                    "JTG 3362-2018 6.3.1 item 1-3", d, limit_check=True, symbol="σG", section=sec, hogging=Ms < 0)
     for n in cand:
         e = edges[n]
         if n != gov and e["demand"] > e["limit"] + 1e-9:
@@ -292,7 +294,7 @@ def inclined_crack_resistance(sec: RCSection, Ms: float, Vs: float, *, pc_class:
         d["transfer_factor"] = tr.factors(len(sec.tendons))
     return Check("crack resistance (inclined section)", w["sigma_tp"], f * sec.concrete.ftk, "MPa",
                  f"JTG 3362-2018 6.3.1-{eq}, 6.3.3" + (", 6.1.8" if tr is not None else ""), d, limit_check=True,
-                 symbol="σtp")
+                 symbol="σtp", section=sec, hogging=Ms < 0)
 
 
 def principal_compression(sec: RCSection, Mk: float, Vk: float, *, stirrups=None, stirrup_steel=None, **kw) -> Check:
@@ -310,7 +312,8 @@ def principal_compression(sec: RCSection, Mk: float, Vk: float, *, stirrups=None
     wc = max(pts, key=lambda p: p["sigma_cp"])
     wt = max(pts_t, key=lambda p: p["sigma_tp"])
     chk = Check("principal compressive stress (service)", wc["sigma_cp"], 0.6 * c.fck, "MPa", "JTG 3362-2018 7.1.6",
-                {"at": wc, "sigma_tp": wt["sigma_tp"], "points": pts}, limit_check=True, symbol="σcp")
+                {"at": wc, "sigma_tp": wt["sigma_tp"], "points": pts}, limit_check=True, symbol="σcp", section=sec,
+                hogging=Mk < 0)
     if wt["sigma_tp"] <= 0.5 * c.ftk:
         chk.notes.append(f"σtp = {wt['sigma_tp']:.2f} ≤ 0.5 ftk = {0.5 * c.ftk:.2f} MPa: detailing stirrups (7.1.6)")
     elif stirrups is not None:
@@ -485,7 +488,7 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
 
     def skip(why):
         chk = Check("crack width", 0.0, lim if lim is not None else 0.0, "mm", "JTG 3362-2018 6.4.3", {}, [why],
-                    limit_check=True, symbol="Wcr")
+                    limit_check=True, symbol="Wcr", section=sec, hogging=Ms < 0)
         if lim is None:
             chk.failed.append(f"class B members with {_ptendon(sec).kind} are not allowed in environment V (table 6.4.2)")
         return chk
@@ -694,7 +697,7 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
     if th is not None:
         dd.update(M_s=Ms, N_s=N)
     chk = Check("crack width", W, lim if lim is not None else 0.0, "mm", "JTG 3362-2018 6.4.3, table 6.4.2", dd, notes,
-                limit_check=True, symbol="Wcr")
+                limit_check=True, symbol="Wcr", section=sec, hogging=Ms < 0)
     if lim is None:
         chk.failed.append(f"class B members with {_ptendon(sec).kind} are not allowed in environment V (table 6.4.2)")
     return chk
@@ -959,7 +962,7 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
         sp = sec._sigma_pe() + aEP * skt
         d = {"edge_stress": edge, "tendon_stress": sp, "sigma_kt": skt}
         chk = Check(f"concrete compression in service ({gov} edge)", edge[gov], 0.5 * c.fck, "MPa",
-                    "JTG 3362-2018 7.1.3, 7.1.5", d, limit_check=True, symbol="σkc + σpt")
+                    "JTG 3362-2018 7.1.3, 7.1.5", d, limit_check=True, symbol="σkc + σpt", section=sec, hogging=Mk < 0)
     else:
         if temperature is not None and temperature.kind == "cracked":
             raise ValueError("temperature: thermal_stresses of the uncracked section; the cracked one is built here")
@@ -972,7 +975,7 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
         d = g["details"]
         sp = d["tendon_stress"]
         chk = Check("concrete compression in service (cracked section)", g["scc"], 0.5 * c.fck, "MPa",
-                    "JTG 3362-2018 7.1.4, 7.1.5", d, limit_check=True, symbol="σcc")
+                    "JTG 3362-2018 7.1.4, 7.1.5", d, limit_check=True, symbol="σcc", section=sec, hogging=Mk < 0)
         if temperature is not None:
             names = list(cases)
             sps = np.array([cases[n]["details"]["tendon_stress"] for n in names])
@@ -1074,7 +1077,7 @@ def transient_rc(sec: RCSection, Mk: float = 0.0, Vk: float | None = None, *, fc
         d["cases"] = rows
     chk = Check("transient stresses (reinforced concrete)", g["sigma_cc"], 0.80 * fck_t, "MPa",
                 _transient_clause("JTG 3362-2018 7.2.4", ks, bool(M_crane or V_crane)), d, limit_check=True,
-                symbol="σtcc")
+                symbol="σtcc", section=sec, hogging=g["M"] < 0)
     gs = max(rows, key=lambda r: r["sigma_s"].max(initial=0.0))
     d.update(sigma_s=gs["sigma_s"], dynamic_factor_steel=gs["factor"])
     if gs["sigma_s"].max(initial=0.0) > 0.75 * sec.steel.fsk:
@@ -1198,7 +1201,8 @@ def transient_pc(sec: RCSection, M: float = 0.0, *, fcu: float, M_G: float = 0.0
     if len(rows) > 1:
         d["cases"] = rows
     chk = Check(f"transient stresses (prestressed, {gov} edge in compression)", max(st, sb), 0.70 * fck_t, "MPa",
-                _transient_clause("JTG 3362-2018 7.2.8", ks, bool(M_crane)), d, limit_check=True, symbol="σtcc")
+                _transient_clause("JTG 3362-2018 7.2.8", ks, bool(M_crane)), d, limit_check=True, symbol="σtcc",
+                section=sec, hogging=gc["M"] < 0)
     t_, b_ = gt["top"], gt["bottom"]
     sct = -min(t_, b_)
     if sct > 0:

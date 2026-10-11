@@ -82,6 +82,13 @@ Python 写出、JavaScript 读回，两边用同一份标准样例（`tests/data
 钢筋线形 → 损失 → 有效预应力 → 预加力和温度梯度的次弯矩 → 组合 → 承载能力、抗裂、应力、挠度、锚固区验算），
 `examples/jtg_external_girder.py`（体外预应力箱梁），`examples/jtg_composite_girder.py`（预制预应力梁加现浇桥面板），`examples/jtg_staged_girder.py`（先简支后连续的三跨预应力梁，算到成桥后 10 年），`examples/jtg_box_transverse.py`（箱梁顶板横向计算、冲切、面内主应力），`examples/jtg_substructure.py`（双柱墩盖梁、桩基承台、桩和墩柱，含构造检查），`examples/jtg_devices.py`（支座、伸缩缝、混凝土铰），`examples/jtg_detailing.py`（耐久性和 T 梁构造）。
 
+计算书插图（[docs/figures.md](docs/figures.md)，英文）：`femotion.codes.jtg.figures` 按比例画截面配筋，并把验算结果叠在上面
+（受压区、中和轴、应力图、不满足的构造圈出并编号）；验算结果 `Check` 记下所验算的截面（`Check.section`，负弯矩时仍是原截面）
+和受压面朝向（`Check.hogging`），在 Jupyter 里直接显示文字结论和截面图。`femotion.codes.jtg.charts` 画沿梁的弯矩包络与抵抗弯矩图、
+剪力包络与斜截面、利用率、应力、挠度和裂缝宽度图；`femotion.frame.figures` 画荷载布置和影响线最不利加载。三类图都建在
+`femotion.viz` 上（只用标准库和 NumPy 的 SVG），标题、图例、注释、字号、线宽、颜色一致，页面按"所有标注都放得下"求解，
+标注自动避让。例子：`examples/jtg_figures_section.py`、`examples/jtg_charts.py`、`examples/jtg_loads_figures.py`。
+
 规范里的数值、公式和条文号已经逐条对照交通运输部公开的规范原文核对过，程序用到的全部条文、公式、表格和参数按规范分文件整理在 [docs/codes/](docs/codes/)（[JTG D60—2015](docs/codes/JTG_D60-2015.md)、[JTG 3362—2018](docs/codes/JTG_3362-2018.md)），每项注明原文页码和对应函数，出计算书时可以直接引用；没有做的条文列在 JTG 3362—2018 那份的第 11 节。体内无黏结预应力规范没有规定，不含。
 
 用法示例、模块说明和验证项目见英文 [README](README.md)。
