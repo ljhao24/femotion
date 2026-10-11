@@ -1,11 +1,14 @@
 """Class B prestressed members under axial force (crack width, 6.4.4 item 3 generalised), and the temperature gradient
 on cracked sections: class B stresses in service (7.1.4) and crack widths (6.4), JTG 3362-2018 with appendix D and J.
 
-Independent sources: the reinforced-concrete formulas of 6.4.4 (6.4.4-3, -4 with ηs) as the limit of a vanishing
-prestress, statics of the decompressed section taken about another point, the cubic of appendix J for the neutral axis,
-and a fibre model of the cracked section (strips of concrete, steel at its own modulus, plane strain solved for
-equilibrium) in place of appendix D's closed form and of the appendix J solver (sections chosen so that the notes of
-J.0.1 do not act); limits (N → 0, zero temperature, a secondary moment alone) against the results without these terms."""
+Independent sources: the reinforced-concrete formulas of 6.4.4 (6.4.4-3, -4 with ηs, a separate branch of the code)
+as the limit of a vanishing prestress, the cubic of appendix J for the neutral axis, and a fibre model of the cracked
+section (strips of concrete, steel at its own modulus, plane strain solved for equilibrium; it implements the same
+convention — the axis fixed by the loads — but not the same formulas) in place of appendix D's closed form and of the
+appendix J solver (sections chosen so that the notes of J.0.1 do not act, or only the self-stress compared). Checks of
+continuity and monotony (N → 0±, F = Np0 + N through zero, a small secondary axial force) and limits (zero temperature,
+a secondary moment alone) against the results without these terms. Taking moments about the top fibre is only a
+consistency check (algebraically the same equilibrium)."""
 import math
 
 import numpy as np
@@ -15,6 +18,7 @@ from scipy.optimize import brentq
 from femotion.codes import jtg
 
 BUNDLES = [(1, 8, 15.2)]
+A25 = math.pi * 25 ** 2 / 4
 
 
 def _pc_rect(**kw):
@@ -84,8 +88,9 @@ def test_class_b_axial_force_limit_of_vanishing_prestress():
     """Np0 → 0 (one pretensioned wire of 1e-9 mm²): the generalised 6.4.4-11 must reduce to the reinforced-concrete
     formulas of 6.4.4 item 1 — eccentric compression 6.4.4-4 with es = ηs e0 + ys (6.4.4-6, -8) and eccentric tension
     6.4.4-3 about A's — computed by the separate reinforced-concrete branch (itself checked against hand calculations
-    in test_sls.py)"""
-    kw = dict(concrete="C50", bottom=[(4, 20, 40)], top=[(4, 16, 40)])
+    in test_sls.py). The compression bars at 150 mm make h0 − a's (810) shorter than 0.87 h0 (835), so that the net
+    tension side z = min(h0 − a', 0.87 h0) is the z of 6.4.4-3"""
+    kw = dict(concrete="C50", bottom=[(4, 20, 40)], top=[(4, 16, 150)])
     tiny = jtg.rect(400, 1000, tendons=[(1e-9, 960, 1000)], pretensioned=True, sigma_pe=1000.0, **kw)
     rc = jtg.rect(400, 1000, **kw)
     for N, l0 in [(500.0, None), (500.0, 20000.0), (-500.0, None), (-80.0, None)]:
@@ -96,13 +101,14 @@ def test_class_b_axial_force_limit_of_vanishing_prestress():
         if N > 0:
             assert b.details["eta_s"] == pytest.approx(r.details["eta_s"], rel=1e-12)
             assert b.details["z"] == pytest.approx(r.details["z"], rel=1e-9)
-        else:  # net tension: z = h0 − a' with a' at the top bars, as 6.4.4-3
-            assert b.details["a'"] == pytest.approx(40.0) and b.details["z"] == pytest.approx(960.0 - 40.0)
+        else:
+            assert b.details["a'"] == pytest.approx(150.0) and b.details["z"] == pytest.approx(960.0 - 150.0)
 
 
-def test_class_b_axial_force_continuity_and_flexure():
-    """N → 0 from either side tends to the flexural 6.4.4-11 result; N = 0 is that result exactly (hand calculation as
-    test_sls.test_crack_width_class_b)"""
+def test_class_b_axial_force_flexure_and_member_type():
+    """N = 0 is 6.4.4-11 exactly (hand calculation as test_sls.test_crack_width_class_b). The nature of the forces is
+    the member's (6.4.3: C3 by the kind of member): declared flexural, σss and Wcr are continuous as N → 0±; by
+    default the sign of the load's N decides (C3 0.9 / 1.1)"""
     sec = _pc_rect()
     As, Ap = 4 * math.pi * 100, 1112.0
     Np0 = 1150 * Ap
@@ -114,14 +120,19 @@ def test_class_b_axial_force_continuity_and_flexure():
     r0 = jtg.crack_width(sec, 900.0, 700.0, pc_class="B", tendon_bundles=BUNDLES)
     assert r0.details["sigma_ss"] == pytest.approx(sss, rel=1e-12) and r0.details["C3"] == 1.0
     for N in (1e-7, -1e-7):
-        r = jtg.crack_width(sec, 900.0, 700.0, N=N, pc_class="B", tendon_bundles=BUNDLES)
-        assert r.details["sigma_ss"] == pytest.approx(sss, rel=1e-9)
+        r = jtg.crack_width(sec, 900.0, 700.0, N=N, pc_class="B", tendon_bundles=BUNDLES, member="flexural")
+        assert r.details["sigma_ss"] == pytest.approx(sss, rel=1e-9) and r.demand == pytest.approx(r0.demand, rel=1e-9)
+        d = jtg.crack_width(sec, 900.0, 700.0, N=N, pc_class="B", tendon_bundles=BUNDLES)
+        assert d.details["C3"] == (0.9 if N > 0 else 1.1)
+    with pytest.raises(ValueError):
+        jtg.crack_width(sec, 900.0, 700.0, pc_class="B", tendon_bundles=BUNDLES, member="bending")
 
 
-def test_class_b_axial_force_statics():
-    """the steel force from the generalised formula balances the external actions taken about the top fibre (another
-    moment centre than the formula's): (Np0 + N)(h0 − z) − T z = Np0 hps + N zg − (ηs Ms + Mp2), with the compression
-    resultant at h0 − z; Np0 at hps from σp0 Ap (σl6 = 0), N at the gross centroid"""
+def test_class_b_axial_force_consistency_about_the_top():
+    """consistency check about another moment centre (not an independent source): the steel force of the generalised
+    formula balances the external actions taken about the top fibre, (Np0 + N)(h0 − z) − T z = Np0 hps + N zg −
+    (ηs Ms + Mp2), with the compression resultant at h0 − z; Np0 at hps from σp0 Ap (σl6 = 0), N at the gross
+    centroid"""
     sec = _pc_rect()
     As, Ap = 4 * math.pi * 100, 1112.0
     At = As + Ap
@@ -136,8 +147,52 @@ def test_class_b_axial_force_statics():
         assert dd["h0"] == pytest.approx((As * 960 + Ap * 900) / At)
     # ηs acts on Ms only, not on Mp2 (D60 4.2.2 item 1: no eccentricity amplification of the prestress)
     r = jtg.crack_width(sec, 1100.0, 800.0, N=800.0, M_p2=120.0, l0=22000.0, pc_class="B", tendon_bundles=BUNDLES)
-    h0 = r.details["h0"]
-    assert r.details["eta_s"] == pytest.approx(1 + (22000 / 1000) ** 2 / (4000 * (1100 / 800 * 1e3) / h0))
+    assert r.details["eta_s"] == pytest.approx(1 + (22000 / 1000) ** 2 / (4000 * (1100 / 800 * 1e3) / r.details["h0"]))
+
+
+def test_class_b_net_tension_continuous_at_F_zero():
+    """F = Np0 + N through zero: z → 0.87 h0 from the compression side (6.4.4-5 as e → ∞) and z = min(h0 − a', 0.87 h0)
+    = 0.87 h0 on the tension side (a' = 40 mm): Wcr continuous, and growing with the tension"""
+    sec = _pc_rect()
+    Np0 = 1150 * 1112.0 / 1e3
+    kw = dict(pc_class="B", tendon_bundles=BUNDLES, member="tension")
+    w = {d: jtg.crack_width(sec, 1100.0, 800.0, N=-Np0 + d, **kw) for d in (1e-6, -1e-6)}
+    assert w[1e-6].demand == pytest.approx(w[-1e-6].demand, rel=1e-6)
+    assert w[-1e-6].details["z"] == pytest.approx(0.87 * w[-1e-6].details["h0"])
+    W = [jtg.crack_width(sec, 1100.0, 800.0, N=-n, **kw).demand for n in np.linspace(300.0, 2500.0, 23)]
+    assert all(b > a for a, b in zip(W[:-1], W[1:]))
+
+
+def test_class_b_tension_zone_below_the_cracked_axis():
+    """6.4.4-11 takes the steel of the tension zone: rows above the neutral axis of the cracked section are in
+    compression and left out. The axis is found here on a fibre model (independent of appendix J's solver): web rows
+    of 2φ20 at 560, 680 and 800 mm; with N = 1500 kN the axis drops below 560 and 680"""
+    sec = _web_bars()
+    model = _fibre_model(sec)
+    Np0, hps = 1150 * 1112.0, 900.0
+    for N in (0.0, 1500.0):
+        r = jtg.crack_width(sec, 1300.0, 900.0, N=N, pc_class="B", tendon_bundles=BUNDLES, d=20.0)
+        F = Np0 + N * 1e3
+        x = _fibre_axis(model, F, (Np0 * hps + N * 1e3 * 500.0 - 1300e6) / F)
+        assert r.details["x"] == pytest.approx(x, rel=1e-6)
+        rows = [(a, z) for a, z in sec.bars] + [(1112.0, 900.0)]
+        sel = [(a, z) for a, z in rows if z > max(500.0, x)]
+        assert r.details["h0"] == pytest.approx(sum(a * z for a, z in sel) / sum(a for a, _ in sel), rel=1e-12)
+        if N:
+            assert 680 < x < 800
+    # decompressed at the face, but the axis of the cracked section below every row: no steel in the tension zone
+    s3 = jtg.rect(500, 1200, concrete="C50", bottom=[(4, 20, 50)],
+                  tendons=[(1390, 1100, 1100, 90), (278, 120, 1150, 70)], sigma_pe=[1000.0, 1050.0])
+    r = jtg.crack_width(s3, 950.0, 700.0, pc_class="B", tendon_bundles=BUNDLES)
+    assert r.demand == 0.0 and "below all the bonded steel" in r.notes[0]
+    assert jtg.crack_width(s3, 1300.0, 900.0, pc_class="B", tendon_bundles=BUNDLES).demand > 0
+
+
+def _web_bars():
+    """_pc_rect with three web rows of 2φ20 at 560, 680 and 800 mm"""
+    s = _pc_rect()
+    web = np.array([[2 * math.pi * 100, z] for z in (560.0, 680.0, 800.0)])
+    return s.replace(bars=np.r_[s.bars, web], bar_d=np.r_[s.bar_d, [20.0, 20.0, 20.0]])
 
 
 def test_class_b_axial_force_decompression():
@@ -378,3 +433,137 @@ def test_crack_width_temperature_special_cases():
     th_cr = jtg.thermal_stresses(sec, jtg.temperature_gradient(600), cracked=True)
     with pytest.raises(ValueError):  # the cracked section is built inside
         jtg.crack_width(sec, 150.0, 100.0, temperature=th_cr)
+
+
+# ── 4. review cases: member type with the temperature's axial force, A'p, external tendons, hogging, axial forces ──
+def test_temperature_axial_force_keeps_the_member_type():
+    """the gradient's secondary axial force is an internal force, not a change of the member's nature: C3 stays that of
+    the member and Wcr is continuous as N't → 0 (a flexural member's N goes through moments about the tension steel,
+    which tends to 6.4.4-2 / 6.4.4-11); reinforced concrete without compression-face bars works with N't in tension"""
+    zero = jtg.Profile((0.0, 1600.0), (0.0, 0.0))
+    pc = _pc_rect()
+    base = jtg.crack_width(pc, 1100.0, 800.0, pc_class="B", tendon_bundles=BUNDLES,
+                           temperature=jtg.thermal_stresses(pc, zero, M_sec=250.0))
+    for nt in (-5.0, 5.0, 1e-7, -1e-7):
+        r = jtg.crack_width(pc, 1100.0, 800.0, pc_class="B", tendon_bundles=BUNDLES,
+                            temperature=jtg.thermal_stresses(pc, zero, M_sec=250.0, N_sec=nt))
+        assert r.details["C3"] == 1.0
+        assert r.demand == pytest.approx(base.demand, rel=1e-8 if abs(nt) < 1 else 2e-3)
+    t = jtg.tee(200, 1100, 1600, 160, concrete="C40", bottom=[(10, 28, 110)])
+    g = jtg.temperature_gradient(1100, surfacing="asphalt", asphalt=100)
+    ref = jtg.crack_width(t, 820.0, 640.0, temperature=jtg.thermal_stresses(t, g, M_sec=150.0))
+    for nt in (-5.0, 5.0):
+        r = jtg.crack_width(t, 820.0, 640.0, temperature=jtg.thermal_stresses(t, g, M_sec=150.0, N_sec=nt))
+        assert r.details["C3"] == 1.0 and r.details["temperature"] == ref.details["temperature"] == "positive"
+        assert r.demand == pytest.approx(ref.demand, rel=2e-3)
+    small = jtg.crack_width(t, 820.0, 640.0, temperature=jtg.thermal_stresses(t, g, M_sec=150.0, N_sec=1e-7))
+    assert small.demand == pytest.approx(ref.demand, rel=1e-9)
+
+
+def test_reinforced_concrete_declared_flexural_with_axial_force():
+    """member="flexural" with a small load N: C3 1.0, σss → Ms / (0.87 As h0) as N → 0± (6.4.4-2); the tension side
+    uses z = 0.87 h0 here (h0 − a's = 920 > 0.87 h0), the compression side 6.4.4-5"""
+    sec = jtg.rect(300, 600, concrete="C30", bottom=[(4, 25, 50)], top=[(2, 16, 40)])
+    base = jtg.crack_width(sec, 150.0, 100.0)
+    for N in (1e-6, -1e-6):
+        r = jtg.crack_width(sec, 150.0, 100.0, N=N, member="flexural")
+        assert r.details["C3"] == 1.0 and r.demand == pytest.approx(base.demand, rel=1e-8)
+    As, h0 = 4 * A25, 550.0
+    r = jtg.crack_width(sec, 150.0, 100.0, N=-40.0, member="flexural")
+    z = 0.87 * h0
+    assert r.details["sigma_ss"] == pytest.approx((150e6 - 40e3 * (h0 - 300) + 40e3 * z) / (As * z))
+    with pytest.raises(NotImplementedError):  # circular sections: compression members only
+        jtg.crack_width(jtg.circle(D=1500, n=28, d=28, cover=60), 2500.0, 2000.0, N=3000.0, member="flexural")
+
+
+def test_service_class_b_compression_tendon_with_temperature():
+    """a compression-zone tendon still in tension (note 2 of J.0.1) keeps its sign in the cubic but counts with its
+    positive area in the temperature self-stress (program convention): the self-stress at the top edge against the
+    fibre model on the same axis, every tendon at +αEP Ap"""
+    sec = jtg.tee(200, 1600, 1800, 180, concrete="C50", bottom=[(6, 16, 50)], top=[(6, 12, 40)],
+                  tendons=[(2000, 1470, 1000, 90), (1400, 120, 1050, 80)], sigma_pe=[950.0, 1000.0])
+    g = jtg.temperature_gradient(1600, surfacing="asphalt", asphalt=60)
+    th = jtg.thermal_stresses(sec, g)
+    r = jtg.service_stresses(sec, 9000.0, pc_class="B", temperature=th)
+    d = r.details
+    assert d["temperature"] == "positive" and d["x"] > 120
+    sig, _, _ = _fibre_solve(_fibre_model(sec), d["x"], 0.0, None, g, 1e-5, 1.0)
+    assert d["sigma_t_edge"] == pytest.approx(sig(0.0), rel=1e-6)
+
+
+def test_crack_width_temperature_external_tendons_fibres():
+    """external tendons only (E = Es): they are part of Np0 at σpe,ex, not of the cracked section; the self-stress at
+    the bars' resultant against the fibre model (bars only)"""
+    sec = jtg.tee(600, 2500, 6000, 250, bf_bottom=3000, hf_bottom=220, concrete="C50", bottom=[(20, 20, 60)],
+                  top=[(20, 16, 50)], external=[(14 * 1946.0, 2150, 1000)])
+    g = jtg.temperature_gradient(2500)
+    th = jtg.thermal_stresses(sec, g, M_sec=2000.0)
+    r = jtg.crack_width(sec, 70000.0, 56000.0, pc_class="B", temperature=th)
+    d = r.details
+    k = {"positive": 1.0, "negative": -0.5}[d["temperature"]]
+    assert d["E"] == 2e5
+    Np0, hps = 14 * 1946.0 * 1000, 2150.0
+    x = _fibre_axis(_fibre_model(sec), Np0, hps - (70000.0 + 0.8 * k * 2000.0) * 1e6 / Np0)
+    sig, _, _ = _fibre_solve(_fibre_model(sec), x, 0.0, None, g.scaled(k), 1e-5, 0.8)
+    assert d["x_t"] == pytest.approx(x, rel=1e-6)
+    assert d["sigma_s_t"] == pytest.approx(-2e5 / sec.concrete.Ec * sig(2440.0, live=False), rel=1e-6)
+
+
+def test_crack_width_temperature_class_b_hogging_fibres():
+    """hogging with an axial force: the turned section, appendix J under Np0 + N, a profile over the whole depth so the
+    compressed bottom sees it; the self-stress at Ap + As against the fibre model of the turned section"""
+    sec = jtg.rect(500, 1200, concrete="C50", bottom=[(5, 20, 50)], top=[(6, 20, 50)],
+                   tendons=[(1668.0, 140, 1050, 90)], sigma_pe=950.0)
+    prof = jtg.Profile((0.0, 300.0, 1200.0), (6.0, 2.0, 8.0))
+    th = jtg.thermal_stresses(sec, prof, M_sec=-150.0)
+    r = jtg.crack_width(sec, -2600.0, -2000.0, N=400.0, pc_class="B", tendon_bundles=[(1, 12, 15.2)], temperature=th)
+    d = r.details
+    k = {"positive": 1.0, "negative": -0.5}[d["temperature"]]
+    model = _fibre_model(sec, hogging=True)
+    Np0, hps = 1050 * 1668.0, 1060.0
+    M = -(-2600.0 + 0.8 * k * -150.0)
+    F = Np0 + 400e3
+    x = _fibre_axis(model, F, (Np0 * hps + 400e3 * 600.0 - M * 1e6) / F)
+    sig, _, _ = _fibre_solve(model, x, 0.0, None, lambda z: k * prof(1200.0 - np.asarray(z)), 1e-5, 0.8)
+    As, Ap = 6 * math.pi * 100, 1668.0
+    h0 = (As * 1150 + Ap * 1060) / (As + Ap)
+    assert d["h0"] == pytest.approx(h0) and d["x_t"] == pytest.approx(x, rel=1e-6)
+    assert d["sigma_s_t"] == pytest.approx(-1.95e5 / sec.concrete.Ec * sig(h0, live=False), rel=1e-6)
+
+
+def test_secondary_axial_force_at_the_gross_centroid():
+    """N't acts at the gross centroid on the uncracked section too (as the load's N): σ = −N/A − N (zg − zc)(z − zc)/I"""
+    sec = jtg.tee(200, 1600, 1800, 180, concrete="C50", bottom=[(6, 16, 50)], tendons=[(2000, 1470, 1000, 90)],
+                  sigma_pe=950.0)
+    g = jtg.temperature_gradient(1600)
+    a = jtg.thermal_stresses(sec, g)
+    b = jtg.thermal_stresses(sec, g, N_sec=300.0)
+    A, zc, I = sec.props("transformed")
+    for z in (0.0, 700.0, 1600.0):
+        assert b.sigma(z) - a.sigma(z) == pytest.approx(-300e3 / A - 300e3 * (sec.zg - zc) * (z - zc) / I, rel=1e-12)
+    assert b.negative().sigma(0.0) == pytest.approx(-0.5 * b.sigma(0.0), rel=1e-12)
+
+
+def test_service_stresses_axial_force():
+    """an axial force in 7.1 (program extension): full and class A, N/A0 + N e y0/I0 at the edges and at the tendons;
+    class B, the same resultant as a temperature's secondary axial force of −N (ψ = 1), and the fibre model"""
+    a = jtg.rect(400, 1000, concrete="C50", bottom=[(4, 20, 40)], tendons=[(1112.0, 850, 1180, 80)], sigma_pe=1080.0,
+                 sigma_l6=60.0)
+    A0, z0, I0 = a.props("transformed")
+    s0 = jtg.service_stresses(a, 1500.0, pc_class="A")
+    s1 = jtg.service_stresses(a, 1500.0, pc_class="A", N=800.0)
+    for name, z in (("top", 0.0), ("bottom", 1000.0)):
+        dz = 800e3 / A0 + 800e3 * (500 - z0) * (z - z0) / I0
+        assert s1.details["edge_stress"][name] - s0.details["edge_stress"][name] == pytest.approx(dz, rel=1e-12)
+    dp = 800e3 / A0 + 800e3 * (500 - z0) * (850 - z0) / I0
+    assert s1.details["tendon_stress"][0] - s0.details["tendon_stress"][0] == pytest.approx(-1.95e5 / a.concrete.Ec * dp)
+    sec = _tee_b()
+    zero = jtg.thermal_stresses(sec, jtg.Profile((0.0, 1600.0), (0.0, 0.0)), N_sec=-700.0)
+    r = jtg.service_stresses(sec, 6000.0, pc_class="B", N=700.0)
+    assert r.demand == pytest.approx(jtg.service_stresses(sec, 6000.0, pc_class="B", temperature=zero).details["cases"]
+                                     ["positive"], rel=1e-12)
+    F, zg = 2000e3 + 700e3, sec.zg
+    x = _fibre_axis(_fibre_model(sec), F, (2000e3 * 1470 + 700e3 * zg - 6000e6) / F)
+    sig, _, _ = _fibre_solve(_fibre_model(sec), x, F, (2000e3 * 1470 + 700e3 * zg - 6000e6) / F, lambda z: 0 * z,
+                             1e-5, 1.0)
+    assert r.demand == pytest.approx(sig(0.0), rel=1e-6)

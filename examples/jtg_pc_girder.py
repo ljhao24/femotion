@@ -198,7 +198,9 @@ for k_, Ms, Ml, Mk in [(k_span, Ms_max, Ml_max, Mk_max), (k_pier, Ms_min, Ml_min
 # the same girder as a partially prestressed class B member (what-if: 6 of the 9 strands in each tendon, the losses
 # kept, σp0 with the reduced precompression; the secondary moment of the prestress scales with the force): crack width
 # (6.4.4 item 3) and stresses in service (7.1.4) on the cracked section, with the temperature gradient (its secondary
-# moment in the moment, its self-equilibrating stress on the cracked section, appendix D commentary)
+# moment in the moment, its self-equilibrating stress on the cracked section, appendix D commentary). A member allowed
+# to crack takes 0.8 Ec I in the frame (4.3.1): with every element scaled alike the temperature's secondary moment is
+# 0.8 × that of the class A frame. Illustrative: over the pier this variant exceeds the 0.10 mm of table 6.4.2.
 print("\nclass B what-if (6 of 9 strands per tendon)")
 f_B = 6 / 9
 for k_, Ms, Ml, Mk in [(k_span, Ms_max, Ml_max, Mk_max), (k_pier, Ms_min, Ml_min, Mk_min)]:
@@ -208,7 +210,7 @@ for k_, Ms, Ml, Mk in [(k_span, Ms_max, Ml_max, Mk_max), (k_pier, Ms_min, Ml_min
     td = s.tendons * [f_B, 1, 1, f_B]
     td[:, 2] = ps.sigma_p0(s_con, lI[i] + lII[i], post=True, alpha_EP=aEP, sigma_pc=s_pc)
     sB = s.replace(tendons=td)
-    th = jtg.thermal_stresses(sB, grad, M_sec=Mt2[k_])
+    th = jtg.thermal_stresses(sB, grad, M_sec=0.8 * Mt2[k_])
     kw = dict(pc_class="B", M_p2=M_sec[k_] * f_B, temperature=th)
     w = jtg.crack_width(sB, Ms[k_], Ml[k_], env="I", tendon_bundles=[(n_tendons, 6, 15.2)], **kw)
     print(f"  x = {x_sec[k_]:5.1f} m  {w}  (gradient: {w.details.get('temperature')})")
