@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from scipy.optimize import brentq
 
 from .materials import Concrete, Tendon
 
@@ -136,29 +137,135 @@ def anchorage_loss_reverse(sigma_con: float, sigma_end: float, l: float, dl: flo
 
 
 def anchorage_loss_two_ends(sigma_con: float, sigma_end: float, l: float, dl: float, Ep: float, x, *,
-                            dl_b: float | None = None, friction=None):
+                            dl_b: float | None = None, friction=None, sequence: str = "code", n: int = 4001):
     """σl1 + σl2 at distance x (mm) from end A of a curved tendon jacked at both ends, A and B (Appendix G, G.0.3).
-    Each end is taken in turn as the jacking end with the other as the fixed end over the whole length l (G.0.2,
-    anchorage_loss_reverse): σl,A = σl1,A + σl2,A from end A, σl,B likewise from end B. Inside the reverse-friction
-    length of one end only, that end's loss; where the two lengths overlap (l − lf,B < x < lf,A), the smaller of σl,A
-    and σl,B (the larger tendon stress, G.0.3); beyond both, the smaller (friction from the end that loses less).
     sigma_con: σcon at both ends; sigma_end: the stress at the far end after friction (the same from either end, the
     total angle and length being the same); dl, dl_b: ΣΔl at ends A and B (mm; dl_b default dl); friction: (σl1 from A,
     σl1 from B) at x (6.2.2, friction_loss), default the straight lines of figure G.0.2, Δσd x and Δσd (l − x),
-    Δσd = (σcon − σend)/l. Where the lengths overlap the result may jump at the edges of the overlap (the clause's
-    simplification). Returns (σl1 + σl2 at x, (lf,A, lf,B))."""
+    Δσd = (σcon − σend)/l. Returns (σl1 + σl2 at x, (lf,A, lf,B)), lf of G.0.2-1 from each end over the whole length.
+    sequence="code" (default): each end in turn as the jacking end with the other as the fixed end over the whole
+    length (G.0.2, anchorage_loss_reverse): σl,A = σl1,A + σl2,A, σl,B likewise. Where the two reverse-friction lengths
+    overlap (l − lf,B < x < lf,A) the smaller of σl,A and σl,B, i.e. the larger stress (G.0.3); program convention
+    elsewhere: inside one end's length that end's loss (G.0.2), beyond both the smaller (friction from the end that
+    loses less). When lf,A, lf,B ≤ l/2 this is what any jacking order gives; when an lf exceeds l/2 the stress jumps
+    by Δσd (2 lf − l) at the edge of that end's length (or of the overlap) and the real distribution depends on the
+    order: sequence="A-B" (jack and anchor A, then B), "B-A", "simultaneous" (both jacked to σcon, then both anchored)
+    solve figure G.0.2's model for that order: rigid-plastic friction, the reverse friction rising at the forward rate
+    (σl1 of that end), the draw-in ΣΔl·Ep equal to the area lost from the anchor to where the stress is unchanged,
+    on a grid of n points (friction= then must give x from 0 to l)."""
     x = np.asarray(x, float)
+    dlb = dl if dl_b is None else dl_b
     dsd = (sigma_con - sigma_end) / l
     if friction is None:
         l1a, l1b = dsd * x, dsd * (l - x)
     else:
         l1a, l1b = (np.broadcast_to(np.asarray(f, float), x.shape) for f in friction)
     l2a, lfa = anchorage_loss_reverse(sigma_con, sigma_end, l, dl, Ep, x)
-    l2b, lfb = anchorage_loss_reverse(sigma_con, sigma_end, l, dl if dl_b is None else dl_b, Ep, l - x)
-    la, lb = l1a + l2a, l1b + l2b
-    in_a, in_b = x < lfa, l - x < lfb
-    loss = np.where(in_a & ~in_b, la, np.where(in_b & ~in_a, lb, np.minimum(la, lb)))
-    return (float(loss) if loss.ndim == 0 else loss), (lfa, lfb)
+    l2b, lfb = anchorage_loss_reverse(sigma_con, sigma_end, l, dlb, Ep, l - x)
+    if sequence == "code":
+        la, lb = l1a + l2a, l1b + l2b
+        in_a, in_b = x < lfa, l - x < lfb
+        loss = np.where(in_a & ~in_b, la, np.where(in_b & ~in_a, lb, np.minimum(la, lb)))
+    elif sequence in ("A-B", "B-A", "simultaneous"):
+        xs = np.union1d(np.linspace(0.0, l, n), np.clip(x.ravel(), 0.0, l))
+        if friction is None:
+            ra, rb = dsd * xs, dsd * (l - xs)
+        else:
+            xf = x.ravel()
+            if xf.ndim != 1 or abs(xf[0]) > 1e-9 * l or abs(xf[-1] - l) > 1e-9 * l or (np.diff(xf) <= 0).any():
+                raise ValueError("sequence models with friction=: x must run from 0 to l, increasing")
+            ra, rb = np.interp(xs, xf, l1a.ravel()), np.interp(xs, xf, l1b.ravel())
+        TA, TB = dl * Ep, dlb * Ep
+        if sequence == "simultaneous":
+            sig = _seat_both(xs, sigma_con - np.minimum(ra, rb), ra, rb, TA, TB)
+        else:
+            (r1, T1), (r2, T2) = ((ra, TA), (rb, TB)) if sequence == "A-B" else ((rb, TB), (ra, TA))
+            first_is_a = sequence == "A-B"
+            sig = _seat_end(xs, sigma_con - r1, r1, T1, from_a=first_is_a)
+            sig = np.maximum(sig, sigma_con - r2)  # the second end jacked: the tendon slides where its pull is larger
+            sig = _seat_end(xs, sig, r2, T2, from_a=not first_is_a)
+        loss = sigma_con - np.interp(x, xs, sig)
+    else:
+        raise ValueError('sequence: "code", "A-B", "B-A" or "simultaneous"')
+    return (float(loss) if np.ndim(loss) == 0 else loss), (lfa, lfb)
+
+
+def _cum(xs, f):
+    """cumulative integral of the piecewise-linear f over xs"""
+    return np.r_[0.0, np.cumsum((f[1:] + f[:-1]) / 2 * np.diff(xs))]
+
+
+def _int_to(xs, f, F, p):
+    """∫ from xs[0] to p of the piecewise-linear f (F = _cum(xs, f))"""
+    if p <= xs[0]:
+        return 0.0
+    if p >= xs[-1]:
+        return float(F[-1])
+    i = int(np.searchsorted(xs, p, side="right")) - 1
+    fp = f[i] + (p - xs[i]) / (xs[i + 1] - xs[i]) * (f[i + 1] - f[i])
+    return float(F[i] + (f[i] + fp) / 2 * (p - xs[i]))
+
+
+def _reach(xs, g):
+    """the first point where the piecewise-linear g reaches 0 from below (xs[-1] if it stays below)"""
+    k = np.nonzero(g >= 0)[0]
+    if not len(k):
+        return float(xs[-1])
+    i = int(k[0])
+    if i == 0:
+        return float(xs[0])
+    return float(xs[i - 1] + (xs[i] - xs[i - 1]) * (0 - g[i - 1]) / (g[i] - g[i - 1]))
+
+
+def _seat_end(xs, sig, rise, area, from_a=True):
+    """the stress after anchoring at one end (figure G.0.2 model): from that end the stress follows c + rise (rise: the
+    friction loss from that end, 0 at it) until it meets sig, beyond unchanged; c from the draw-in area"""
+    if area <= 0:
+        return sig.copy()
+    if not from_a:
+        return _seat_end(xs[-1] - xs[::-1], sig[::-1], rise[::-1], area)[::-1]
+
+    def lost(c):
+        g = sig - (c + rise)
+        return _int_to(xs, g, _cum(xs, g), _reach(xs, -g))
+
+    lo = float((sig - rise).min()) - area / (xs[-1] - xs[0]) - 1.0
+    c = brentq(lambda c_: lost(c_) - area, lo, float(sig[0] - rise[0]), xtol=1e-12, rtol=1e-14)
+    p = _reach(xs, (c + rise) - sig)
+    return np.where(xs <= p, c + rise, sig)
+
+
+def _seat_both(xs, sig, ra, rb, TA, TB):
+    """the stress after anchoring both ends at once (figure G.0.2 model): from A the stress follows cA + ra, from B
+    cB + rb; each slip zone ends where its line meets sig or where the two lines cross; each zone loses its end's draw-in
+    area"""
+    L = xs[-1]
+    gA_end = lambda a: _reach(xs, a - sig)
+    gB_start = lambda b: L - _reach(L - xs[::-1], (b - sig)[::-1])
+
+    def zones(cA, cB):
+        a, b = cA + ra, cB + rb
+        pc = _reach(xs, a - b)
+        pa, pb = min(gA_end(a), pc), max(gB_start(b), pc)
+        gA, gB = sig - a, sig - b
+        FB = _cum(xs, gB)
+        return _int_to(xs, gA, _cum(xs, gA), pa), float(FB[-1]) - _int_to(xs, gB, FB, pb), pa, pb, a, b
+
+    lo = lambda r, T: float((sig - r).min()) - T / L - 1.0
+
+    def cB_for(cA):
+        if TB <= 0:
+            return float(sig[-1] - rb[-1])
+        return brentq(lambda c: zones(cA, c)[1] - TB, lo(rb, TB) - (sig.max() - sig.min()), float(sig[-1] - rb[-1]),
+                      xtol=1e-12, rtol=1e-14)
+
+    if TA <= 0:
+        cA = float(sig[0] - ra[0])
+    else:
+        cA = brentq(lambda c: zones(c, cB_for(c))[0] - TA, lo(ra, TA) - (sig.max() - sig.min()), float(sig[0] - ra[0]),
+                    xtol=1e-12, rtol=1e-14)
+    _, _, pa, pb, a, b = zones(cA, cB_for(cA))
+    return np.where(xs <= pa, a, np.where(xs >= pb, b, sig))  # at the ends of the zones the lines meet sig or each other
 
 
 # ── 6.2.4 temperature difference (pretensioning) ────────────────────────────

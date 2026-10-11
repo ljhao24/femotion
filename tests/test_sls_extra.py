@@ -176,7 +176,7 @@ def test_transient_pretensioned_zone_detailing_warns():
     r = jtg.transient_pc(thin, 250.0, fcu=45)
     assert r.details["sigma_tct"] > 0 and r.details["rho_pretension_zone"] < r.details["rho_needed"]
     assert r.ok and not r.failed
-    assert any("pretensioned zone (7.2.8)" in w for w in r.warnings) and any("φ16" in w for w in r.warnings)
+    assert any("pretensioned zone (7.2.8;" in w for w in r.warnings) and any("φ16" in w for w in r.warnings)
     fine = jtg.rect(400, 1000, concrete="C50", top=[(14, 12, 40)], tendons=[(1390.0, 850, 1300, 90)], sigma_pe=1250.0)
     assert not jtg.transient_pc(fine, 250.0, fcu=45).warnings
     plain = jtg.rect(400, 1000, concrete="C50", steel="HPB300", top=[(14, 12, 40)], tendons=[(1390.0, 850, 1300, 90)],
@@ -206,14 +206,14 @@ def test_transient_shear_triangle_closed_forms():
     for st in [(2, 8, 200), (2, 6, 250)]:
         tv = st[0] * math.pi * st[1] ** 2 / 4 * 0.75 * fsk / (b * st[2])
         tvs.append(tv)
-        r = jtg.transient_shear(x, tau, fcu=fcu, b=b, stirrups=st)
+        r = jtg.transient_shear(x, tau, fcu=fcu, b=b, steel="HRB400", stirrups=st)
         Om = (tmax - tv) ** 2 * L / (2 * tmax) if tv >= c0 else a_exact * ((tmax + c0) / 2 - tv)
         assert r.details["tau_v"] == pytest.approx(tv)
         assert r.details["a"] == pytest.approx(a_exact)
         assert r.details["Omega"] == pytest.approx(Om)
         assert r.details["Asb_needed"] == pytest.approx(b * Om / (math.sqrt(2) * 0.75 * fsk))
     assert tmax > tvs[0] > c0 > tvs[1]  # both branches
-    assert jtg.transient_shear(x, tau, fcu=fcu, b=b, stirrups=(2, 10, 100)).details["Omega"] == 0.0  # τv > τmax
+    assert jtg.transient_shear(x, tau, fcu=fcu, b=b, steel="HRB400", stirrups=(2, 10, 100)).details["Omega"] == 0.0  # τv > τmax
 
 
 def test_transient_shear_against_dense_quadrature():
@@ -222,7 +222,7 @@ def test_transient_shear_against_dense_quadrature():
     x = np.array([0.0, 800.0, 1500.0, 2600.0, 4000.0, 5200.0])
     tau = np.array([1.9, 1.5, 1.6, 0.9, 0.35, 0.0])
     fcu, b = 30.0, 250.0
-    r = jtg.transient_shear(x, tau, fcu=fcu, b=b, stirrups=(2, 8, 150))
+    r = jtg.transient_shear(x, tau, fcu=fcu, b=b, steel="HRB400", stirrups=(2, 8, 150))
     c0, tv = 0.25 * jtg.strength_at(fcu)[1], r.details["tau_v"]
     xs = np.linspace(0, x[-1], 1_000_001)
     xm = (xs[1:] + xs[:-1]) / 2
@@ -231,18 +231,18 @@ def test_transient_shear_against_dense_quadrature():
     assert r.details["Omega"] == pytest.approx(float((np.where(tm > c0, np.maximum(tm - tv, 0), 0) * dx).sum()), rel=1e-6)
     assert r.details["a"] == pytest.approx(float((tm > c0).sum() * dx), rel=1e-5)
     xf = np.linspace(0, x[-1], 53)
-    rf = jtg.transient_shear(xf, np.interp(xf, x, tau), fcu=fcu, b=b, stirrups=(2, 8, 150))
+    rf = jtg.transient_shear(xf, np.interp(xf, x, tau), fcu=fcu, b=b, steel="HRB400", stirrups=(2, 8, 150))
     assert rf.details["Omega"] == pytest.approx(r.details["Omega"], rel=1e-12)
 
 
 def test_transient_shear_verdicts():
     x = np.array([0.0, 3000.0])
-    small = jtg.transient_shear(x, [0.4, 0.0], fcu=30, b=200)
+    small = jtg.transient_shear(x, [0.4, 0.0], fcu=30, b=200, steel="HRB400")
     assert small.details["a"] == 0.0 and small.ok and "detailing" in small.notes[0]
-    r = jtg.transient_shear(x, [1.6, 0.0], fcu=30, b=200, stirrups=(2, 8, 200), Asb=200.0)
+    r = jtg.transient_shear(x, [1.6, 0.0], fcu=30, b=200, steel="HRB400", stirrups=(2, 8, 200), Asb=200.0)
     assert r.details["Asb_needed"] > 200 and any("7.2.6-3" in f for f in r.failed)
-    assert jtg.transient_shear(x, [1.6, 0.0], fcu=30, b=200, stirrups=(2, 8, 200), Asb=2000.0).ok
-    over = jtg.transient_shear(x, [2.5, 0.0], fcu=30, b=200)  # f'tk(C30) = 2.01: 7.2.5
+    assert jtg.transient_shear(x, [1.6, 0.0], fcu=30, b=200, steel="HRB400", stirrups=(2, 8, 200), Asb=2000.0).ok
+    over = jtg.transient_shear(x, [2.5, 0.0], fcu=30, b=200, steel="HRB400")  # f'tk(C30) = 2.01: 7.2.5
     assert not over.ok
 
 
@@ -451,3 +451,172 @@ def test_composite_class_b_self_weight():
     a = jtg.composite_inclined_crack_resistance(comp, 600.0, 200.0, 900.0, 300.0, pc_class="A")
     b = jtg.composite_inclined_crack_resistance(comp, 600.0, 200.0, 900.0, 300.0, pc_class="B")
     assert (a.demand, a.resistance) == (b.demand, b.resistance)
+
+
+# ── after the independent review (shared/refs/codes/SLS_EXTRA_REVIEW.md) ──
+def _props(parts):
+    """(A, centroid depth, I) of (area, depth, own second moment) parts — parallel axes, by hand"""
+    A = sum(a for a, _, _ in parts)
+    z = sum(a * d for a, d, _ in parts) / A
+    return A, z, sum(i + a * (d - z) ** 2 for a, d, i in parts)
+
+
+def test_lifting_by_hand_with_the_stage_modulus():
+    """a pretensioned 500 × 1100 beam lifted (7.2.2, D60 4.1.10) with E'c = 3.0e4 at that stage: the transformed section
+    by parallel axes with αEP = Ep/E'c, αES = Es/E'c; 0.85 governs both edges (the weight relieves the prestress); the
+    pretensioned zone's ratio and the 1.15 f'tk limit; then a crane on the erected beam × 1.15"""
+    b, h, Ap, dp, sp0, Ec = 500.0, 1100.0, 1390.0, 1000.0, 1300.0, 3.0e4
+    At, Ab = 4 * math.pi * 36, 4 * math.pi * 64
+    aP, aS = 1.95e5 / Ec, 2e5 / Ec
+    A0, z0, I0 = _props([(b * h, h / 2, b * h ** 3 / 12), ((aP - 1) * Ap, dp, 0), ((aS - 1) * At, 40, 0),
+                         ((aS - 1) * Ab, h - 40, 0)])
+    N = sp0 * Ap
+    edge = lambda z, M: N / A0 + N * (dp - z0) * (z - z0) / I0 + M * 1e6 * (z0 - z) / I0
+    sec = jtg.rect(b, h, concrete="C50", top=[(4, 12, 40)], bottom=[(4, 16, 40)], tendons=[(Ap, dp, sp0, 0)],
+                   pretensioned=True, sigma_pe=1200.0)
+    r = jtg.transient_pc(sec, fcu=40, M_G=120.0, lifting=True, Ec=Ec)
+    assert r.details["top"] == pytest.approx(edge(0, 0.85 * 120), rel=1e-12)
+    assert r.details["bottom"] == pytest.approx(edge(h, 0.85 * 120), rel=1e-12)
+    assert r.details["dynamic_factor"] == r.details["dynamic_factor_tension"] == 0.85
+    sct = -edge(0, 0.85 * 120)
+    assert r.details["sigma_tct"] == pytest.approx(sct) and sct > 1.15 * 2.40 and not r.ok  # f'tk(C40) = 2.40
+    zn = edge(0, 102) / (edge(0, 102) - edge(h, 102)) * h  # zero-stress depth; only the top bars are above it
+    assert 40 < zn < 1000 and r.details["rho_pretension_zone"] == pytest.approx(At / (b * h))
+    assert any("7.2.8;" in w for w in r.warnings)
+    c = jtg.transient_pc(sec, 120.0, fcu=40, M_crane=300.0, Ec=Ec)
+    assert (c.details["top"], c.details["bottom"]) == pytest.approx((edge(0, 120 + 345), edge(h, 120 + 345)), rel=1e-12)
+
+
+def test_negative_moment_region_by_hand():
+    """a post-tensioned 500 × 1200 C50 girder under a 2000 × 200 C40 deck, continuous over a pier, with deck tendons
+    stressed on the composite girder: the precast net section, the composite section transformed to C50 (deck × n, the
+    girder's ducts grouted) and the composite net section less the deck ducts (× n) all by parallel axes; the stresses at
+    the three edges (8.1.8 extended to the deck, program convention)"""
+    E50, E40 = 3.45e4, 3.25e4
+    aP, aS, n = 1.95e5 / E50, 2e5 / E50, E40 / E50
+    Ap, dp, spe, dd = 2780.0, 1050.0, 1150.0, 90.0 * math.sqrt(2)
+    Ad, As = math.pi * dd ** 2 / 4, 4 * math.pi * 64
+    An, zn, In = _props([(500 * 1200, 600, 500 * 1200 ** 3 / 12), (-Ad, dp, 0), ((aS - 1) * As, 1150, 0)])
+    A0, z0, I0 = _props([(2000 * n * 200, 100, 2000 * n * 200 ** 3 / 12), (500 * 1200, 800, 500 * 1200 ** 3 / 12),
+                         (-Ad + aP * Ap, 200 + dp, 0), ((aS - 1) * As, 1350, 0)])
+    rows = [(973.0, 80.0, 1050.0, 70.0)] * 2
+    A2, z2, I2 = _props([(A0, z0, I0)] + [(-n * math.pi * 70.0 ** 2 / 4, 80.0, 0)] * 2)
+    N2 = 2 * 973 * 1050.0
+    s2 = lambda z: (N2 / A2 + N2 * (80 - z2) * (z - z2) / I2) * (n if z < 200 else 1.0)
+    pre_pc = lambda zp: spe * Ap / An + spe * Ap * (dp - zn) * (zp - zn) / In
+    st = lambda M, z: M * 1e6 * (z - z0) / I0 * (n if z < 200 else 1.0)
+    pre = jtg.rect(500, 1200, concrete="C50", bottom=[(4, 16, 50)], tendons=[(Ap, dp, 1300, dd)], sigma_pe=spe)
+    comp = jtg.composite(pre, b=2000, t=200, concrete="C40")
+    sig = jtg.composite_prestress_stress(comp, rows)
+    r = jtg.composite_crack_resistance(comp, M1k=0.0, M1Gk=0.0, M2s=-1500.0, M2l=-1100.0, pc_class="A", sigma_pc2=sig)[1]
+    e = r.details["edges"]
+    for name, z, spc in (("topping top", 0.0, s2(0.0)), ("precast top", 200.0, pre_pc(0.0) + s2(200.0)),
+                         ("precast bottom", 1200.0 + 200.0, pre_pc(1200.0) + s2(1400.0))):
+        assert e[name]["sigma_st"] == pytest.approx(st(-1500.0, z), rel=1e-10)
+        assert e[name]["sigma_lt"] == pytest.approx(st(-1100.0, z), rel=1e-10)
+        assert e[name]["sigma_pc"] == pytest.approx(spc, rel=1e-10)
+    # the deck meets class A with its tendons; the precast top (tension from the girder's own prestress) does not
+    assert e["topping top"]["demand"] <= e["topping top"]["limit"] and e["topping top"]["sigma_lt"] <= e["topping top"]["sigma_pc"]
+    assert r.details["edge"] == "precast top" and not r.ok
+
+
+def test_two_ends_jacking_orders():
+    """figure G.0.2's model for the jacking order: simultaneous with equal sets is each half jacked at one end and fixed
+    at the middle (G.0.2, G.0.2-5 on l/2, closed form); A then B with 2 lf > l is B's single-end loss everywhere (B's pull
+    re-tensions the whole tendon, then B's set acts alone); the reviewer's rigid-plastic simulation of the 30 m straight
+    tendon gives 61.4 MPa at end A for A then B and 108.7 MPa at both ends jacked together"""
+    l = 30000.0
+    s_end = SIG * math.exp(-0.0015 * 30)
+    dsd = (SIG - s_end) / l
+    x = np.linspace(0, l, 31)
+    sim, _ = ps.anchorage_loss_two_ends(SIG, s_end, l, 6.0, EP, x, sequence="simultaneous")
+    half, lfh = ps.anchorage_loss_reverse(SIG, SIG - dsd * l / 2, l / 2, 6.0, EP, np.minimum(x, l - x))
+    assert lfh > l / 2  # G.0.2-5 on the half
+    assert sim == pytest.approx(dsd * np.minimum(x, l - x) + half, abs=1e-6)
+    ab, _ = ps.anchorage_loss_two_ends(SIG, s_end, l, 6.0, EP, x, sequence="A-B")
+    lb, _ = ps.anchorage_loss_reverse(SIG, s_end, l, 6.0, EP, l - x)
+    assert ab == pytest.approx(dsd * (l - x) + lb, abs=1e-6)
+    ba, _ = ps.anchorage_loss_two_ends(SIG, s_end, l, 6.0, EP, x, sequence="B-A")
+    assert ba == pytest.approx(ab[::-1], abs=1e-6)
+    code, _ = ps.anchorage_loss_two_ends(SIG, s_end, l, 6.0, EP, x)
+    assert (ab[0], code[0], sim[0]) == pytest.approx((61.4, 97.9, 108.7), abs=0.05)
+    # unequal sets jacked together: the two zones meet; the stress lost over the tendon is the two draw-ins together
+    xx = np.linspace(0, l, 3001)
+    u, _ = ps.anchorage_loss_two_ends(SIG, s_end, l, 6.0, EP, xx, dl_b=2.0, sequence="simultaneous")
+    g = u - dsd * np.minimum(xx, l - xx)
+    assert float(((g[1:] + g[:-1]) / 2 * np.diff(xx)).sum()) == pytest.approx(8.0 * EP, rel=1e-6)
+
+
+def test_two_ends_orders_agree_without_overlap():
+    """lf ≤ l/2 from both ends: every jacking order gives the default (G.0.2 from each end, friction from the nearer
+    end in between) on the straight lines of figure G.0.2 (here passed as friction= arrays); with exact friction
+    (6.2.2, the reverse friction following σl1 rather than G.0.2's straight line) the three orders still agree"""
+    l = 40000.0
+    x = np.linspace(0, l, 81)
+    s_end = SIG * math.exp(-(0.25 * 0.35 + 0.0015 * 40))
+    dsd = (SIG - s_end) / l
+    code, (lfa, lfb) = ps.anchorage_loss_two_ends(SIG, s_end, l, 6.0, EP, x)
+    assert lfa == lfb < l / 2
+    for q in ("A-B", "B-A", "simultaneous"):
+        v, _ = ps.anchorage_loss_two_ends(SIG, s_end, l, 6.0, EP, x, friction=(dsd * x, dsd * (l - x)), sequence=q)
+        assert v == pytest.approx(code, abs=1e-6)
+    th = np.linspace(0, 0.35, 81)
+    l1a = np.array([ps.friction_loss(SIG, 0.25, t, 0.0015, xx / 1000) for t, xx in zip(th, x)])
+    l1b = np.array([ps.friction_loss(SIG, 0.25, 0.35 - t, 0.0015, (l - xx) / 1000) for t, xx in zip(th, x)])
+    v = [ps.anchorage_loss_two_ends(SIG, SIG - l1a[-1], l, 6.0, EP, x, friction=(l1a, l1b), sequence=q)[0]
+         for q in ("A-B", "B-A", "simultaneous")]
+    assert v[0] == pytest.approx(v[1], abs=1e-6) and v[0] == pytest.approx(v[2], abs=1e-6)
+    with pytest.raises(ValueError):
+        ps.anchorage_loss_two_ends(SIG, 1290.0, l, 6.0, EP, x[1:], friction=(l1a[1:], l1b[1:]), sequence="A-B")
+
+
+def test_transfer_scales_the_bar_term_too():
+    """within the transfer length Np0 = k (Σ σp0 Ap − σl6 As) follows the transferred force: no stress at the end face
+    (the bars' σl6 alone would compress the far edge), k × the full σpc elsewhere"""
+    sec = _pre(bars=[(4, 16, 40)], sigma_l6=100.0)
+    full = jtg.crack_resistance(sec, 0.0, 0.0, pc_class="A")
+    end = jtg.crack_resistance(sec, 0.0, 0.0, pc_class="A", transfer=jtg.Transfer(0.0, 700.0))
+    assert end.details["top"]["sigma_pc"] == pytest.approx(0.0, abs=1e-12)
+    assert end.details["bottom"]["sigma_pc"] == pytest.approx(0.0, abs=1e-12)
+    mid = jtg.crack_resistance(sec, 0.0, 0.0, pc_class="A", transfer=jtg.Transfer(280.0, 700.0))
+    for e in ("top", "bottom"):
+        assert mid.details[e]["sigma_pc"] == pytest.approx(0.4 * full.details[e]["sigma_pc"], rel=1e-12)
+
+
+def test_governing_edge_is_one_that_can_crack():
+    """an edge compressed by both the loads and the prestress cannot crack: it is not reported even with the least
+    margin (here the top of a nearly concentric prestressed beam under sagging, against its precompressed bottom)"""
+    sec = jtg.rect(400, 1000, concrete="C50", tendons=[(2000.0, 640, 1200, 90)], sigma_pe=1100.0)
+    r = jtg.crack_resistance(sec, 200.0, 150.0, pc_class="A")
+    t, b = r.details["top"], r.details["bottom"]
+    assert t["sigma_st"] < 0 < t["sigma_pc"] and b["sigma_st"] > 0
+    assert t["demand"] - t["limit"] > b["demand"] - b["limit"]  # the top has the least margin …
+    assert r.details["edge"] == "bottom"  # … but cannot crack
+    # composite at mid-span: the compressed deck is not reported
+    pre, comp = _comp()
+    c = jtg.composite_crack_resistance(comp, M1k=650.0, M1Gk=600.0, M2s=900.0, M2l=700.0, pc_class="A")[1]
+    assert c.details["edge"] != "topping top"
+
+
+def test_topping_ftk_is_the_smaller():
+    """8.1.8 names the precast concrete's ftk; a stronger deck does not raise the deck's limit"""
+    pre = jtg.rect(400, 1000, concrete="C50", bottom=[(4, 16, 50)], tendons=[(1390.0, 900, 1250, 90)], sigma_pe=1150.0)
+    hi = jtg.composite(pre, b=1200, t=200, concrete="C60")
+    lo = jtg.composite(pre, b=1200, t=200, concrete="C40")
+    f = lambda c: jtg.composite_crack_resistance(c, M1k=0, M1Gk=0, M2s=-500, M2l=-400, pc_class="A")[1] \
+        .details["edges"]["topping top"]["ftk"]
+    assert f(hi) == jtg.concrete(50).ftk and f(lo) == jtg.concrete(40).ftk
+
+
+def test_transient_rc_review_fixes():
+    """rounding at a support (M = −10⁻⁹) does not turn the section (the lever arm z0 would be that of the bars near the
+    other face); the bars and the shear take their own governing dynamic factor"""
+    rc = jtg.rect(300, 600, concrete="C30", bottom=[(4, 25, 50)])
+    a = jtg.transient_rc(rc, 0.0, 150.0, fcu=30)
+    b = jtg.transient_rc(rc, -1e-9, 150.0, fcu=30)
+    assert b.details["z0"] == a.details["z0"] and b.details["sigma_tp"] == a.details["sigma_tp"]
+    g = jtg.transient_rc(rc, 100.0, -200.0, fcu=30, M_G=100.0, V_G=120.0, lifting=True)
+    assert g.details["dynamic_factor"] == g.details["dynamic_factor_steel"] == 1.2
+    assert g.details["dynamic_factor_shear"] == 0.85  # |−200 + 0.85 × 120| > |−200 + 1.2 × 120|
+    assert g.details["sigma_tp"] == pytest.approx(jtg.transient_rc(rc, 185.0, -98.0, fcu=30).details["sigma_tp"])
+    assert g.details["sigma_s"] == pytest.approx(jtg.transient_rc(rc, 220.0, fcu=30).details["sigma_s"])

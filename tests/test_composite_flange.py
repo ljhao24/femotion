@@ -209,7 +209,14 @@ def test_composite_review_fixes():
     base = jtg.composite_crack_resistance(comp, M1k=1950, M1Gk=1800, M2s=1700, M2l=1100, pc_class="A")[1]
     more = jtg.composite_crack_resistance(comp, M1k=1950, M1Gk=1800, M2s=1700, M2l=1100, pc_class="A",
                                           sigma_extra=0.5)[1]
-    assert more.demand == pytest.approx(base.demand + 0.5)
+    # a number goes to the precast bottom only (as before the other edges were checked); a function to every edge
+    eb, em = base.details["edges"], more.details["edges"]
+    assert em["precast bottom"]["sigma_st"] == pytest.approx(eb["precast bottom"]["sigma_st"] + 0.5)
+    assert em["precast top"]["sigma_st"] == eb["precast top"]["sigma_st"]
+    assert em["topping top"]["sigma_st"] == eb["topping top"]["sigma_st"] and "precast bottom only" in more.notes[0]
+    fn = jtg.composite_crack_resistance(comp, M1k=1950, M1Gk=1800, M2s=1700, M2l=1100, pc_class="A",
+                                        sigma_extra=lambda z: 0.5)[1]
+    assert all(fn.details["edges"][k]["sigma_st"] == pytest.approx(eb[k]["sigma_st"] + 0.5) for k in eb)
     p0 = jtg.composite_principal_stresses(comp, 1800, 300, 1700, 400, depths=[900])[0]
     p1 = jtg.composite_principal_stresses(comp, 1800, 300, 1700, 400, depths=[900], sigma_cx=lambda z: -0.3)[0]
     assert p1["sigma_cx"] == pytest.approx(p0["sigma_cx"] - 0.3)
