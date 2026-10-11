@@ -124,7 +124,8 @@ def axial_spiral(sec: RCSection, Nd: float, l0: float | None = None, *, spiral, 
     lam = (l0 or 0.0) / i
     d = {"Acor": Acor, "dcor": dcor, "Aso": Aso, "k": k, "l0_over_i": lam, "N_5_3_1": N531, "N_5_3_2": N532,
          "phi": base.details["phi"]}
-    chk = Check("axial compression (spiral column)", gamma0 * Nd, N531, "kN", "JTG 3362-2018 5.3.1, 5.3.2", d)
+    chk = Check("axial compression (spiral column)", gamma0 * Nd, N531, "kN", "JTG 3362-2018 5.3.1, 5.3.2", d,
+                section=sec)
     why = []
     if lam > 48:
         why.append(f"l0/i = {lam:.1f} > 48")
@@ -438,7 +439,8 @@ def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, al
                 "GB 50010-2010 6.3.15 (b = 1.76 r, h0 = 1.6 r)",
                 {"b": b, "h0": h0, "P": P, "rho_sv": rho_sv, "alpha1": alpha1, "alpha2": 1.0, "alpha3": 1.0,
                  "Vcs": Vcs, "fsv": sst.fsv, "V_section_max": vmax, "V_detailing": vmin, "Nd": Nd},
-                ["3362 has no shear rule for circular sections: b, h0 of GB 50010-2010 6.3.15 (program convention)"])
+                ["3362 has no shear rule for circular sections: b, h0 of GB 50010-2010 6.3.15 (program convention)"],
+                section=sec)
     if Nd < 0:
         Vs = sst.fsv * Asv * h0 / sv / 1e3  # the stirrups alone (GB 6.3.14 lower limit)
         Vt = Vcs - 0.2 * gamma0 * abs(Nd)
@@ -581,7 +583,7 @@ def tension(sec: RCSection, Nd: float, Md: float = 0.0, *, gamma0: float = 1.0) 
     e0 = abs(Md) / Nd * 1e3
     ring = s.kind in ("circle", "annulus")
     chk = Check("tension" + (" (hogging side)" if Md < 0 else ""), gamma0 * Nd, 0.0, "kN", "JTG 3362-2018 5.4.1",
-                {"e0": e0, "Nud": Nud / 1e3, "fsd_tension": ft})
+                {"e0": e0, "Nud": Nud / 1e3, "fsd_tension": ft}, section=sec, hogging=Md < 0)
     capped = (f"bars at {ft:g} MPa instead of fsd = {st.fsd:g} MPa (table 3.2.3-1 note 1)" if ft < st.fsd else None)
     rho_min = max(0.45 * c.ftd / ft, 0.002)
     A = s.area
@@ -738,7 +740,8 @@ def biaxial(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: float, Md
     N_formula = 1 / (1 / Nux + 1 / Nuy - 1 / Nu0)
     Nu = min(N_formula, Nux, Nuy)
     chk = Check("biaxial eccentric compression", gamma0 * Nd, Nu, "kN", "JTG 3362-2018 5.3.11",
-                {"Nux": Nux, "Nuy": Nuy, "Nu0": Nu0, "N_5_3_11": N_formula, "x": cx.details, "y": cy.details})
+                {"Nux": Nux, "Nuy": Nuy, "Nu0": Nu0, "N_5_3_11": N_formula, "x": cx.details, "y": cy.details},
+                section=sec_x)
     if N_formula > Nu:
         chk.notes.append(f"5.3.11 gives {N_formula:.0f} kN > min(Nux, Nuy): limited to {Nu:.0f} kN (Nu0 with 0.9 below "
                          "Nux or Nuy; program convention)")
@@ -779,7 +782,7 @@ def biaxial_tension(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: f
     e0x, e0y = abs(Mdx) / Nd * 1e3, abs(Mdy) / Nd * 1e3
     Nu = 1 / (1 / Nud + math.hypot(e0x / Mux, e0y / Muy))
     chk = Check("biaxial eccentric tension", gamma0 * Nd, Nu / 1e3, "kN", "JTG 3362-2018 5.4.3",
-                {"Nud": Nud / 1e3, "Mux": Mux / 1e6, "Muy": Muy / 1e6, "e0x": e0x, "e0y": e0y})
+                {"Nud": Nud / 1e3, "Mux": Mux / 1e6, "Muy": Muy / 1e6, "e0x": e0x, "e0y": e0y}, section=sec_x)
     for s, M in ((sec_x, Mdx), (sec_y, Mdy)):
         t = tension(s, Nd, M, gamma0=gamma0)
         for f_ in t.failed:

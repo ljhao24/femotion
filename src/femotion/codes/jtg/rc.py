@@ -614,11 +614,22 @@ class Check:
     symbol: str = "γ0Sd"
     # a detailing report (Check.report): no demand and resistance, `ok` always True, the unmet rules in `warnings`
     detailing: bool = False
+    # the section checked, as given (an RCSection or a Composite, never the one turned over for a hogging moment), for
+    # drawings (codes.jtg.figures.section_figure) and the Jupyter display; not compared and not in the repr. None for
+    # checks without a section (detailing reports of single rules, bearings, devices, strut-and-tie, punching …)
+    section: object = field(default=None, repr=False, compare=False)
+    # True when the check turned the section over: a hogging moment, the tension face on top, the bottom face in
+    # compression (flexure and tension with a negative moment, eccentric compression with Md < 0, shear with
+    # hogging=True, the service checks of a hogging moment …); False as given
+    hogging: bool = False
 
     @classmethod
-    def report(cls, name: str, clause: str, details: dict | None = None, notes: list | None = None) -> "Check":
-        """an empty detailing report: add the unmet rules to `warnings`, the values to `details`"""
-        return cls(name, 0.0, 1.0, "", clause, dict(details or {}), list(notes or []), detailing=True)
+    def report(cls, name: str, clause: str, details: dict | None = None, notes: list | None = None, *,
+               section=None, hogging: bool = False) -> "Check":
+        """an empty detailing report: add the unmet rules to `warnings`, the values to `details`; section, hogging: of
+        the section the rules are about, as for any Check"""
+        return cls(name, 0.0, 1.0, "", clause, dict(details or {}), list(notes or []), detailing=True, section=section,
+                   hogging=hogging)
 
     @property
     def ratio(self):
@@ -637,6 +648,12 @@ class Check:
             return self.demand <= self.resistance + 1e-9 * max(abs(self.resistance), 1.0) and not self.failed
         return self.ratio <= 1.0 and not self.failed
 
+    def _repr_html_(self) -> str:
+        """Jupyter: name, clause, verdict (green / red), γ0Sd, R and ratio (or the value against its limit), what failed,
+        the warnings and notes, and the section drawn with this check laid over it (codes.jtg.figures.section_figure)
+        when the check has a section the drawing can show"""
+        return _check_html(self)
+
     def __str__(self):
         v = "OK" if self.ok else "NOT OK"
         extra = ("; " + "; ".join(self.failed)) if self.failed else ""
@@ -653,6 +670,53 @@ class Check:
             return (f"{self.name}: {self.symbol} = {self.demand:.{p}f}{u}, limit {self.resistance:.{p}f}{u}, "
                     f"{r} → {v}{extra}")
         return f"{self.name}: γ0Sd = {self.demand:.1f} {self.unit}, R = {self.resistance:.1f} {self.unit}, ratio {self.ratio:.3f} → {v}{extra}"
+
+
+def _check_html(chk: Check) -> str:
+    """the HTML block of Check._repr_html_"""
+    import html
+
+    from ...viz import COLORS, FONT
+    e = html.escape
+    ok = chk.ok
+    col = COLORS["ok"] if ok else COLORS["warn"]
+    if chk.detailing:
+        verdict = f"{len(chk.warnings)} rule(s) not met" if chk.warnings else "rules met"
+        col = COLORS["warn"] if chk.warnings else COLORS["ok"]
+        rows = []
+    elif chk.limit_check:
+        p = 3 if chk.unit == "mm" else 2
+        u = f" {chk.unit}" if chk.unit else ""
+        verdict = "OK" if ok else "NOT OK"
+        rows = [(chk.symbol, f"{chk.demand:.{p}f}{u}"), ("limit", f"{chk.resistance:.{p}f}{u}")]
+        rows.append(("ratio", f"{chk.ratio:.3f}") if chk.resistance > 0 else
+                    ("margin", f"{chk.resistance - chk.demand:.{p}f}{u}"))
+    else:
+        verdict = "OK" if ok else "NOT OK"
+        rows = [("γ0Sd", f"{chk.demand:.1f} {chk.unit}"), ("R", f"{chk.resistance:.1f} {chk.unit}"),
+                ("ratio", f"{chk.ratio:.3f}")]
+    out = [f'<div style="font-family:{FONT};font-size:13px;color:{COLORS["ink"]};border-left:4px solid {col};'
+           f'padding:6px 12px;margin:6px 0;max-width:640px">',
+           f'<div><b>{e(chk.name)}</b> <span style="color:{COLORS["muted"]}">{e(chk.clause)}</span> '
+           f'<b style="color:{col};margin-left:8px">{e(verdict)}</b></div>']
+    if rows:
+        out.append('<table style="border-collapse:collapse;margin:4px 0">' + "".join(
+            f'<tr><td style="padding:1px 12px 1px 0;color:{COLORS["muted"]}">{e(k)}</td>'
+            f'<td style="padding:1px 0;text-align:right;font-variant-numeric:tabular-nums">{e(v)}</td></tr>'
+            for k, v in rows) + "</table>")
+    for title, items, c in (("failed", chk.failed, COLORS["warn"]), ("warnings", chk.warnings, COLORS["warn"]),
+                            ("notes", chk.notes, COLORS["muted"])):
+        if items:
+            out.append(f'<div style="margin-top:4px;color:{c}">{title}:<ul style="margin:2px 0 2px 18px;padding:0">'
+                       + "".join(f"<li>{e(str(v))}</li>" for v in items) + "</ul></div>")
+    if chk.section is not None:
+        from .figures import section_figure  # figures imports this module
+        try:
+            out.append(section_figure(chk.section, check=chk).svg())
+        except (TypeError, ValueError, NotImplementedError):  # a section the drawing cannot show
+            pass
+    out.append("</div>")
+    return "".join(out)
 
 
 # ── cracking moment ─────────────────────────────────────────────────────────
@@ -769,7 +833,7 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
     x, Mu, note, extra = _moment_resistance(s, xb)
     chk = Check("flexure" + (" (hogging)" if Md < 0 else ""), gamma0 * Md, 0.0, "kN·m",
                 "JTG 3362-2018 5.2.5 / 5.2.6" if s.has_external else "JTG 3362-2018 5.2.2 / 5.2.3",
-                {"x": x, "h0": h0, "xi": x / h0, "xi_b": xb})
+                {"x": x, "h0": h0, "xi": x / h0, "xi_b": xb}, section=sec, hogging=Md < 0)
     if s.has_external:
         chk.details["N_ex"] = float((s.external[:, 2] * s.external[:, 0]).sum()) / 1e3
         chk.notes.append("external tendons at σpe,ex (5.2.5)")
@@ -866,6 +930,7 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
                              "(jtg.shear_circle)")
         from .members import shear_circle
         chk = shear_circle(s, Vd, stirrups, gamma0=gamma0, alpha1=alpha1, stirrup_steel=stirrup_steel, bent=bent)
+        chk.section, chk.hogging = sec, hogging
         chk.notes.append("via jtg.shear: column detailing, no axial force; piles and members in tension: "
                          "jtg.shear_circle(..., pile=True, Nd=…)")
         return chk
@@ -894,7 +959,7 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
             raise ValueError("beams need stirrups (9.3.12); stirrups=None only for slabs (slab=True)")
         vslab = 1.25 * vmin
         chk = Check("shear (slab without stirrups)", gamma0 * Vd, vslab, "kN", "JTG 3362-2018 5.2.12",
-                    {"b": b, "h0": h0, "alpha2": alpha2, "V_detailing": vslab}, notes)
+                    {"b": b, "h0": h0, "alpha2": alpha2, "V_detailing": vslab}, notes, section=sec, hogging=hogging)
         chk.warnings += s.material_rules()
         return chk
     sst = st if stirrup_steel is None else (stirrup_steel if isinstance(stirrup_steel, Rebar) else _rebar(stirrup_steel))
@@ -930,7 +995,8 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
     chk = Check("shear" + (" (hogging side)" if hogging else ""), gamma0 * Vd, Vcs + Vsb + Vpb + Vpb_ex, "kN",
                 "JTG 3362-2018 5.2.9",
                 {"b": b, "h0": h0, "P": P, "rho_sv": rho_sv, "alpha1": alpha1, "alpha2": alpha2, "alpha3": a3,
-                 "Vcs": Vcs, "Vsb": Vsb, "Vpb": Vpb, "Vpb_ex": Vpb_ex, "fsv": sst.fsv, "rho_pv": rho_pv}, notes)
+                 "Vcs": Vcs, "Vsb": Vsb, "Vpb": Vpb, "Vpb_ex": Vpb_ex, "fsv": sst.fsv, "rho_pv": rho_pv}, notes,
+                section=sec, hogging=hogging)
     vmax = 0.51e-3 * math.sqrt(c.fcuk) * b * h0
     chk.details.update(V_section_max=vmax, V_detailing=vmin)
     if gamma0 * abs(Vd) > vmax:
@@ -1022,7 +1088,8 @@ def axial(sec: RCSection, Nd: float, l0: float | None = None, *, gamma0: float =
         A -= As
     phi = _phi_of(sec, l0, b_min, i_min)
     Nu = 0.9 * phi * (c.fcd * A + st.fsd_c * As) / 1e3
-    chk = Check("axial compression", gamma0 * Nd, Nu, "kN", "JTG 3362-2018 5.3.1", {"phi": phi, "rho": As / sec.area})
+    chk = Check("axial compression", gamma0 * Nd, Nu, "kN", "JTG 3362-2018 5.3.1", {"phi": phi, "rho": As / sec.area},
+                section=sec)
     _min_compression_steel(sec, chk)
     chk.warnings += sec.material_rules()
     return chk
@@ -1099,7 +1166,7 @@ def eccentric(sec: RCSection, Nd: float, Md: float, l0: float | None = None, *, 
     eta = eta_factor(s, e0, l0, h0)
     e = eta * e0
     chk = Check("eccentric compression", gamma0 * Nd, 0.0, "kN", "JTG 3362-2018 5.3.4–5.3.9",
-                {"e0_from_forces": e0_raw, "e0": e0, "eta": eta, "e": e, "h0": h0})
+                {"e0_from_forces": e0_raw, "e0": e0, "eta": eta, "e": e, "h0": h0}, section=sec, hogging=Md < 0)
     if e0 > e0_raw:
         chk.notes.append(f"e0 = {e0_raw:.1f} mm raised to the minimum {e0:.1f} mm (5.3.9)")
     _min_compression_steel(s, chk)

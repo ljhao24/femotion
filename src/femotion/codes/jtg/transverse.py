@@ -894,7 +894,7 @@ def transverse_normal_stresses(sec: RCSection, Ns: float, Ms: float, Nl: float, 
     cl = ("6.3.1-2" if segmental else "6.3.1-1") if k == "FULL" else "6.3.1-3, -4"
     chk = Check(f"transverse normal stress ({'full prestress' if k == 'FULL' else 'class A'}, {gov} face)", g["demand"],
                 g["limit"], "MPa", f"JTG 3362-2018 table 6.1.3, {cl}", {"edge": gov, **edges}, limit_check=True,
-                symbol="σst")
+                symbol="σst", section=sec, hogging=Ms < 0)
     for n, e in edges.items():
         if n != gov and e["demand"] > e["limit"] + 1e-9:
             chk.failed.append(f"{n}: σst = {e['demand']:.2f} > {e['limit']:.2f} MPa")

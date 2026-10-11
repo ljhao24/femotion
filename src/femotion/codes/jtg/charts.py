@@ -1,7 +1,7 @@
 """Charts along a girder for design calculation reports (计算书): the moment envelope against the resisting moment
 diagram (抵抗弯矩图), the shear envelope against the stirrup zones with the inclined sections of 5.2.8–5.2.11 on the
 girder's elevation, utilisation along the girder, edge stresses, deflection and crack width against their limits, and
-a stack of them on one shared x axis. Plain SVG through femotion.viz (no plotting library).
+charts that viz.stack puts on one shared x axis. Plain SVG through femotion.viz (no plotting library).
 
 Units as the rest of femotion.codes.jtg: positions along the girder in m, moments kN·m, shears kN, stresses MPa,
 deflections and crack widths mm, section dimensions mm.
@@ -15,7 +15,7 @@ deflections and crack widths mm, section dimensions mm.
     Vu = charts.shear_resistance(zones, stirrups, supports=supports, x=x, Md=Md)
     fv = charts.shear_chart(x, Vmax, Vmin, resistance=Vu, search=search, supports=[0, 16, 32])
     el = charts.beam_elevation(0, 32, zones, supports=supports, search=search, stirrups=stirrups)
-    page = viz.html([charts.stack([el, fv]), fm])
+    page = viz.html([viz.stack([el, fv]), fm])
 
 Program conventions:
 - Design envelopes (basic combination) are passed as the combinations give them, without γ0; the charts plot γ0 Sd
@@ -33,56 +33,40 @@ Program conventions:
   count per inclined section, shear_search). The inclined sections themselves come from jtg.shear_search: drawn on
   the elevation from the tension face at x_t to the compression face at x_c, the governing one marked on the shear
   chart with its own γ0 Vd and Vu.
-- Each chart is a viz.Figure; `height` is the height of the plot box in px (the figure grows around it for the title,
-  legend, tick labels and notes). Results are kept on the figure: `fig.critical` (moment_chart), `fig.governing`
+- Each chart is a viz.Figure; `height` is the height of the plot box in px (Figure(plot_height=…): the figure grows
+  around it for the title, legend, tick labels and notes). Style and conventions shared with the other drawings:
+  docs/figures.md. Results are kept on the figure: `fig.critical` (moment_chart), `fig.governing`
   (shear_chart), `fig.maxima` (utilization_chart), `fig.extremes` (the others).
 """
 from __future__ import annotations
 
-import html as _html
 import math
 import re
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from ...viz import FONT, Figure, _fmt, _text_box, text_width
+from ...viz import COLORS as C
+from ...viz import (TEXT_SIZE, Figure, beyond, dim_chain, number, split, support_symbol, svg_line, svg_poly, svg_text,
+                   text_box, text_width)
 from .rc import RCSection, flexure as _flexure, shear as _shear
 
-# classes used besides those of femotion.viz (one <style> per figure; "ch-…" names only tag elements)
-CSS = """
-.fm-halo { paint-order: stroke; stroke: #ffffff; stroke-width: 3px; stroke-linejoin: round; }
-.fm-limit { fill: none; stroke: #c0392b; stroke-width: 1.1; stroke-dasharray: 6 3; }
-.fm-supline { fill: none; stroke: #a8a8a8; stroke-width: 0.8; stroke-dasharray: 2 3; }
-.fm-env2 { fill: none; stroke: #6b6b6b; stroke-width: 1.2; stroke-dasharray: 5 3; stroke-linejoin: round; }
-.fm-env3 { fill: none; stroke: #6b6b6b; stroke-width: 1.2; stroke-dasharray: 1.5 2.5; stroke-linejoin: round; }
-.fm-env4 { fill: none; stroke: #b4541b; stroke-width: 1.2; stroke-dasharray: 8 3 2 3; stroke-linejoin: round; }
-.fm-s1 { fill: none; stroke: #262626; stroke-width: 1.6; stroke-linejoin: round; }
-.fm-s2 { fill: none; stroke: #1d5fa6; stroke-width: 1.6; stroke-dasharray: 7 3; stroke-linejoin: round; }
-.fm-s3 { fill: none; stroke: #d27a14; stroke-width: 1.8; stroke-dasharray: 2 2; stroke-linejoin: round; }
-.fm-s4 { fill: none; stroke: #7b3fa8; stroke-width: 1.6; stroke-dasharray: 9 3 2 3; stroke-linejoin: round; }
-.fm-s5 { fill: none; stroke: #2e7d32; stroke-width: 1.6; stroke-dasharray: 1 3; stroke-linecap: round; }
-.fm-s6 { fill: none; stroke: #6b6b6b; stroke-width: 1.4; stroke-dasharray: 12 4; }
-.fm-band1 { fill: #1d5fa6; fill-opacity: 0.10; stroke: none; }
-.fm-band2 { fill: #e08a2c; fill-opacity: 0.16; stroke: none; }
-.fm-edge1 { fill: none; stroke: #1d5fa6; stroke-width: 1.6; stroke-linejoin: round; }
-.fm-edge2 { fill: none; stroke: #d27a14; stroke-width: 1.6; stroke-linejoin: round; }
-.fm-incl-grid { fill: none; stroke: #c9c9c9; stroke-width: 0.7; }
-.fm-incl { fill: none; stroke: #4a4a4a; stroke-width: 1.0; }
-.fm-incl-gov { fill: none; stroke: #c0392b; stroke-width: 2.2; stroke-linecap: round; }
-.fm-bent { fill: none; stroke: #1d5fa6; stroke-width: 1.3; }
-.fm-mk-d { fill: #c0392b; stroke: #ffffff; stroke-width: 1; }
-.fm-mk-r { fill: #ffffff; stroke: #1d5fa6; stroke-width: 1.5; }
-.fm-mk-s { fill: #262626; stroke: #ffffff; stroke-width: 1; }
-.fm-conn { fill: none; stroke: #262626; stroke-width: 0.9; stroke-dasharray: 2 2; }
-.fm-zone { fill: none; stroke: #6b6b6b; stroke-width: 0.8; }
-.fm-note { font-size: 10.5px; fill: #262626; }
-.fm-notewarn { font-size: 10.5px; }
-.fm-root .fm-notewarn { fill: #c0392b; }
+# classes of these charts besides those of femotion.viz (the "ch-…" names only tag elements for scripts and tests)
+CSS = f"""
+.fm-env2 {{ fill: none; stroke: {C['muted']}; stroke-width: 1.2; stroke-dasharray: 5 3; stroke-linejoin: round; }}
+.fm-env3 {{ fill: none; stroke: {C['muted']}; stroke-width: 1.2; stroke-dasharray: 1.5 2.5; stroke-linejoin: round; }}
+.fm-env4 {{ fill: none; stroke: {C['load']}; stroke-width: 1.2; stroke-dasharray: 8 3 2 3; stroke-linejoin: round; }}
+.fm-band1 {{ fill: {C['s2']}; fill-opacity: 0.10; stroke: none; }}
+.fm-band2 {{ fill: {C['compression']}; fill-opacity: 0.16; stroke: none; }}
+.fm-edge1 {{ fill: none; stroke: {C['s2']}; stroke-width: 1.6; stroke-linejoin: round; }}
+.fm-edge2 {{ fill: none; stroke: {C['s3']}; stroke-width: 1.6; stroke-linejoin: round; }}
+.fm-incl-grid {{ fill: none; stroke: {C['hairline']}; stroke-width: 0.7; }}
+.fm-incl {{ fill: none; stroke: {C['concrete_edge']}; stroke-width: 1.0; }}
+.fm-incl-gov {{ fill: none; stroke: {C['warn']}; stroke-width: 2.2; stroke-linecap: round; }}
+.fm-bent {{ fill: none; stroke: {C['s2']}; stroke-width: 1.3; }}
 """
 SERIES = ("s1", "s2", "s3", "s4", "s5", "s6")
 OTHERS = ("env2", "env3", "env4", "s6")
-NOTE_SIZE = 10.5
 
 TEXT = {
     "zh": {
@@ -96,10 +80,10 @@ TEXT = {
         "crit": "控制截面 x = {x} m（{sign}）：γ0Md = {d} kN·m，Mu = {r} kN·m，利用率 {u}",
         "crit_margin": "；最小富余 Mu − γ0Md = {m} kN·m", "sag": "正弯矩", "hog": "负弯矩",
         "ok": " → 满足", "nok": " → 不满足",
-        "gov": "最不利斜截面 x_c = {xc} m，x_t = {xt} m，C = {C} m：γ0Vd = {d} kN，Vu = {r} kN，比值 {u}",
+        "gov": "最不利斜截面 x_{{c}} = {xc} m，x_{{t}} = {xt} m，C = {C} m：γ0Vd = {d} kN，Vu = {r} kN，比值 {u}",
         "lim": "端支点 x = {x} m 截面上限（5.2.11）：γ0V0d = {d} kN，0.51×10⁻³√fcu,k·b·h0 = {r} kN",
         "grid": "斜截面（逐点搜索）", "pos": "5.2.8 规定位置", "govl": "最不利斜截面", "bent": "弯起钢筋",
-        "gov_short": "最不利 {u}", "scale": "竖向未按比例；斜截面从受拉边 x_t 画到受压端 x_c",
+        "gov_short": "最不利 {u}", "scale": "竖向未按比例；斜截面从受拉边 x_{t} 画到受压端 x_{c}",
         "legs": {1: "单肢", 2: "双肢", 3: "三肢", 4: "四肢", 6: "六肢"}, "leg": "{n}肢",
         "umax": "{label}（最大 {r}）", "unote": "{label}：最大 {r}（x = {x} m）", "limit": "限值", "top": "上缘",
         "bottom": "下缘", "edge": "{label}：{lo} ～ {hi} MPa", "over": "{label} 超出 {lim}：x = {x} m 处 {v}",
@@ -118,12 +102,12 @@ TEXT = {
         "crit": "governing section x = {x} m ({sign}): γ0Md = {d} kN·m, Mu = {r} kN·m, utilisation {u}",
         "crit_margin": "; least margin Mu − γ0Md = {m} kN·m", "sag": "sagging", "hog": "hogging",
         "ok": " → OK", "nok": " → NOT OK",
-        "gov": "governing inclined section x_c = {xc} m, x_t = {xt} m, C = {C} m: γ0Vd = {d} kN, Vu = {r} kN, "
+        "gov": "governing inclined section x_{{c}} = {xc} m, x_{{t}} = {xt} m, C = {C} m: γ0Vd = {d} kN, Vu = {r} kN, "
                "ratio {u}",
         "lim": "section limit at the end support x = {x} m (5.2.11): γ0V0d = {d} kN, 0.51e-3 √fcu,k b h0 = {r} kN",
         "grid": "inclined sections (search)", "pos": "5.2.8 positions", "govl": "governing", "bent": "bent-up bars",
         "gov_short": "governing {u}", "scale": "not to scale vertically; inclined sections from the tension face at "
-                                              "x_t to the compression end x_c",
+                                              "x_{t} to the compression end x_{c}",
         "legs": {}, "leg": "{n} legs",  # zh: 双肢, 四肢 …
         "umax": "{label} (max {r})", "unote": "{label}: max {r} (x = {x} m)", "limit": "limit", "top": "top edge",
         "bottom": "bottom edge", "edge": "{label}: {lo} … {hi} MPa", "over": "{label} beyond {lim}: {v} at x = {x} m",
@@ -141,15 +125,6 @@ def _text(lang: str) -> dict:
 
 def _ratio(u: float, digits: int) -> str:
     return f"{u:.{digits}f}" if math.isfinite(u) else "∞"
-
-
-def _num(v: float, digits: int | None = None) -> str:
-    """a value for a label: 0 decimals from 100 up, 1 from 10, 2 below (or `digits`)"""
-    if digits is None:
-        a = abs(v)
-        digits = 0 if a >= 100 else 1 if a >= 10 else 2
-    s = f"{v:.{digits}f}"
-    return "0" if float(s) == 0 else s
 
 
 # ── quantities along the girder ──────────────────────────────────────────────
@@ -207,7 +182,7 @@ class Profile:
     def lines(self) -> list[list[tuple[float, float]]]:
         """polylines to draw: contiguous steps joined by vertical jumps"""
         if not self.is_steps:
-            return _split(self.x, self.v)
+            return split(self.x, self.v)
         out, cur = [], []
         tol = 1e-9 * max(1.0, abs(self.extent[1] - self.extent[0]))
         for a, b, v in self.rows:
@@ -431,7 +406,7 @@ def shear_resistance(section, stirrups, *, supports=(), x=None, Md=None, alpha1=
     return Profile.steps(rows)
 
 
-# ── drawing helpers (candidates for femotion.viz) ───────────────────────────
+# ── drawing helpers ─────────────────────────────────────────────────────────
 def _arrays(x, *ys):
     x = np.asarray(x, float)
     if x.ndim != 1 or len(x) < 2:
@@ -442,48 +417,6 @@ def _arrays(x, *ys):
         if y.shape != x.shape:
             raise ValueError("the values must have the length of x")
         out.append(y)
-    return out
-
-
-def _split(x, y) -> list[list[tuple[float, float]]]:
-    """polylines of the finite points (NaN or inf breaks a line)"""
-    out, cur = [], []
-    for a, b in zip(np.asarray(x, float), np.asarray(y, float)):
-        if math.isfinite(a) and math.isfinite(b):
-            cur.append((float(a), float(b)))
-        elif cur:
-            out.append(cur)
-            cur = []
-    if cur:
-        out.append(cur)
-    return out
-
-
-def _beyond(x, y, level, above: bool = True) -> list[list[tuple[float, float]]]:
-    """the parts of a polyline beyond a level (above it, or below with above=False), with the crossing points"""
-    x, y = np.asarray(x, float), np.asarray(y, float)
-    s = (y - level) if above else (level - y)
-    out, cur = [], []
-    for i in range(len(x)):
-        if not (math.isfinite(s[i]) and math.isfinite(x[i])):
-            if cur:
-                out.append(cur)
-            cur = []
-            continue
-        prev_ok = i > 0 and math.isfinite(s[i - 1])
-        if s[i] > 0:
-            if not cur and prev_ok and s[i - 1] <= 0:
-                t = s[i - 1] / (s[i - 1] - s[i])
-                cur.append((x[i - 1] + t * (x[i] - x[i - 1]), level))
-            cur.append((float(x[i]), float(y[i])))
-        elif cur:
-            if prev_ok:
-                t = s[i - 1] / (s[i - 1] - s[i])
-                cur.append((x[i - 1] + t * (x[i] - x[i - 1]), level))
-            out.append(cur)
-            cur = []
-    if cur:
-        out.append(cur)
     return out
 
 
@@ -511,236 +444,35 @@ def _y_range(arrays, plot_px: float, pad_px: float = 20.0, zero: bool = True, fl
     return lo2, hi2
 
 
-def _style(fig: Figure):
-    fig.raw(lambda T: f"<style>{CSS}</style>")
-
-
 def _chart(width, plot_px, box, title, xlabel, ylabel, yfmt=None) -> Figure:
-    fig = Figure(width=width, height=plot_px + 120, equal=False, title=title)
-    fig.set_box(*box).axes(xlabel=xlabel, ylabel=ylabel, yfmt=yfmt)
-    _style(fig)
-    return fig
+    """a chart with its plot box plot_px high"""
+    fig = Figure(width=width, plot_height=plot_px, equal=False, title=title, css=CSS)
+    return fig.set_box(*box).axes(xlabel=xlabel, ylabel=ylabel, yfmt=yfmt)
 
 
-def _fit(fig: Figure, plot_px: float):
-    """the figure's height set so that its plot box is plot_px high; the labels drawn last (on top)"""
-    lab = getattr(fig, "_chart_labels", None)
-    if lab is not None:
-        mine = [it for it in fig._items if it.svg == lab._svg]
-        fig._items = [it for it in fig._items if it.svg != lab._svg] + mine
-    for _ in range(8):
-        T = fig._transform()
-        cur = (T.box[3] - T.box[1]) * T.sy
-        if abs(cur - plot_px) < 0.05:
-            break
-        fig.height += plot_px - cur
-    return fig
-
-
-def _tsvg(x, y, s, cls, anchor="middle", baseline="middle") -> str:
-    k = " ".join("fm-" + c for c in cls.split())
-    return (f'<text x="{_fmt(x)}" y="{_fmt(y)}" text-anchor="{anchor}" dominant-baseline="{baseline}" class="{k}">'
-            f'{_html.escape(str(s))}</text>')
-
-
-def _size(cls: str) -> float:
-    return {"title": 15.0, "label": 12.0}.get(cls.split()[0], NOTE_SIZE)
-
-
-def _overlap(a, b, pad: float = 1.0) -> bool:
-    return not (a[2] + pad <= b[0] or b[2] + pad <= a[0] or a[3] + pad <= b[1] or b[3] + pad <= a[1])
-
-
-class Labels:
-    """labels placed without overlapping each other or registered markers: each label has candidate positions (a world
-    point and a page offset), the first free one is taken, higher priority first; a label with no free candidate is
-    left out (or put at its first candidate when required). Inside labels must also stay in the plot box. Laid out
-    again for every page mapping, so a narrower page drops what no longer fits."""
-
-    def __init__(self, fig: Figure):
-        self.fig, self.items, self.marks, self._key, self._out = fig, [], [], None, []
-        fig.raw(self._svg, extent=self._extent)
-
-    def add(self, s: str, cands, *, cls: str = "small halo", priority: int = 0, room=None, inside: bool = True,
-            required: bool = False):
-        """cands: [(world point, dx, dy, anchor)] in order of preference; room = (x0, x1) world: shown only when the
-        text fits between them"""
-        self.items.append((priority, len(self.items), s, list(cands), cls, room, inside, required))
-
-    def mark(self, p, r_px: float = 4.0):
-        """a marker at a world point that labels keep clear of"""
-        self.marks.append((tuple(p), r_px))
-
-    def _layout(self, T):
-        key = (T.sx, T.sy, T.W, T.H, T(T.box[0], T.box[3]))
-        if key == self._key:
-            return self._out
-        x0, y0, x1, y1 = T.box
-        (bx0, by0), (bx1, by1) = T(x0, y0), T(x1, y1)
-        taken = []
-        for (px, py), r in self.marks:
-            u, v = T(px, py)
-            taken.append((u - r, v - r, u + r, v + r))
-        out = []
-        for _, _, s, cands, cls, room, inside, required in sorted(self.items, key=lambda i: (-i[0], i[1])):
-            size = _size(cls)
-            if room is not None and abs(T(room[1], 0)[0] - T(room[0], 0)[0]) < text_width(s, size) + 6:
-                continue
-            first = None
-            for p, dx, dy, anchor in cands:
-                u, v = T(*p)
-                box = _text_box(u + dx, v + dy, s, size, anchor, "middle")
-                first = first or (u + dx, v + dy, anchor, box)
-                if inside and not (box[0] >= bx0 + 1 and box[2] <= bx1 - 1 and box[1] >= by1 + 1 and box[3] <= by0 - 1):
-                    continue
-                if any(_overlap(box, t) for t in taken):
-                    continue
-                out.append((u + dx, v + dy, s, cls, anchor, box))
-                taken.append(box)
-                break
-            else:
-                if required and first:
-                    out.append((first[0], first[1], s, cls, first[2], first[3]))
-                    taken.append(first[3])
-        self._key, self._out = key, out
-        return out
-
-    def _svg(self, T):
-        return "".join(_tsvg(u, v, s, cls, anchor) for u, v, s, cls, anchor, _ in self._layout(T))
-
-    def _extent(self, T):
-        return [b for *_, b in self._layout(T)]
-
-
-def _labels(fig: Figure) -> Labels:
-    if not hasattr(fig, "_chart_labels"):
-        fig._chart_labels = Labels(fig)
-    return fig._chart_labels
-
-
-def _label(fig: Figure, p, s: str, cls: str = "small halo", *, dx: float = 0.0, dy: float = 0.0,
-           anchor: str = "middle", room=None, priority: int = 0, inside: bool = True, required: bool = False,
-           alt=()):
-    """a label at a world point shifted (dx, dy) px, through the figure's label placer; alt: further candidates
-    (world point, dx, dy, anchor)"""
-    _labels(fig).add(s, [(p, dx, dy, anchor), *alt], cls=cls, priority=priority, room=room, inside=inside,
-                     required=required)
+def _verdict(ok: bool) -> str:
+    return "ok" if ok else "fail"
 
 
 def _step_label(fig: Figure, a: float, b: float, yw: float, s: str, x0: float, x1: float, priority: int = 1):
     """the value of a step (a resistance zone) outside it, away from the axis: at its middle, else a quarter in"""
     a, b = max(a, x0), min(b, x1)
     dy = -9.0 * (1 if yw >= 0 else -1)
-    _label(fig, ((a + b) / 2, yw), s, dy=dy, room=(a, b), priority=priority,
-           alt=[((a + (b - a) * f, yw), 0, dy, "middle") for f in (0.3, 0.7, 0.15, 0.85)])
+    fig.label(((a + b) / 2, yw), s, dy=dy, room=(a, b), priority=priority,
+              alt=[((a + (b - a) * f, yw), 0, dy, "middle") for f in (0.3, 0.7, 0.15, 0.85)])
 
 
 def _peak_label(fig: Figure, xp: float, yw: float, s: str, priority: int = 2):
     """a peak value next to its point, inside the diagram (towards the axis) first, then beside or outside it"""
     sg = 1 if yw >= 0 else -1
     p = (xp, yw)
-    _label(fig, p, s, dy=10 * sg, priority=priority,
-           alt=[(p, 6, 8 * sg, "start"), (p, -6, 8 * sg, "end"), (p, 0, -10 * sg, "middle"), (p, 7, 0, "start"),
-                (p, -7, 0, "end")])
-
-
-def _vlines(fig: Figure, xs, cls="supline"):
-    for v in xs:
-        fig.raw(lambda T, v=v: '<line x1="{0}" y1="{1}" x2="{0}" y2="{2}" class="fm-{3}"/>'.format(
-            _fmt(T(v, 0)[0]), _fmt(T(v, T.box[1])[1]), _fmt(T(v, T.box[3])[1]), cls), clip=True)
+    fig.label(p, s, dy=10 * sg, priority=priority,
+              alt=[(p, 6, 8 * sg, "start"), (p, -6, 8 * sg, "end"), (p, 0, -10 * sg, "middle"), (p, 7, 0, "start"),
+                   (p, -7, 0, "end")])
 
 
 def _support_x(supports) -> list[float]:
     return [s[0] for s in _norm_supports(supports)]
-
-
-def _legend(fig: Figure, entries, gap: float = 8.0):
-    """a legend in rows above the plot box (it wraps at the box width): entries (class, label, kind), kind "line",
-    "area", "dot" (the class of a dot)"""
-    entries = [e for e in entries if e]
-    if not entries:
-        return
-
-    def lay(T):
-        x0, _, x1, y1 = T.box
-        bx0, by1 = T(x0, y1)
-        right = max(T(x1, y1)[0], bx0 + 150)
-        out, row, cx = [], 0, bx0
-        for cls, s, kind in entries:
-            w = 26 + text_width(s, NOTE_SIZE)
-            if cx > bx0 and cx + w > right:
-                row, cx = row + 1, bx0
-            out.append((cx, row, cls, s, kind, w))
-            cx += w + 14
-        return out, by1 - gap - 15 * (row + 1)
-
-    def f(T):
-        items, top = lay(T)
-        parts = []
-        for cx, row, cls, s, kind, _ in items:
-            yy = top + 7.5 + 15 * row
-            k = " ".join("fm-" + c for c in cls.split())
-            if kind == "area":
-                parts.append(f'<rect x="{_fmt(cx + 1)}" y="{_fmt(yy - 5)}" width="18" height="10" class="{k}"/>')
-            elif kind == "dot":
-                parts.append(f'<circle cx="{_fmt(cx + 10)}" cy="{_fmt(yy)}" r="3.2" class="{k}"/>')
-            else:
-                parts.append(f'<line x1="{_fmt(cx)}" y1="{_fmt(yy)}" x2="{_fmt(cx + 20)}" y2="{_fmt(yy)}" '
-                             f'class="{k}"/>')
-            parts.append(_tsvg(cx + 26, yy, s, "small", "start"))
-        return "".join(parts)
-
-    def e(T):
-        items, top = lay(T)
-        return [(cx, top + 15 * row, cx + w, top + 15 * row + 15) for cx, row, _, _, _, w in items]
-    fig.raw(f, extent=e)
-
-
-_CJK = "\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef\u3000-\u303f"
-_TOKEN = re.compile(f"[{_CJK}]|[^ \\t\\n{_CJK}]+[ \\t]*|[ \\t\\n]+")
-_NOBREAK = re.compile(r"(?<=[\d.]) (?=(?:m|mm|kN|kN·m|MPa|°)(?![A-Za-z]))|(?<= =) | (?==)"
-                      r"|(?<=最大) |(?<=max) |(?<=利用率) |(?<=比值) |(?<=utilisation) |(?<=ratio) ")
-
-
-def wrap(s: str, width: float, size: float = NOTE_SIZE) -> list[str]:
-    """lines of at most `width` px: CJK characters break anywhere, other words at spaces, but a number stays with its
-    unit and "a = b" stays whole (no-break spaces)"""
-    s = _NOBREAK.sub("\u00a0", s)
-    lines, cur = [], ""
-    for tok in _TOKEN.findall(s):
-        if cur and text_width((cur + tok).rstrip(), size) > width and tok.strip() and tok not in "，；、。）):;,.":
-            lines.append(cur.rstrip())
-            cur = tok.lstrip()
-        else:
-            cur += tok
-    if cur.strip():
-        lines.append(cur.rstrip())
-    return lines or [""]
-
-
-def _notes(fig: Figure, lines, start):
-    """notes under the chart, left-aligned with the plot box and wrapped at the page width: lines of (text, warn);
-    start(T) the page y of the first line's middle"""
-    lines = [ln for ln in lines if ln and ln[0]]
-    if not lines:
-        return
-
-    def lay(T):
-        x0 = T(T.box[0], 0)[0]
-        width = max(T.W - x0 - 8, 120.0)
-        y, out = start(T), []
-        for s, warn in lines:
-            for part in wrap(s, width):
-                out.append((x0, y, part, "notewarn" if warn else "note"))
-                y += 14.5
-        return out
-
-    fig.raw(lambda T: "".join(_tsvg(x, y, s, c, "start") for x, y, s, c in lay(T)),
-            extent=lambda T: [_text_box(x, y, s, NOTE_SIZE, "start", "middle") for x, y, s, c in lay(T)])
-
-
-def _below_axis(xlabel: bool):
-    return lambda T: T(T.box[0], T.box[1])[1] + (31 if xlabel else 13) + 19
 
 
 def _marker(fig: Figure, xk: float, yd: float, yr: float, text: str, *, left: bool, d_cls="mk-d", r_cls="mk-r",
@@ -749,13 +481,11 @@ def _marker(fig: Figure, xk: float, yd: float, yr: float, text: str, *, left: bo
     fig.polyline([(xk, yd), (xk, yr)], f"conn {tag}", fit=False)
     fig.dot((xk, yd), 3.4, cls=f"{d_cls} {tag}-d", fit=False)
     fig.dot((xk, yr), 3.4, cls=f"{r_cls} {tag}-r", fit=False)
-    lab = _labels(fig)
-    lab.mark((xk, yd), 5.0)
-    lab.mark((xk, yr), 5.0)
+    fig.mark((xk, yd), 5.0).mark((xk, yr), 5.0)
     mid = (xk, (yd + yr) / 2)
     first, other = [(mid, -7, 0, "end"), (mid, 7, 0, "start")][::1 if left else -1]
-    _label(fig, mid, text, "label halo", dx=first[1], anchor=first[3], priority=5, required=True,
-           alt=[other, ((xk, yr), 0, -12 if yr >= yd else 12, "middle")])
+    fig.label(mid, text, "label", dx=first[1], anchor=first[3], priority=5, required=True,
+              alt=[other, ((xk, yr), 0, -12 if yr >= yd else 12, "middle")])
 
 
 def _spans(sx, x0, x1):
@@ -797,16 +527,16 @@ def moment_chart(x, Mmax, Mmin, *, gamma0: float = 1.0, resistance=None, shaved=
         vals += [res.sagging.values(), res.hogging.values()]
     lo, hi = _y_range([s * np.asarray(v) for v in vals], height, pad_px=22)
     fig = _chart(width, height, (x0, lo, x1, hi), L["m_title"] if title is None else title, L["x"] if xlabel else "",
-                 L["M"], yfmt=lambda v: _fmt(s * v + 0.0))
+                 L["M"], yfmt=lambda v: number(s * v + 0.0))
     sx = _support_x(supports)
-    _vlines(fig, sx)
+    fig.vlines(sx)
     fig.polygon(list(zip(x, s * dmax)) + list(zip(x[::-1], s * dmin[::-1])), "area-demand ch-band", fit=False)
     if smax is not None or smin is not None:
         for orig, new in ((gamma0 * Mmax, dmax), (gamma0 * Mmin, dmin)):
             diff = np.abs(orig - new) > 1e-9 * max(1.0, float(np.abs(orig).max()))
             if diff.any():
                 d = np.convolve(diff.astype(float), [1, 1, 1], "same") > 0
-                for part in _split(x, np.where(d, s * orig, np.nan)):
+                for part in split(x, np.where(d, s * orig, np.nan)):
                     fig.polyline(part, "demand2 ch-md-orig", fit=False)
     for k, (_, a, b) in enumerate(others):
         cls = OTHERS[k % len(OTHERS)]
@@ -820,7 +550,7 @@ def moment_chart(x, Mmax, Mmin, *, gamma0: float = 1.0, resistance=None, shaved=
                 for a, b, v in prof.rows:
                     if v == 0:
                         continue
-                    _step_label(fig, a, b, s * v, _num(v), x0, x1)
+                    _step_label(fig, a, b, s * v, number(v), x0, x1)
     fig.polyline(zip(x, s * dmax), "demand ch-md-max", fit=False)
     fig.polyline(zip(x, s * dmin), "demand ch-md-min", fit=False)
 
@@ -843,7 +573,7 @@ def moment_chart(x, Mmax, Mmin, *, gamma0: float = 1.0, resistance=None, shaved=
         big = max(float(np.abs(np.r_[dmax, dmin]).max()), 1e-12)
         for xp, v in peaks:
             if abs(v) >= 0.05 * big:
-                _peak_label(fig, xp, s * v, _num(v))
+                _peak_label(fig, xp, s * v, number(v))
 
     crit, lines = None, []
     ratio = None
@@ -873,9 +603,9 @@ def moment_chart(x, Mmax, Mmin, *, gamma0: float = 1.0, resistance=None, shaved=
                                    u=_ratio(u, 3))
             if critical == "margin":
                 txt += L["crit_margin"].format(m=f"{crit['margin']:.1f}")
-            lines.append((txt + (L["ok"] if u <= 1 else L["nok"]), u > 1))
+            lines.append((txt + (L["ok"] if u <= 1 else L["nok"]), _verdict(u <= 1)))
     if legend:
-        ents = [("demand", L["Md"].format(g=_fmt(gamma0)), "line")]
+        ents = [("demand", L["Md"].format(g=number(gamma0)), "line")]
         if smax is not None or smin is not None:
             ents.append(("demand2", L["before"], "line"))
         ents += [(OTHERS[k % len(OTHERS)], lab, "line") for k, (lab, _, _) in enumerate(others)]
@@ -883,11 +613,11 @@ def moment_chart(x, Mmax, Mmin, *, gamma0: float = 1.0, resistance=None, shaved=
             ents.append(("resist", L["Mu"], "line"))
         if crit:
             ents.append(("mk-d", L["mk"], "dot"))
-        _legend(fig, ents)
+        fig.legend(ents)
     if notes:
-        _notes(fig, lines, _below_axis(xlabel))
+        fig.notes(lines)
     fig.critical, fig.utilization = crit, ratio
-    return _fit(fig, height)
+    return fig
 
 
 # ── shear ───────────────────────────────────────────────────────────────────
@@ -938,7 +668,7 @@ def shear_chart(x, Vmax, Vmin, *, gamma0: float = 1.0, resistance=None, search=N
     fig = _chart(width, height, (x0, lo, x1, hi), L["v_title"] if title is None else title, L["x"] if xlabel else "",
                  L["V"])
     sx = _support_x(supports)
-    _vlines(fig, sx)
+    fig.vlines(sx)
     fig.polygon(list(zip(x, dmax)) + list(zip(x[::-1], dmin[::-1])), "area-demand ch-band", fit=False)
     if vu is not None:
         for sg, tag in ((1.0, "ch-vu-pos"), (-1.0, "ch-vu-neg")):
@@ -946,7 +676,7 @@ def shear_chart(x, Vmax, Vmin, *, gamma0: float = 1.0, resistance=None, search=N
                 fig.polyline([(u, sg * v) for u, v in part], f"resist {tag}", fit=False)
         if annotate and vu.is_steps:
             for a, b, v in vu.rows:
-                _step_label(fig, a, b, v, _num(v), x0, x1)
+                _step_label(fig, a, b, v, number(v), x0, x1)
     fig.polyline(zip(x, dmax), "demand ch-vd-max", fit=False)
     fig.polyline(zip(x, dmin), "demand ch-vd-min", fit=False)
     lines, limits = [], []
@@ -956,14 +686,14 @@ def shear_chart(x, Vmax, Vmin, *, gamma0: float = 1.0, resistance=None, search=N
         dirn = 1.0 if u <= (x0 + x1) / 2 else -1.0
         fig.polyline([(u, sg * c.resistance), (u + dirn * w, sg * c.resistance)], "limit ch-vlim", fit=False)
         fig.dot((u, sg * c.demand), 3.0, cls="mk-s ch-vlim-d", fit=False)
-        _labels(fig).mark((u, sg * c.demand), 4.0)
+        fig.mark((u, sg * c.demand), 4.0)
         q = (u + dirn * w, sg * c.resistance)
         anc = "start" if dirn > 0 else "end"
-        _label(fig, q, f"{L['vlim_short']} {_num(c.resistance)}", dx=3 * dirn, dy=-9 * sg, anchor=anc, priority=3,
+        fig.label(q, f"{L['vlim_short']} {number(c.resistance)}", dx=3 * dirn, dy=-9 * sg, anchor=anc, priority=3,
                alt=[(q, 3 * dirn, 9 * sg, anc), (q, 4 * dirn, 0, anc), ((u, sg * c.resistance), 0, -9 * sg, anc)])
         limits.append({"x": u, "demand": c.demand, "resistance": c.resistance})
-        lines.append((L["lim"].format(x=_fmt(u), d=f"{c.demand:.1f}", r=f"{c.resistance:.1f}") +
-                      (L["ok"] if c.ok else L["nok"]), not c.ok))
+        lines.append((L["lim"].format(x=number(u), d=f"{c.demand:.1f}", r=f"{c.resistance:.1f}") +
+                      (L["ok"] if c.ok else L["nok"]), _verdict(c.ok)))
     governing = None
     if gov is not None:
         sg = _sign_at(x, dmax, dmin, gov.x_c)
@@ -973,7 +703,7 @@ def shear_chart(x, Vmax, Vmin, *, gamma0: float = 1.0, resistance=None, search=N
         _marker(fig, gov.x_c, sg * abs(d), sg * r, _ratio(gov.ratio, 2), left=gov.x_c > x0 + 0.72 * (x1 - x0))
         lines.insert(0, (L["gov"].format(xc=f"{gov.x_c:.3f}", xt=f"{gov.x_t:.3f}", C=f"{gov.C:.3f}", d=f"{abs(d):.1f}",
                                          r=f"{r:.1f}", u=_ratio(gov.ratio, 3)) + (L["ok"] if gov.ok else L["nok"]),
-                         not gov.ok))
+                         _verdict(gov.ok)))
     if annotate:  # the support shears, inside the envelope next to the jump
         big = max(float(np.abs(np.r_[dmax, dmin]).max()), 1e-12)
         for v in (sx or [x0, x1]):
@@ -987,21 +717,21 @@ def shear_chart(x, Vmax, Vmin, *, gamma0: float = 1.0, resistance=None, search=N
                 side = 1.0 if v <= x0 + 1e-9 else -1.0 if v >= x1 - 1e-9 else (1.0 if len(idx) > 1 and k == idx[-1]
                                                                                  else -1.0)
                 p, sgn, anc = (v, arr[k]), np.sign(arr[k]), "start" if side > 0 else "end"
-                _label(fig, p, _num(arr[k]), dx=5 * side, dy=10 * sgn, anchor=anc, priority=2,
+                fig.label(p, number(arr[k]), dx=5 * side, dy=10 * sgn, anchor=anc, priority=2,
                        alt=[(p, 5 * side, -9 * sgn, anc), (p, 5 * side, 22 * sgn, anc)])
     if legend:
-        ents = [("demand", L["Vd"].format(g=_fmt(gamma0)), "line")]
+        ents = [("demand", L["Vd"].format(g=number(gamma0)), "line")]
         if vu is not None:
             ents.append(("resist", L["Vu"], "line"))
         if governing:
             ents.append(("mk-d", L["mkv"], "dot"))
         if lims:
             ents.append(("limit", L["vlim"], "line"))
-        _legend(fig, ents)
+        fig.legend(ents)
     if notes:
-        _notes(fig, lines, _below_axis(xlabel))
+        fig.notes(lines)
     fig.governing, fig.limits = governing, limits
-    return _fit(fig, height)
+    return fig
 
 
 # ── elevation with the inclined sections ────────────────────────────────────
@@ -1015,7 +745,7 @@ def _depths(section, x0, x1) -> list[tuple[float, float, float]]:
 
 def _stirrup_text(st, L) -> str:
     n, d, s = st
-    return f"Φ{_fmt(d)}@{_fmt(s)} {L['legs'].get(int(n), L['leg'].format(n=_fmt(n)))}"
+    return f"Φ{number(d)}@{number(s)} {L['legs'].get(int(n), L['leg'].format(n=number(n)))}"
 
 
 def beam_elevation(x0: float, x1: float, section, *, supports=(), search=None, stirrups=None, bent=None,
@@ -1033,34 +763,26 @@ def beam_elevation(x0: float, x1: float, section, *, supports=(), search=None, s
     rows = _depths(section, x0, x1)
     hmax = max(h for *_, h in rows)
     h_at = lambda u: next((h for a, b, h in rows if a - 1e-9 <= u <= b + 1e-9), hmax)  # noqa: E731
-    fig = Figure(width=width, height=depth + 120, equal=False, title=L["e_title"] if title is None else title)
+    fig = Figure(width=width, plot_height=depth, equal=False, title=L["e_title"] if title is None else title, css=CSS)
     fig.set_box(x0, -hmax, x1, 0.0)
-    _style(fig)
     outline = [(x0, 0.0), (x1, 0.0)]
     for a, b, h in sorted(rows, key=lambda r: -r[0]):
         outline += [(min(b, x1), -h), (max(a, x0), -h)]
-    fig.raw(lambda T: f'<polygon points="{" ".join("{},{}".format(*map(_fmt, T(*p))) for p in outline)}" '
-                      f'class="fm-concrete fm-ch-beam"/>')
-    sup = _norm_supports(supports)
-    for u, kind, wd in sup:
-        if kind == "free":
-            continue
-
-        def glyph(T, u=u):
+    fig.raw(lambda T: svg_poly([T(*p) for p in outline], "concrete ch-beam"))
+    sup = [(u, kind, wd) for u, kind, wd in _norm_supports(supports) if kind != "free"]
+    for k, (u, kind, wd) in enumerate(sup):
+        def glyph(T, u=u, k=k):  # the first support a pin, the others rollers, as on a load drawing
             px, py = T(u, -h_at(u))
-            tri = f"{_fmt(px)},{_fmt(py)} {_fmt(px - 5)},{_fmt(py + 8)} {_fmt(px + 5)},{_fmt(py + 8)}"
-            return f'<polygon points="{tri}" class="fm-support fm-ch-support"/>'
-        fig.raw(glyph, extent=lambda T, u=u: [(T(u, 0)[0] - 6, T(u, 0)[1], T(u, 0)[0] + 6, T(u, -h_at(u))[1] + 9)])
+            return support_symbol("pin" if k == 0 else "roller", px, py)
+        fig.raw(lambda T, g=glyph: g(T)[0], extent=lambda T, g=glyph: [g(T)[1]])
         if wd > 0:
             for v in (u - wd / 2, u + wd / 2):
-                fig.raw(lambda T, v=v: '<line x1="{0}" y1="{1}" x2="{0}" y2="{2}" class="fm-supline"/>'.format(
-                    _fmt(T(v, 0)[0]), _fmt(T(v, 0)[1]), _fmt(T(v, -h_at(v))[1])))
+                fig.raw(lambda T, v=v: svg_line(*T(v, 0), *T(v, -h_at(v)), "guide"))
     if bent is not None:
         brows = bent.bent() if hasattr(bent, "bent") else list(bent)
         for xb, xt, *_ in brows:
             p, q = (float(xb), -0.88 * h_at(xb)), (float(xt), -0.12 * h_at(xt))
-            fig.raw(lambda T, p=p, q=q: '<line x1="{}" y1="{}" x2="{}" y2="{}" class="fm-bent fm-ch-bent"/>'.format(
-                *map(_fmt, (*T(*p), *T(*q)))))
+            fig.raw(lambda T, p=p, q=q: svg_line(*T(*p), *T(*q), "bent ch-bent"))
     gov = search.governing if search is not None and search.sections else None
 
     def incl(sec, cls):
@@ -1068,8 +790,7 @@ def beam_elevation(x0: float, x1: float, section, *, supports=(), search=None, s
         ht, hc = h_at(sec.x_t), h_at(sec.x_c)
         p = (sec.x_t, 0.0 if hog else -ht)
         q = (sec.x_c, -hc if hog else 0.0)
-        fig.raw(lambda T: '<polyline points="{},{} {},{}" class="{}"/>'.format(
-            *map(_fmt, (*T(*p), *T(*q))), " ".join("fm-" + c for c in cls.split())))
+        fig.raw(lambda T: svg_poly([T(*p), T(*q)], cls, closed=False))
 
     if search is not None:
         for sec in search.sections:
@@ -1082,42 +803,34 @@ def beam_elevation(x0: float, x1: float, section, *, supports=(), search=None, s
                 incl(sec, ("incl" if sec.ok else "incl-gov") + " ch-incl")
         if gov is not None:
             incl(gov, "incl-gov ch-incl-gov")
-            _label(fig, ((gov.x_c + gov.x_t) / 2, 0.0), L["gov_short"].format(u=_ratio(gov.ratio, 2)), dy=-9,
-                   priority=5, inside=False, required=True)
+            fig.label(((gov.x_c + gov.x_t) / 2, 0.0), L["gov_short"].format(u=_ratio(gov.ratio, 2)), dy=-9,
+                      priority=5, inside=False, required=True)
     zone_rows = sorted((float(a), float(b), st) for a, b, st in stirrups) if stirrups else []
 
     def zone_layout(T):
-        yb = T(x0, -hmax)[1] + 19
+        """the dimension line of the stirrup zones under the supports, the zones' texts staggered where they meet"""
+        yb = T(x0, -hmax)[1] + (26 if sup else 14)
         placed, out = [], []
+        size = TEXT_SIZE["small"]
         for a, b, st in zone_rows:
             s = _stirrup_text(st, L)
             cx = (T(max(a, x0), 0)[0] + T(min(b, x1), 0)[0]) / 2
-            w = text_width(s, NOTE_SIZE)
+            w = text_width(s, size)
             row = 0
             while any(r == row and not (cx + w / 2 + 6 < l0 or cx - w / 2 - 6 > l1) for r, l0, l1 in placed):
                 row += 1
             placed.append((row, cx - w / 2, cx + w / 2))
-            out.append((a, b, s, cx, yb + 12 + 14 * row))
+            out.append((s, cx, yb + 12 + 14 * row))
         return yb, out
 
     if zone_rows:
-        def zones_svg(T):
+        def zones(T):
             yb, items = zone_layout(T)
-            parts = []
-            for a, b, s, cx, ty in items:
-                pa, pb = T(max(a, x0), 0)[0], T(min(b, x1), 0)[0]
-                parts.append(f'<line x1="{_fmt(pa)}" y1="{_fmt(yb)}" x2="{_fmt(pb)}" y2="{_fmt(yb)}" class="fm-zone"/>')
-                for p in (pa, pb):
-                    parts.append(f'<line x1="{_fmt(p)}" y1="{_fmt(yb - 4)}" x2="{_fmt(p)}" y2="{_fmt(yb + 4)}" '
-                                 f'class="fm-zone"/>')
-                parts.append(_tsvg(cx, ty, s, "small ch-zone"))
-            return "".join(parts)
-
-        def zones_ext(T):
-            yb, items = zone_layout(T)
-            return [(T(x0, 0)[0], yb - 5, T(x1, 0)[0], yb + 5)] + \
-                [_text_box(cx, ty, s, NOTE_SIZE, "middle", "middle") for _, _, s, cx, ty in items]
-        fig.raw(zones_svg, extent=zones_ext)
+            pos = sorted({T(min(max(v, x0), x1), 0)[0] for a, b, _ in zone_rows for v in (a, b)})
+            svg, boxes = dim_chain(pos, yb, [None] * (len(pos) - 1))
+            svg += "".join(svg_text(cx, ty, s, "small ch-zone") for s, cx, ty in items)
+            return svg, boxes + [text_box(cx, ty, s, TEXT_SIZE["small"]) for s, cx, ty in items]
+        fig.raw(lambda T: zones(T)[0], extent=lambda T: zones(T)[1])
     if legend and search is not None:
         ents = []
         if grid and any(s.source == "grid" for s in search.sections):
@@ -1127,15 +840,10 @@ def beam_elevation(x0: float, x1: float, section, *, supports=(), search=None, s
         ents.append(("incl-gov", L["govl"], "line"))
         if bent is not None:
             ents.append(("bent", L["bent"], "line"))
-        _legend(fig, ents, gap=22 if gov is not None else 8)
+        fig.legend(ents)
     if notes:
-        def start(T):
-            if zone_rows:
-                _, items = zone_layout(T)
-                return max(ty for *_, ty in items) + 17
-            return T(x0, -hmax)[1] + 22
-        _notes(fig, [(L["scale"], False)], start)
-    return _fit(fig, depth)
+        fig.notes([(L["scale"], "small")])
+    return fig
 
 
 # ── utilisation ─────────────────────────────────────────────────────────────
@@ -1162,18 +870,18 @@ def utilization_chart(series, *, limit: float = 1.0, supports=(), xlim=None, yma
     lo, hi = 0.0, top
     fig = _chart(width, height, (x0, lo, x1, hi), L["u_title"] if title is None else title, L["x"] if xlabel else "",
                  L["u"])
-    _vlines(fig, _support_x(supports))
+    fig.vlines(_support_x(supports))
     fig.polyline([(x0, limit), (x1, limit)], "limit ch-ulimit", fit=False)
     maxima, lines, ents = [], [], []
     for k, (lab, xs, r) in enumerate(ser):
         cls = SERIES[k % len(SERIES)]
         rc = _clamp(r, lo, hi)
-        for part in _split(xs, rc):
+        for part in split(xs, rc):
             if len(part) == 1:
                 fig.dot(part[0], 2.6, cls=f"mk-s ch-u{k}", fit=False)
             else:
                 fig.polyline(part, f"{cls} ch-u{k}", fit=False)
-        for part in _beyond(xs, rc, limit):
+        for part in beyond(xs, rc, limit):
             fig.polygon(part + [(part[-1][0], limit), (part[0][0], limit)], "area-demand ch-over", fit=False)
             fig.polyline(part, f"warn ch-over{k}", fit=False)
         ok = ~np.isnan(r)
@@ -1182,20 +890,20 @@ def utilization_chart(series, *, limit: float = 1.0, supports=(), xlim=None, yma
             maxima.append({"label": lab, "x": float(xs[j]), "ratio": float(r[j])})
             p = (xs[j], min(rc[j], hi))  # an infinite ratio at the top of the box
             fig.dot(p, 3.2, cls=f"{'mk-d' if r[j] > limit else 'mk-s'} ch-umax", fit=False)
-            _labels(fig).mark(p, 4.0)
+            fig.mark(p, 4.0)
             ents.append((cls, L["umax"].format(label=lab, r=_ratio(r[j], 2)), "line"))
             lines.append(L["unote"].format(label=lab, r=_ratio(r[j], 3), x=f"{xs[j]:.2f}"))
         else:
             ents.append((cls, lab, "line"))
-    _label(fig, (x1, limit), _fmt(limit), dx=-3, dy=-8, anchor="end", priority=1,
+    fig.label((x1, limit), number(limit), dx=-3, dy=-8, anchor="end", priority=1,
            alt=[((x0, limit), 3, -8, "start"), ((x1, limit), -3, 8, "end")])
     if legend:
-        _legend(fig, ents)
+        fig.legend(ents)
     if notes and lines:
         warn = any(m["ratio"] > limit for m in maxima)
-        _notes(fig, [(L["sep"].join(lines), warn)], _below_axis(xlabel))
+        fig.notes([(L["sep"].join(lines), "warn" if warn else "")])
     fig.maxima = maxima
-    return _fit(fig, height)
+    return fig
 
 
 # ── serviceability ──────────────────────────────────────────────────────────
@@ -1241,9 +949,9 @@ def _parts(a, x):
 def _limits_draw(fig, rows, sign, L, unit=""):
     for a, b, v, lab, _ in rows:
         fig.polyline([(a, sign * v), (b, sign * v)], "limit ch-limit", fit=False)
-        text = (lab or L["limit"]) + " = " + _num(v)
+        text = (lab or L["limit"]) + " = " + number(v)
         dy = -8 if sign * v >= 0 else 8
-        _label(fig, (b, sign * v), text + unit, dx=-3, dy=dy, anchor="end", room=(a, b), priority=1,
+        fig.label((b, sign * v), text + unit, dx=-3, dy=dy, anchor="end", room=(a, b), priority=1,
                alt=[((a, sign * v), 3, dy, "start"), ((b, sign * v), -3, -dy, "end"), ((a, sign * v), 3, -dy, "start")])
 
 
@@ -1256,7 +964,7 @@ def _over_lines(fig, x, y, rows, sign):
             continue
         xs, ys = x[m], y[m]
         up = (kind == "upper") == (sign > 0)
-        for part in _beyond(xs, ys, sign * v, above=up):
+        for part in beyond(xs, ys, sign * v, above=up):
             fig.polyline(part, "warn ch-over", fit=False)
         real = sign * ys
         bad = real > v + 1e-12 if kind == "upper" else real < v - 1e-12
@@ -1290,7 +998,7 @@ def stress_chart(x, *, top=None, bottom=None, limits=(), compression_positive: b
     lo, hi = _y_range(vals, height, pad_px=20)
     fig = _chart(width, height, (x0, lo, x1, hi), L["s_title"] if title is None else title, L["x"] if xlabel else "",
                  L["sigma"] if compression_positive else L["sigma_t"])
-    _vlines(fig, _support_x(supports))
+    fig.vlines(_support_x(supports))
     _limits_draw(fig, rows, 1.0, L)
     ext, over, ents = {}, [], []
     for k, (name, parts) in enumerate(edges):
@@ -1308,18 +1016,18 @@ def stress_chart(x, *, top=None, bottom=None, limits=(), compression_positive: b
         ents.append((cls, name, "line"))
     if legend:
         ents.append(("limit", L["limit"], "line"))
-        _legend(fig, ents)
+        fig.legend(ents)
     if notes:
         lines = [(L["sep"].join(L["edge"].format(label=n, lo=f"{e[0]:.2f}", hi=f"{e[2]:.2f}") for n, e in ext.items()),
-                  False)]
+                  "")]
         if over:
-            lines.append((L["sep"].join(L["over"].format(label=lab or L["limit"], lim=_num(v), x=f"{xx:.2f}",
-                                                         v=f"{val:.2f}") for lab, xx, val, v in over), True))
+            lines.append((L["sep"].join(L["over"].format(label=lab or L["limit"], lim=number(v), x=f"{xx:.2f}",
+                                                         v=f"{val:.2f}") for lab, xx, val, v in over), "warn"))
         elif rows:
-            lines.append((L["within"], False))
-        _notes(fig, lines, _below_axis(xlabel))
+            lines.append((L["within"], "ok"))
+        fig.notes(lines)
     fig.extremes, fig.exceeded = ext, over
-    return _fit(fig, height)
+    return fig
 
 
 def _quantity_chart(x, series, limits, *, down, default_label, axis, title, unit, supports, xlim, lang, width, height,
@@ -1333,9 +1041,9 @@ def _quantity_chart(x, series, limits, *, down, default_label, axis, title, unit
     vals = [sg * a for _, parts in ser for a in parts] + [[sg * r[2] for r in rows]]
     lo, hi = _y_range(vals, height, pad_px=20, floor=None if down else 0.0, ceil=0.0 if down else None)
     fig = _chart(width, height, (x0, lo, x1, hi), title, L["x"] if xlabel else "", axis,
-                 yfmt=lambda v: _fmt(sg * v + 0.0))
+                 yfmt=lambda v: number(sg * v + 0.0))
     sx = _support_x(supports)
-    _vlines(fig, sx)
+    fig.vlines(sx)
     _limits_draw(fig, [(a, b, v, lab, kind) for a, b, v, lab, kind in rows], sg, L)
     ext, over, ents, lines = {}, [], [], []
     for k, (lab, parts) in enumerate(ser):
@@ -1344,7 +1052,7 @@ def _quantity_chart(x, series, limits, *, down, default_label, axis, title, unit
             if k == 0 and len(ser) == 1:
                 fig.polygon([(x[0], 0.0)] + list(zip(x, sg * np.nan_to_num(a))) + [(x[-1], 0.0)],
                             "area-resist ch-area", fit=False)
-            for part in _split(x, sg * a):
+            for part in split(x, sg * a):
                 fig.polyline(part, f"{cls} ch-q{k}-{j}", fit=False)
             over += _over_lines(fig, x, sg * a, rows, sg)
         allv = np.concatenate(parts)
@@ -1358,26 +1066,26 @@ def _quantity_chart(x, series, limits, *, down, default_label, axis, title, unit
                     j = np.flatnonzero(m)[int(np.argmax(allv[m]))]
                     if allv[j] > 0:
                         fig.dot((allx[j], sg * allv[j]), 2.8, cls="mk-s ch-qmax", fit=False)
-                        _labels(fig).mark((allx[j], sg * allv[j]), 3.5)
-                        _peak_label(fig, allx[j], sg * allv[j], _num(allv[j], 3 if unit == "w" else None))
-            lines.append(L["fmax"].format(label=lab, v=_num(allv[i], 3 if unit == "w" else None),
+                        fig.mark((allx[j], sg * allv[j]), 3.5)
+                        _peak_label(fig, allx[j], sg * allv[j], number(allv[j], 3 if unit == "w" else None))
+            lines.append(L["fmax"].format(label=lab, v=number(allv[i], 3 if unit == "w" else None),
                                           x=f"{allx[i]:.2f}"))
         ents.append((cls, lab, "line"))
     if legend:
         if rows:
             ents.append(("limit", L["limit"], "line"))
-        _legend(fig, ents)
+        fig.legend(ents)
     if notes:
-        out = [(L["sep"].join(lines), False)] if lines else []
+        out = [(L["sep"].join(lines), "")] if lines else []
         if over:
-            out.append((L["sep"].join(L["over"].format(label=lab or L["limit"], lim=_num(v), x=f"{xx:.2f}",
-                                                       v=_num(val, 3 if unit == "w" else None))
-                                      for lab, xx, val, v in over), True))
+            out.append((L["sep"].join(L["over"].format(label=lab or L["limit"], lim=number(v), x=f"{xx:.2f}",
+                                                       v=number(val, 3 if unit == "w" else None))
+                                      for lab, xx, val, v in over), "warn"))
         elif rows:
-            out.append((L["within"], False))
-        _notes(fig, out, _below_axis(xlabel))
+            out.append((L["within"], "ok"))
+        fig.notes(out)
     fig.extremes, fig.exceeded = ext, over
-    return _fit(fig, height)
+    return fig
 
 
 def deflection_chart(x, f, *, limit=None, supports=(), xlim=None, lang: str = "zh", width: float = 720,
@@ -1402,78 +1110,3 @@ def crack_chart(x, w, *, limit=None, supports=(), xlim=None, lang: str = "zh", w
     return _quantity_chart(x, w, limit, down=False, default_label=label or L["crack"], axis=L["w"],
                            title=L["w_title"] if title is None else title, unit="w", supports=supports, xlim=xlim,
                            lang=lang, width=width, height=height, xlabel=xlabel, legend=legend, notes=notes)
-
-
-# ── stacks of charts on one x axis ──────────────────────────────────────────
-class Stack:
-    """figures one above the other with their plot boxes aligned (same x range, same left and right edges): a girder
-    elevation over its moment and shear charts. svg(), save(.svg or .html), Jupyter display and viz.html() as a
-    Figure."""
-
-    def __init__(self, figures, *, gap: float = 4.0, width: float | None = None, title: str | None = None):
-        self.figures = list(figures)
-        if not self.figures:
-            raise ValueError("stack: no figures")
-        self.gap, self.width, self.title = float(gap), width, title
-
-    def _layout(self):
-        figs = self.figures
-        W = float(self.width or max(f.width for f in figs))
-        saved = [(f.width, f.margin) for f in figs]
-        try:
-            for f in figs:
-                f.width = W
-            Ts = [f._transform() for f in figs]
-            b0 = Ts[0].box
-            for T in Ts[1:]:
-                if abs(T.box[0] - b0[0]) > 1e-9 * max(1.0, abs(b0[2] - b0[0])) or \
-                        abs(T.box[2] - b0[2]) > 1e-9 * max(1.0, abs(b0[2] - b0[0])):
-                    raise ValueError("stack: the figures must share the x range (xlim)")
-            for _ in range(6):
-                lefts = [T(T.box[0], T.box[1])[0] for T in Ts]
-                rights = [W - T(T.box[2], T.box[1])[0] for T in Ts]
-                Lm, Rm = max(lefts), max(rights)
-                if all(abs(v - Lm) < 0.01 for v in lefts) and all(abs(v - Rm) < 0.01 for v in rights):
-                    break
-                for f in figs:
-                    t, _, b, _ = f.margin
-                    f.margin = (t, Rm, b, Lm)
-                Ts = [f._transform() for f in figs]
-            out = [(f.svg(), T.H) for f, T in zip(figs, Ts)]
-            boxes = [(T(T.box[0], T.box[3]), T(T.box[2], T.box[1])) for T in Ts]
-        finally:
-            for f, (w, m) in zip(figs, saved):
-                f.width, f.margin = w, m
-        return W, out, boxes
-
-    def svg(self) -> str:
-        W, parts, _ = self._layout()
-        y = 30.0 if self.title else 0.0
-        body = []
-        if self.title:
-            body.append(f'<text x="12" y="16" dominant-baseline="middle" class="fm-title">{_html.escape(self.title)}'
-                        f'</text>')
-        for s, H in parts:
-            body.append(s.replace("<svg ", f'<svg x="0" y="{_fmt(y)}" ', 1))
-            y += H + self.gap
-        H = y - self.gap
-        return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{_fmt(W)}" height="{_fmt(H)}" '
-                f'viewBox="0 0 {_fmt(W)} {_fmt(H)}" class="fm-root"><style>:where(.fm-root) text {{ font-family: {FONT}; }} '
-                f'.fm-title {{ font-size: 15px; font-weight: 600; }}</style><rect width="100%" height="100%" fill="#ffffff"/>{"".join(body)}</svg>')
-
-    def _repr_svg_(self) -> str:
-        return self.svg()
-
-    def save(self, path):
-        from pathlib import Path
-        from ...viz import html as _page
-        p = Path(path)
-        p.write_text(_page([self], title=self.title or "femotion") if p.suffix.lower() in (".html", ".htm")
-                     else self.svg(), encoding="utf-8")
-        return p
-
-
-def stack(figures, *, gap: float = 4.0, width: float | None = None, title: str | None = None) -> Stack:
-    """figures (viz.Figure, same x range) one above the other with their plot boxes aligned: e.g.
-    stack([beam_elevation(…), moment_chart(…, xlabel=False), shear_chart(…)]). width: of all (default the widest)."""
-    return Stack(figures, gap=gap, width=width, title=title)

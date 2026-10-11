@@ -312,7 +312,8 @@ def section_detailing(sec: RCSection, *, env=None, member: str = "superstructure
     and bottom only). cover_mesh: (d, spacing, cover) of a mesh in a cover over 50 mm (9.1.2); surface_mesh: (d along,
     spacing along, d across, spacing across, overhang beyond the bundles) of the surface mesh over bars or bundles above
     36 mm in the tension zone (9.1.3)."""
-    chk = Check.report("section detailing (9.1.1–9.1.3, 9.3.3, 9.3.7, 9.3.11)", "JTG 3362-2018 9.1, 9.3")
+    chk = Check.report("section detailing (9.1.1–9.1.3, 9.3.3, 9.3.7, 9.3.11)", "JTG 3362-2018 9.1, 9.3", section=sec,
+                       hogging=hogging)
     if env is not None:
         d = durability(sec, env, member=member, life=life)
         chk.warnings += d.warnings
@@ -806,7 +807,7 @@ def stirrup_detailing(sec: RCSection, stirrups, *, stirrup_steel=None, main_d: f
     legs, ds, s = stirrups
     st = sec.steel if stirrup_steel is None else (stirrup_steel if isinstance(stirrup_steel, Rebar)
                                                   else _rebar(stirrup_steel))
-    chk = Check.report("stirrups (9.3.12, 9.1.6)", "JTG 3362-2018 9.3.12, 9.1.6")
+    chk = Check.report("stirrups (9.3.12, 9.1.6)", "JTG 3362-2018 9.3.12, 9.1.6", section=sec)
     if sec.prestressed:
         chk.notes.append("prestressed girder: the web stirrups also by 9.4.1 (≥ 10 mm in T and I webs, ≥ 12 mm in box "
                          "webs, ≤ 200 mm, closed within one depth of the support at ≤ 120 mm)")

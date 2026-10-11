@@ -212,7 +212,8 @@ def cap_flexure(sec: RCSection, Md: float, l: float, *, gamma0: float = 1.0) -> 
     else:
         z = k * (h0 - 0.5 * x)
     chk = Check("cap beam flexure" + (" (hogging)" if Md < 0 else ""), gamma0 * Md, st.fsd * As * z / 1e6, "kN·m",
-                "JTG 3362-2018 8.4.3", {"x": x, "z": z, "h0": h0, "l_h": l / s.h, "k": k}, notes)
+                "JTG 3362-2018 8.4.3", {"x": x, "z": z, "h0": h0, "l_h": l / s.h, "k": k}, notes, section=sec,
+                hogging=Md < 0)
     _short(l, s.h, chk)
     xb = xi_b(c, st)
     if x > xb * h0:
@@ -244,7 +245,8 @@ def cap_shear(sec: RCSection, Vd: float, l: float, stirrups, *, gamma0: float = 
     Vu = 0.5e-4 * alpha1 * (14 - r) * b * h0 * math.sqrt((2 + 0.6 * P) * math.sqrt(c.fcuk) * rho_sv * sst.fsv)
     Vmax = 0.33e-4 * (r + 10.3) * math.sqrt(c.fcuk) * b * h0
     chk = Check("cap beam shear", gamma0 * Vd, Vu, "kN", "JTG 3362-2018 8.4.5",
-                {"P": P, "rho_sv": rho_sv, "l_h": r, "V_section_max": Vmax, "alpha1": alpha1})
+                {"P": P, "rho_sv": rho_sv, "l_h": r, "V_section_max": Vmax, "alpha1": alpha1}, section=sec,
+                hogging=hogging)
     _short(l, s.h, chk)
     if gamma0 * abs(Vd) > Vmax:
         chk.failed.append(f"section too small: γ0Vd > 0.33e-4 (l/h + 10.3) √fcu,k b h0 = {Vmax:.0f} kN (8.4.4)")

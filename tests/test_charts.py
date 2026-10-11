@@ -9,8 +9,10 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 
+from femotion import viz
 from femotion.codes import jtg
 from femotion.codes.jtg import charts
+from femotion.viz import wrap
 
 NS = "{http://www.w3.org/2000/svg}"
 SPAN = jtg.tee(200, 1100, 1600, 160, concrete="C40", steel="HRB400", bottom=[(10, 28, 110)], top=[(8, 20, 50)])
@@ -327,7 +329,7 @@ def test_stack_aligns_the_plot_boxes():
     figs = [charts.beam_elevation(0, 32, SPAN, supports=[0, 16, 32], stirrups=st),
             charts.moment_chart(x, Mmax, Mmin, resistance=ZONES, xlabel=False),
             charts.utilization_chart([("一个很长的标签名称", x, np.full_like(x, 0.5))], width=500)]
-    s = charts.stack(figs)
+    s = viz.stack(figs)
     root = ET.fromstring(s.svg())
     subs = [e for e in root if e.tag == f"{NS}svg"]
     assert len(subs) == 3
@@ -340,7 +342,7 @@ def test_stack_aligns_the_plot_boxes():
     assert all(float(e.get("width")) == float(root.get("width")) for e in subs)
     assert figs[2].width == 500  # restored
     with pytest.raises(ValueError):
-        charts.stack([figs[1], charts.utilization_chart([("a", x[:40], np.ones(40))])]).svg()
+        viz.stack([figs[1], charts.utilization_chart([("a", x[:40], np.ones(40))])]).svg()
 
 
 # ── every chart: valid SVG, finite numbers, text on the page ───────────────
@@ -413,7 +415,7 @@ def test_every_chart_is_valid_and_its_text_on_the_page(lang, width):
 def test_wrap_and_profiles():
     note = "最不利斜截面 x_c = 9.418 m，x_t = 11.200 m，C = 1.782 m：γ0Vd = 353.4 kN，Vu = 472.4 kN，比值 0.748"
     for wdt in (160, 240, 330):
-        out = charts.wrap(note, wdt)
+        out = wrap(note, wdt)
         assert "".join(out).replace(" ", " ").replace(" ", "") == note.replace(" ", "")
         for ln in out:
             assert sum(_em(c) for c in ln) * 10.5 <= wdt + 1e-9

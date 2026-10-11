@@ -7,11 +7,12 @@ import pytest
 
 from femotion.codes import jtg
 from femotion.frame import Model, Section, Solver
-from femotion.frame.figures import (_box, elevation_figure, influence_figure, load_figure)
+from femotion.frame.figures import elevation_figure, influence_figure, load_figure
 from femotion.frame.influence import InfluenceLines, chain_sections
 from femotion.frame.loads import LoadCase
 from femotion.frame.prestress import Tendon
 from femotion.viz import TEXT_SIZE, Figure
+from femotion.viz import text_box as _box
 
 NS = "{http://www.w3.org/2000/svg}"
 

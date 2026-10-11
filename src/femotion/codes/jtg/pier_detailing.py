@@ -87,6 +87,7 @@ def column_detailing(sec: RCSection | None = None, *, d=None, clear=None, rho: f
     tie rules and item 2 of 9.6.1. eccentric=True (9.6.3): h ≥ 600 mm needs side bars of 10–16 mm (side bars: those of
     sec outside the edge rows, or side_d). The minimum reinforcement of 9.1.12: jtg.axial, jtg.eccentric."""
     R = _Rules("column detailing (9.6.1–9.6.3)", "JTG 3362-2018 9.6.1–9.6.3")
+    R.chk.section = sec
     d_min, d_max = _d_range(sec, d)
     if rho is None and sec is not None:
         rho = float(sec.bars[:, 0].sum() / sec.area)

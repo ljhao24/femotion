@@ -252,7 +252,8 @@ def torsion(sec: RCSection, Td: float, Vd: float = 0.0, *, stirrups, Ast: float,
     w = torsion_moduli(sec, t_web=t_web)
     b_body, h_body, t1, t2 = w["dims"]
     chk = Check("torsion" + (" with shear" if Vd else "") + (" (web)" if sec.kind == "tee" else ""), 0.0, 0.0, "kN·m",
-                "JTG 3362-2018 5.5.4, 5.5.6" if Vd else "JTG 3362-2018 5.5.1", {"moduli": w}, list(w["capped"]))
+                "JTG 3362-2018 5.5.4, 5.5.6" if Vd else "JTG 3362-2018 5.5.1", {"moduli": w}, list(w["capped"]),
+                section=sec, hogging=hogging)
     if w["box"] and t_web is None:
         chk.notes.append(f"box: one cell assumed, webs {w['web_t']:.0f} mm each (pass t_web otherwise)")
     Wt_tot, Wtw = w["total"], w["body"]
@@ -360,7 +361,7 @@ def torsion_flange(sec: RCSection, Td: float, which: str = "top", *, stirrups, A
     over = min(over, 6 * hf)
     T = Td * w[which] / w["total"]
     chk = Check(f"torsion ({which} flange)", gamma0 * T, 0.0, "kN·m", "JTG 3362-2018 5.5.5, 5.5.1",
-                {"moduli": w, "T_share": T}, list(w["capped"]))
+                {"moduli": w, "T_share": T}, list(w["capped"]), section=sec)
     Tu, _, _ = _torsion_part(chk, sec, w[which], 1.0, sec.h, stirrups, Ast, core, sst, None)
     chk.resistance = Tu / 1e6
     _detailing(chk, sec, sst, stirrups, Ast, min(hf, over), max(hf, over), None, min(hf, over), closed=closed,
