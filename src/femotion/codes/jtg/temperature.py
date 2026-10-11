@@ -143,6 +143,7 @@ class ThermalStresses:
     Mt0: float  # N·mm, D.0.1-2 (sagging +, y up)
     M_sec: float = 0.0  # N·mm, secondary moment Mt′ (D.0.2), sagging +
     N_sec: float = 0.0  # N, secondary axial force (tension +; frames restraining the axial strain, program extension)
+    z_N: float | None = None  # depth of N_sec's line of action (thermal_stresses: the gross centroid); None: zc
     z_max: float = math.inf  # cracked sections: the neutral axis; the gradient on its tension side is ignored
     hogging: bool = False  # True: the tension side (cracked) is above z_max, else below it
     kind: str = "transformed"
@@ -155,11 +156,13 @@ class ThermalStresses:
 
     def sigma(self, z):
         """concrete stress at depth z (MPa, compression +): −Nt/A0 + (Mt0 + Mt′) y/I0 + ty αc Ec (D.0.1-3, D.0.2), y up
-        from the centroid; − N′/A0 for a secondary axial force"""
+        from the centroid; a secondary axial force N′ (tension +) at depth z_N: − N′/A0 + N′ (z_N − zc) y/I0"""
         z = np.asarray(z, float)
         y = self.zc - z
         s = -self.Nt / self.A + (self.Mt0 + self.M_sec) * y / self.I + self.t(z) * self.alpha * self.Ec \
             - self.N_sec / self.A
+        if self.N_sec and self.z_N is not None:
+            s = s + self.N_sec * (self.z_N - self.zc) * y / self.I
         return float(s) if s.ndim == 0 else s
 
     def negative(self) -> "ThermalStresses":
@@ -227,15 +230,27 @@ def _cracked_thermal(sec: RCSection, profile: Profile, r: dict, *, hogging: bool
                      alpha: float = EXPANSION["concrete"]) -> ThermalStresses:
     """appendix D on a cracked transformed section (appendix D commentary): r is femotion.codes.jtg.sls._cracked of sec
     (of sec.flipped() with hogging=True: the top in tension); the concrete above the neutral axis and every bar and
-    tendon at αE A with the weights of the appendix J notes, the gradient on the tension side of the axis ignored. x = inf
-    (the whole section in compression): the whole section, the gradient counted throughout. In sec's coordinates."""
+    tendon at αE A, the gradient on the tension side of the axis ignored. x = inf (the whole section in compression):
+    the whole section, the gradient counted throughout. In sec's coordinates. Compression bars keep the f'sd reduction of
+    note 1 of J.0.1; a compression-zone tendon still in tension (note 2) counts with its positive area here, with A, zc,
+    I recomputed: note 2 turns the direction of that tendon's force in the cubic, a stiffness cannot be negative (program
+    convention)."""
     c = sec.concrete
     x, A, zc_s, I = r["x"], r["A"], r["zc"], r["I"]
-    zc = sec.h - zc_s if hogging else zc_s
-    z_cut = sec.h - x if hogging else x
     aS = sec.steel.Es / c.Ec
     aP = sec.tendon.Ep / c.Ec if sec.has_internal else 0.0
-    wb, wp = r["w_bars"], r["w_tendons"]  # appendix J notes (compression steel limits) as in the cracked section
+    wb, wp = r["w_bars"], np.abs(r["w_tendons"])  # note 1 kept; note 2 (a sign) not a stiffness
+    if (np.asarray(r["w_tendons"]) < 0).any():
+        s = sec.flipped() if hogging else sec
+        xc = min(x, sec.h)
+        st = [(aS * a * w, d) for (a, d), w in zip(s.bars, wb)] + \
+            [(aP * a * w, d) for (a, d, _, _), w in zip(s.tendons, wp)]
+        a_c, q_c = s.part(xc)
+        A = a_c + sum(v for v, _ in st)
+        zc_s = (q_c + sum(v * d for v, d in st)) / A
+        I = s.part2(xc) + sum(v * d * d for v, d in st) - A * zc_s * zc_s
+    zc = sec.h - zc_s if hogging else zc_s
+    z_cut = sec.h - x if hogging else x
     steel = [(aS * a * w, d) for (a, d), w in zip(sec.bars, wb)] + \
         [(aP * a * w, d) for (a, d, _, _), w in zip(sec.tendons, wp)]
     th = ThermalStresses(profile, alpha, c.Ec, A, zc, I, 0.0, 0.0, z_max=z_cut, hogging=hogging, kind="cracked")
@@ -257,7 +272,8 @@ def thermal_stresses(sec: RCSection, profile: Profile, *, M_sec: float = 0.0, N_
     Nt = Σ Ay ty αc Ec (D.0.1-1), Mt0 = −Σ Ay ty αc Ec ey (D.0.1-2), σt = −Nt/A0 + Mt0 y/I0 + ty αc Ec (D.0.1-3); with the
     secondary moment of a continuous beam M_sec (kN·m, sagging +, femotion.frame.thermal for the free curvature) Mt =
     Mt′ + Mt0 (D.0.2). N_sec: secondary axial force (kN, tension +) where the frame restrains the axial strain (rigid
-    frames; program extension). alpha: αc, table 4.3.12-1.
+    frames; program extension), acting at the gross centroid (as the axial force N of jtg.crack_width). alpha: αc,
+    table 4.3.12-1.
     Section: kind="transformed" (A0, I0, default), "net" or "gross"; the area units Ay are those of the same section
     (concrete, and the bars and tendons as transformed areas at their depths: program convention, so that the
     self-equilibrating stresses balance on that section and a uniform temperature gives none). kind="literal": appendix
@@ -292,7 +308,7 @@ def thermal_stresses(sec: RCSection, profile: Profile, *, M_sec: float = 0.0, N_
             steel = []
         else:
             raise ValueError("kind: 'transformed', 'net', 'gross' or 'literal'")
-        th = ThermalStresses(profile, alpha, c.Ec, A, zc, I, 0.0, 0.0, kind=kind)
+        th = ThermalStresses(profile, alpha, c.Ec, A, zc, I, 0.0, 0.0, z_N=sec.zg, kind=kind)
         q0, q1 = _concrete_integrals(sec, th, 0.0, sec.h, zc)
         for a, d in steel:
             td = float(th.t(d))

@@ -322,8 +322,9 @@ def test_class_B_external_as_stiffless_internal_tendon():
     ex = jtg.rect(500, 1200, tendons=[(834, 1100, 1250, 70)], sigma_pe=1120.0, external=[(834, 1050, 1000)], **kw)
     a = 1e-6
     lim = jtg.rect(500, 1200, tendons=[(834, 1100, 1250, 70), (a, 1050, P / a, 1e-6)], sigma_pe=[1120.0, P / a], **kw)
-    w1 = jtg.crack_width(ex, 1300.0, 900.0, pc_class="B", tendon_bundles=[(1, 6, 15.2)])
-    w2 = jtg.crack_width(lim, 1300.0, 900.0, pc_class="B", tendon_bundles=[(1, 6, 15.2)])
+    # Ms = 1600: the cracked section's axis (appendix J) above the bonded steel (at 1300 it lies below it: Wcr = 0)
+    w1 = jtg.crack_width(ex, 1600.0, 900.0, pc_class="B", tendon_bundles=[(1, 6, 15.2)])
+    w2 = jtg.crack_width(lim, 1600.0, 900.0, pc_class="B", tendon_bundles=[(1, 6, 15.2)])
     assert w1.demand > 0 and w1.demand == pytest.approx(w2.demand, rel=1e-6)
     assert w1.details["sigma_ss"] == pytest.approx(w2.details["sigma_ss"], rel=1e-6)
     s1, s2 = jtg.service_stresses(ex, 1500.0, pc_class="B"), jtg.service_stresses(lim, 1500.0, pc_class="B")

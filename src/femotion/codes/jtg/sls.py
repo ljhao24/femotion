@@ -309,44 +309,65 @@ def crack_width_limit(env: str, sec: RCSection | None = None) -> float | None:
     return CRACK_WIDTH_LIMITS[e][col]
 
 
+MEMBER_TYPES = ("flexural", "compression", "tension")
+
+
+def _member_type(member, N: float) -> str:
+    """the nature of the forces (6.4.3, C3 and the branch of 6.4.4): as declared (member=…), else by the sign of the
+    load's axial force N (0: flexural); never by a secondary axial force of the temperature gradient"""
+    if member is None:
+        return "flexural" if N == 0 else ("compression" if N > 0 else "tension")
+    m = str(member).lower()
+    if m not in MEMBER_TYPES:
+        raise ValueError(f"member: one of {', '.join(MEMBER_TYPES)} (the nature of the forces, 6.4.3)")
+    return m
+
+
 def crack_width(sec: RCSection, Ms: float, Ml: float, *, N: float = 0.0, Nl: float | None = None, env: str = "I",
                 l0: float | None = None, slab: bool = False, epoxy: bool = False, pc_class: str | None = None,
                 M_p2: float = 0.0, tendon_bundles=None, d: float | None = None, c: float | None = None,
-                welded_cage: bool = False, C1: float | None = None, C3: float | None = None, temperature=None,
-                psi_t: float | None = None) -> Check:
+                welded_cage: bool = False, C1: float | None = None, C3: float | None = None, member: str | None = None,
+                temperature=None, psi_t: float | None = None) -> Check:
     """maximum crack width (6.4.3) Wcr = C1 C2 C3 σss/Es · (c + d)/(0.36 + 1.7 ρte) against table 6.4.2, under the
     frequent combination (Ms, N) with the long-term factor C2 = 1 + 0.5 Ml/Ms (Ml quasi-permanent; Nl/N for an axial
-    tension member; for eccentric members with Nl given the larger of the two ratios; C2 ≥ 1). Reinforced concrete
-    (6.4.4 item 1, 2; 6.4.5):
-        N = 0: flexure, σss = Ms / (0.87 As h0), C3 = 1.15 for slabs (slab=True), else 1.0;
-        N > 0: eccentric compression (l0 for ηs): rectangles, T, I (and box) sections σss = Ns (es − z)/(As z), C3 0.9,
-               no check needed for e0/h ≤ 0.55; solid circles 6.4.4-9, ρte 6.4.5-2, C3 0.75, none for e0/r ≤ 0.55;
-        N < 0: axial tension (Ms = 0) σss = Ns / As, all bars, Ate = A, C3 1.2; eccentric tension σss = Ns e's /
-               (As (h0 − a's)), C3 1.1.
+    tension member; for eccentric members with Nl given the larger of the two ratios; C2 ≥ 1).
+    member: the nature of the forces, "flexural", "compression" or "tension" (C3 and the formula of 6.4.4); by default
+    from the sign of N (N = 0 flexural). Reinforced concrete (6.4.4 item 1, 2; 6.4.5):
+        flexural: σss = Ms / (0.87 As h0), C3 = 1.15 for slabs (slab=True), else 1.0;
+        compression (N > 0, l0 for ηs): rectangles, T, I (and box) sections σss = Ns (es − z)/(As z), C3 0.9, no check
+               needed for e0/h ≤ 0.55; solid circles 6.4.4-9, ρte 6.4.5-2, C3 0.75, none for e0/r ≤ 0.55;
+        tension (N < 0): axial tension (Ms = 0) σss = Ns / As, all bars, Ate = A, C3 1.2; eccentric tension σss = Ns e's
+               / (As (h0 − a's)), C3 1.1.
+        An axial force against the declared nature (a flexural member's N, or the gradient's secondary one): moments
+        about the tension bars, σss = (Ms + N ys − N z)/(As z), z by 6.4.4-5 (N > 0) or min(h0 − a's, 0.87 h0) (N < 0),
+        C3 of the declared nature (program convention: continuous with 6.4.4-2 as N → 0).
     Class B prestressed members (pc_class="B", 6.4.4 item 3): σss = (Ms ± Mp2 − Np0 (z − ep)) / ((Ap + As) z), Ep in
-    place of Es (commentary to 6.4.3); tendon_bundles: rows of (number of tendons, strands or wires per tendon, dp) of
-    the tension-zone tendons, each a bundle of dpe = √n dp in de (table 6.4.3). With an axial force N (program
-    convention, the commentary's model of 6.4.4-11 — moments about the compression resultant — with Np0 + N): the
-    moment about the tension steel Mh0 = ηs Ms ± Mp2 + Np0 ep + N ys, F = Np0 + N; F > 0: e = Mh0 / F in 6.4.4-5, else
-    (net tension) z = h0 − a' with a' at the steel above the gross centroid (as 6.4.4-3); σss = (Mh0 − F z)/((Ap + As) z);
-    ηs (6.4.4-8, l0) on Ms only, N at the gross centroid (ys); C3 0.9 for N > 0, 1.1 for N < 0. Not cracked while the
-    tension face stays compressed under the frequent combination (σst ≤ σpc, with N), which replaces the e0/h ≤ 0.55
-    exemption.
-    As: reinforced concrete the tension-face rows (RCSection.edge_masks); class B every bar and tendon below the gross
-    centroid (of the side in tension). d: the equivalent diameter of those bars (override d=…, e.g. for bundled bars
-    dse = √n d; × 1.3 for welded cages, 9.3.11); c: cover of the outermost tension row, at most 50 (override c=…);
-    ρte = As / Ate within 0.01 … 0.1, Ate = 2 as b with b the width at the tension face. C1 from the bars' steel: 1.0
-    ribbed, 1.4 plain (HPB300), 1.15 epoxy-coated ribbed (epoxy=True); class B the same (override C1=…).
-    Circular sections: eccentric compression only. C3: override of the factor for the nature of the forces, e.g. cap
-    beams with 2.5 < l/h ≤ 5.0 (8.4.8, femotion.codes.jtg.regions.cap_beam_C3).
+    place of Es (commentary to 6.4.3); default member "flexural" (C3 1.0) unless N ≠ 0; tendon_bundles: rows of (number
+    of tendons, strands or wires per tendon, dp) of the tension-zone tendons, each a bundle of dpe = √n dp in de (table
+    6.4.3). With an axial force N (program convention, the commentary's model of 6.4.4-11 — moments about the compression
+    resultant — with Np0 + N): σss = (ηs Ms ± Mp2 − Np0 (z − ep) − N (z − ys)) / ((Ap + As) z), i.e. moments about the
+    tension steel Mh0 = ηs Ms ± Mp2 + Np0 ep + N ys and F = Np0 + N: F > 0 z by 6.4.4-5 with e = Mh0 / F, else (net
+    tension) z = min(h0 − a', 0.87 h0), a' at the compression-face rows (as 6.4.4-3; continuous at F = 0); ηs (6.4.4-8,
+    l0) on Ms only and for compression members, N at the gross centroid (ys); C3 0.9 compression, 1.1 tension. Not
+    cracked while the tension face stays compressed under the frequent combination (σst ≤ σpc, with N): no e0/h ≤ 0.55
+    exemption. Ap + As: the steel below the gross centroid and below the neutral axis of the cracked section (appendix J
+    under Np0 + N and the moment); none there (the axis below all the bonded steel): Wcr = 0. Known steps and
+    non-monotony of these conventions: docs/codes/JTG_3362-2018.md 7.4.
+    As: reinforced concrete the tension-face rows (RCSection.edge_masks). d: the equivalent diameter of those bars
+    (override d=…, e.g. for bundled bars dse = √n d; × 1.3 for welded cages, 9.3.11); c: cover of the outermost tension
+    row, at most 50 (override c=…); ρte = As / Ate within 0.01 … 0.1, Ate = 2 as b with b the width at the tension face.
+    C1 from the bars' steel: 1.0 ribbed, 1.4 plain (HPB300), 1.15 epoxy-coated ribbed (epoxy=True); class B the same
+    (override C1=…). Circular sections: compression members only. C3: override of the factor for the nature of the
+    forces, e.g. cap beams with 2.5 < l/h ≤ 5.0 (8.4.8, femotion.codes.jtg.regions.cap_beam_C3).
     temperature: the temperature gradient as for crack_resistance (thermal_stresses on the uncracked section, with its
     secondary moment and axial force), not part of Ms, N or Ml; × ψ (psi_t, default ψq = 0.8 of D60 4.1.6). Its
-    secondary moment and axial force join Ms and N (also in C2; Ml takes none, 6.3.2 via 6.4.3); its self-equilibrating
-    stress on the cracked section of this combination (appendix D commentary: the gradient below the neutral axis
-    ignored) adds αE × the concrete stress at the tension steel's resultant to σss (αEP for class B, consistent with
-    Ep). Cracked section: reinforced concrete in bending and tension 7.2.4, in compression under N; class B appendix J
-    under Np0 + N. The positive gradient, the negative one or none, whichever gives the largest Wcr (details
-    "temperature", "cases"). Class B: the decompression test takes ψ × the uncracked temperature stress at the face.
+    secondary moment and axial force join Ms and N as internal forces (also in C2; Ml takes none, 6.3.2 via 6.4.3) but
+    do not change the member's nature (C3, branch); its self-equilibrating stress on the cracked section of this
+    combination (appendix D commentary: the gradient on the tension side of the neutral axis ignored) adds αE × the
+    concrete stress at the tension steel's resultant to σss (αEP for class B, consistent with Ep). Cracked section:
+    reinforced concrete 7.2.4 in bending, under N when N > 0; class B appendix J under Np0 + N. The positive gradient,
+    the negative one or none, whichever gives the largest Wcr (details "temperature", "cases"). Class B: the
+    decompression test takes ψ × the uncracked temperature stress of that case at the face.
     External tendons (class B): part of Np0 at σpe,ex and of its line of action (ep), not of Ap, ρte or de (they take no
     stress increment, program convention); E = Es when the member has no internal tendons."""
     k_ = None
@@ -354,8 +375,10 @@ def crack_width(sec: RCSection, Ms: float, Ml: float, *, N: float = 0.0, Nl: flo
         k_ = _pc_class(pc_class)
         if k_ != "B":
             raise ValueError("crack width is checked for reinforced concrete and class B members (6.4.1)")
+    mtype = _member_type(member, N)
     kw = dict(Ml=Ml, Nl=Nl, env=env, l0=l0, slab=slab, epoxy=epoxy, k_=k_, M_p2=M_p2, tendon_bundles=tendon_bundles,
-              d=d, c=c, welded_cage=welded_cage, C1=C1, C3=C3)
+              d=d, c=c, welded_cage=welded_cage, C1=C1, C3=C3, mtype=mtype,
+              axial=mtype == "tension" and Ms == 0 and k_ is None)
     if temperature is None:
         return _crack_width(sec, Ms, N, **kw)
     if sec.kind in ("circle", "annulus"):
@@ -374,10 +397,11 @@ def crack_width(sec: RCSection, Ms: float, Ml: float, *, N: float = 0.0, Nl: flo
 
 
 def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, epoxy, k_, M_p2, tendon_bundles, d, c,
-                 welded_cage, C1, C3, th=None, pt: float = 0.0, M0: float | None = None,
+                 welded_cage, C1, C3, mtype, axial, th=None, pt: float = 0.0, M0: float | None = None,
                  N0: float | None = None) -> Check:
     """crack_width for one set of frequent effects Ms, N; with a temperature gradient th (ψ = pt) they hold its
-    secondary effects, M0, N0 being the effects without them (class B decompression)"""
+    secondary effects, M0, N0 being the effects without them (class B decompression). mtype: the nature of the forces,
+    axial: a reinforced-concrete axial tension member"""
     C3_given = C3
     lim = crack_width_limit(env, sec)
     E = sec.steel.Es
@@ -392,42 +416,25 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
             chk.failed.append(f"class B members with {_ptendon(sec).kind} are not allowed in environment V (table 6.4.2)")
         return chk
 
-    def self_stress(s, k, M_na, N_na, depth, E_):
-        """ψ × αE × the concrete-equivalent stress at depth (of s, the face in tension at the bottom) from the
-        temperature self-stress on the cracked section under M_na (kN·m, sagging on s) and N_na (kN, compression +):
-        the steel stress, tension +"""
-        r = _cracked_under(s, M_na, N_na)
+    def self_stress(r, k, depth, E_):
+        """ψ × αE × the concrete-equivalent stress at depth (of the turned section when k < 0) from the temperature
+        self-stress on the cracked section r: the steel stress, tension +"""
         thc = _cracked_thermal(sec, th.profile, r, hogging=k < 0, alpha=th.alpha)
         return -pt * E_ / sec.concrete.Ec * float(thc.sigma(depth if k > 0 else sec.h - depth)), r["x"]
+
+    def lever_tension(s, h0):
+        """z on the tension side: min(h0 − a', 0.87 h0), a' at the compression-face rows (bars and internal tendons)"""
+        _, top = s.edge_masks()
+        _, pt_ = s.tendon_masks()
+        a_ = np.r_[s.bars[top, 0], s.tendons[pt_, 0]]
+        if not a_.sum():
+            return 0.87 * h0, None
+        a_c = float((a_ * np.r_[s.bars[top, 1], s.tendons[pt_, 1]]).sum() / a_.sum())
+        return min(h0 - a_c, 0.87 * h0), a_c
 
     if k_ == "B":
         s, k = _orient(sec, Ms + M_p2)
         Np0, zN = s.prestress_resultant("p0")
-        bot, pb = s.bars[:, 1] > s.zg, s.tendons[:, 1] > s.zg  # all the steel of the tension zone (6.4.4-11)
-        As, Ap = s.bars[bot, 0].sum(), s.tendons[pb, 0].sum()
-        At = As + Ap
-        h0 = (np.r_[s.bars[bot, 0], s.tendons[pb, 0]] * np.r_[s.bars[bot, 1], s.tendons[pb, 1]]).sum() / At
-        ep = h0 - zN
-        eta = 1.0
-        if N > 0 and Ms and l0 and l0 / s.h > 14:
-            eta = 1 + (l0 / s.h) ** 2 / (4000 * (abs(Ms) / N * 1e3) / h0)  # 6.4.4-8 on the external moment only
-        M = k * (eta * Ms + M_p2) * 1e6
-        Nn, ys = N * 1e3, h0 - s.zg
-        F = Np0 + Nn  # the compression resultant with Np0 (6.4.4-12 generalised, program convention)
-        if F > 0:
-            e = ep * (Np0 / F) + (M + Nn * ys) / F
-            gf = _gamma_f(s, h0)
-            z = _z_arm(gf, h0, e)
-            dd = {"Np0": Np0 / 1e3, "ep": ep, "e": e, "z": z, "h0": h0, "gamma_f": gf}
-        else:  # net tension: moments about the steel above the centroid (as 6.4.4-3)
-            tb, tp = ~bot, ~pb
-            Ac = s.bars[tb, 0].sum() + s.tendons[tp, 0].sum()
-            if Ac <= 0:
-                raise ValueError("class B in net tension: no steel on the less tensioned side (a' of 6.4.4-3)")
-            a_c = (s.bars[tb, 0] @ s.bars[tb, 1] + s.tendons[tp, 0] @ s.tendons[tp, 1]) / Ac
-            z = h0 - a_c
-            dd = {"Np0": Np0 / 1e3, "ep": ep, "a'": a_c, "z": z, "h0": h0}
-        sss = (M + Nn * ys - Np0 * (z - ep) - Nn * z) / (At * z)
         A0, z0, I0 = s.props("transformed")
         Md, Nd = (Ms, N) if M0 is None else (M0, N0)
         sst = k * Md * 1e6 / (I0 / (s.h - z0))
@@ -436,19 +443,48 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
         if th is not None:
             sst -= pt * float(th.sigma(sec.h if k > 0 else 0.0))
         spc = float(s.prestress_stress(s.h, k * M_p2))
-        dd.update(sigma_st=sst, sigma_pc=spc)
-        if N:
-            dd.update(N_total=F / 1e3, ys=ys, eta_s=eta)
         if sst <= spc:
             return skip(f"σst = {sst:.2f} ≤ σpc = {spc:.2f} MPa: the tension face is not decompressed, no crack")
+        eta = 1.0
+        if mtype == "compression" and N > 0 and Ms and l0 and l0 / s.h > 14:
+            g_b, g_p = s.bars[:, 1] > s.zg, s.tendons[:, 1] > s.zg
+            w_ = np.r_[s.bars[g_b, 0], s.tendons[g_p, 0]]
+            h0g = (w_ * np.r_[s.bars[g_b, 1], s.tendons[g_p, 1]]).sum() / w_.sum()
+            eta = 1 + (l0 / s.h) ** 2 / (4000 * (abs(Ms) / N * 1e3) / h0g)  # 6.4.4-8 on the external moment only
+        r = _cracked_under(s, k * (eta * Ms + M_p2), N)
+        # the steel of the tension zone (6.4.4-11): below the centroid and below the cracked section's neutral axis
+        cut = max(s.zg, r["x"])
+        bot, pb = s.bars[:, 1] > cut, s.tendons[:, 1] > cut
+        As, Ap = s.bars[bot, 0].sum(), s.tendons[pb, 0].sum()
+        At = As + Ap
+        if At <= 0:
+            return skip(f"decompressed, but the neutral axis of the cracked section (x = {r['x']:.0f} mm, appendix J) "
+                        "lies below all the bonded steel: no steel in the tension zone, no crack opening at the steel")
+        h0 = (np.r_[s.bars[bot, 0], s.tendons[pb, 0]] * np.r_[s.bars[bot, 1], s.tendons[pb, 1]]).sum() / At
+        ep = h0 - zN
+        M = k * (eta * Ms + M_p2) * 1e6
+        Nn, ys = N * 1e3, h0 - s.zg
+        F = Np0 + Nn  # the compression resultant with Np0 (6.4.4-12 generalised, program convention)
+        if F > 0:
+            e = ep * (Np0 / F) + (M + Nn * ys) / F
+            gf = _gamma_f(s, h0)
+            z = _z_arm(gf, h0, e)
+            dd = {"Np0": Np0 / 1e3, "ep": ep, "e": e, "z": z, "h0": h0, "gamma_f": gf}
+        else:  # net tension: about the compression-face steel (as 6.4.4-3), z ≤ 0.87 h0
+            z, a_c = lever_tension(s, h0)
+            dd = {"Np0": Np0 / 1e3, "ep": ep, "a'": a_c, "z": z, "h0": h0}
+        sss = (M + Nn * ys - Np0 * (z - ep) - Nn * z) / (At * z)
+        dd.update(sigma_st=sst, sigma_pc=spc, x=r["x"])
+        if N:
+            dd.update(N_total=F / 1e3, ys=ys, eta_s=eta)
         E = s.tendon.Ep if s.has_internal else s.steel.Es
         if th is not None:
-            sst_t, x_t = self_stress(s, k, k * (eta * Ms + M_p2), N, h0, E)
+            sst_t, x_t = self_stress(r, k, h0, E)
             dd.update(sigma_ss_load=sss, sigma_s_t=sst_t, x_t=x_t)
             sss = sss + sst_t
         if z <= 0 or sss <= 0:
             return skip(f"σss = {sss:.1f} MPa ≤ 0 (z = {z:.0f} mm): no crack opening under Ms")
-        C3 = 1.0 if not N else (0.9 if N > 0 else 1.1)
+        C3 = {"flexural": 1.0, "compression": 0.9, "tension": 1.1}[mtype]
         As_te, a_s = At, s.h - h0
         if s.has_internal and tendon_bundles is None and d is None:
             raise ValueError("class B: pass tendon_bundles=[(tendons, strands per tendon, dp)] or d=… (table 6.4.3)")
@@ -457,44 +493,50 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
         side = "bottom"
         if c is None and not bot.any():
             raise ValueError("class B without bars on the tension face: pass c=… (cover, 6.4.3)")
-    elif sec.kind in ("circle", "annulus") and N <= 0:
-        raise NotImplementedError("6.4.4 gives σss of circular sections for eccentric compression only")
-    elif N == 0:
-        s, k = _orient(sec, Ms)
-        bot, _ = s.edge_masks()
-        if not bot.any():
-            raise ValueError("no tension reinforcement")
-        As, h0 = s.bars[bot, 0].sum(), s.h0()
-        sss = k * Ms * 1e6 / (0.87 * As * h0)
-        C3 = 1.15 if slab else 1.0
-        As_te, a_s, mask, side = As, s.h - h0, bot, "bottom"
-        dd = {"h0": h0}
-        if th is not None:
-            sst_t, x_t = self_stress(s, k, k * Ms, 0.0, h0, E)
-    elif N > 0:
+    elif sec.kind in ("circle", "annulus"):
+        if mtype != "compression" or N <= 0:
+            raise NotImplementedError("6.4.4 gives σss of circular sections for eccentric compression only")
         s, k = _orient(sec, Ms)
         e0 = abs(Ms) / N * 1e3
         if s.kind == "annulus":
             raise NotImplementedError("crack width of hollow circular sections is not covered by 6.4.4")
-        if s.kind == "circle":
-            r, rs = s.h / 2, s.ring
-            a_s = r - rs
-            if e0 / r <= 0.55:
-                return skip(f"e0/r = {e0 / r:.3f} ≤ 0.55: crack width need not be checked (6.4.3)")
-            eta = 1.0 if not l0 or l0 / (2 * r) <= 14 else 1 + (l0 / (2 * r)) ** 2 / (4000 * e0 / (2 * r - a_s))
-            t = eta * e0 / r
-            As = s.bars[:, 0].sum()
-            sss = 0.6 * (t - 0.1) ** 3 / ((0.45 + 0.26 * rs / r) * (t + 0.2) ** 2) * N * 1e3 / As
-            rho = As / (math.pi * r * r)
-            beta = (0.4 + 2.5 * rho) * (1 + 0.353 * t ** -2)
-            r1 = r - 2 * a_s
-            rho_te = beta * As / (math.pi * (r * r - r1 * r1))
-            C3 = 0.75
-            mask = np.ones(len(s.bars), bool)
-            dd = {"e0": e0, "eta_s": eta, "beta": beta, "rho": rho}
-            if c is None:
-                c = a_s - s.bar_d[0] / 2
-        else:
+        r, rs = s.h / 2, s.ring
+        a_s = r - rs
+        if e0 / r <= 0.55:
+            return skip(f"e0/r = {e0 / r:.3f} ≤ 0.55: crack width need not be checked (6.4.3)")
+        eta = 1.0 if not l0 or l0 / (2 * r) <= 14 else 1 + (l0 / (2 * r)) ** 2 / (4000 * e0 / (2 * r - a_s))
+        t = eta * e0 / r
+        As = s.bars[:, 0].sum()
+        sss = 0.6 * (t - 0.1) ** 3 / ((0.45 + 0.26 * rs / r) * (t + 0.2) ** 2) * N * 1e3 / As
+        rho = As / (math.pi * r * r)
+        beta = (0.4 + 2.5 * rho) * (1 + 0.353 * t ** -2)
+        r1 = r - 2 * a_s
+        rho_te = beta * As / (math.pi * (r * r - r1 * r1))
+        C3 = 0.75
+        mask = np.ones(len(s.bars), bool)
+        dd = {"e0": e0, "eta_s": eta, "beta": beta, "rho": rho}
+        if c is None:
+            c = a_s - s.bar_d[0] / 2
+    elif axial and Ms == 0:  # 6.4.4-1
+        if N >= 0:
+            return skip("the axial tension member is not in tension under these effects")
+        s = sec
+        mask = np.ones(len(s.bars), bool)
+        As = s.bars[:, 0].sum()
+        sss = -N * 1e3 / As
+        C3 = 1.2
+        rho_te = As / s.area
+        dd = {}
+        if c is None:
+            c = min(_cover(s, mask, "bottom"), _cover(s, mask, "top"))
+        if th is not None:
+            notes.append("axial tension: the whole section cracks, no temperature self-stress")
+    else:
+        s, k = _orient(sec, Ms)
+        C3 = {"flexural": 1.15 if slab else 1.0, "compression": 0.9, "tension": 1.2 if axial else 1.1}[mtype]
+        M_na, N_na = k * Ms, N  # the cracked section of the temperature self-stress
+        if mtype == "compression" and N > 0:  # 6.4.4-4 … -8
+            e0 = abs(Ms) / N * 1e3
             if e0 / s.h <= 0.55:
                 return skip(f"e0/h = {e0 / s.h:.3f} ≤ 0.55: crack width need not be checked (6.4.3)")
             bot, _ = s.edge_masks()
@@ -504,27 +546,10 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
             gf = _gamma_f(s, h0)
             z = _z_arm(gf, h0, es)
             sss = N * 1e3 * (es - z) / (As * z)
-            C3 = 0.9
-            As_te, a_s, mask, side = As, s.h - h0, bot, "bottom"
             dd = {"e0": e0, "eta_s": eta, "es": es, "z": z, "gamma_f": gf, "h0": h0}
-            if th is not None:
-                sst_t, x_t = self_stress(s, k, eta * k * Ms, N, h0, E)
-    else:
-        Nt = -N
-        if Ms == 0:
-            s = sec
-            mask = np.ones(len(s.bars), bool)
-            As = s.bars[:, 0].sum()
-            sss = Nt * 1e3 / As
-            C3 = 1.2
-            rho_te = As / s.area
-            dd = {}
-            if c is None:
-                c = min(_cover(s, mask, "bottom"), _cover(s, mask, "top"))
-            if th is not None:
-                notes.append("axial tension: the whole section cracks, no temperature self-stress")
-        else:
-            s, k = _orient(sec, Ms)
+            M_na = eta * k * Ms
+        elif mtype == "tension" and N < 0:  # 6.4.4-3
+            Nt = -N
             e0 = abs(Ms) / Nt * 1e3
             bot, top = s.edge_masks()
             if not top.any():
@@ -533,11 +558,30 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
             a_c = float(np.average(s.bars[top, 1], weights=s.bars[top, 0]))
             es_ = s.zg + e0 - a_c  # the tension resultant lies e0 below the centroid
             sss = Nt * 1e3 * es_ / (As * (h0 - a_c))
-            C3 = 1.1
-            As_te, a_s, mask, side = As, s.h - h0, bot, "bottom"
             dd = {"e0": e0, "e's": es_, "h0": h0}
-            if th is not None:
-                sst_t, x_t = self_stress(s, k, k * Ms, N, h0, E)
+        else:
+            bot, _ = s.edge_masks()
+            if not bot.any():
+                raise ValueError("no tension reinforcement")
+            As, h0 = s.bars[bot, 0].sum(), s.h0()
+            if N == 0:  # 6.4.4-2
+                sss = k * Ms * 1e6 / (0.87 * As * h0)
+                dd = {"h0": h0}
+            else:  # an axial force against the declared nature: moments about the tension bars (program convention)
+                Mh0 = k * Ms * 1e6 + N * 1e3 * (h0 - s.zg)
+                if N > 0:
+                    gf = _gamma_f(s, h0)
+                    z = _z_arm(gf, h0, Mh0 / (N * 1e3))
+                    a_c = None
+                else:
+                    z, a_c = lever_tension(s, h0)
+                sss = (Mh0 - N * 1e3 * z) / (As * z)
+                dd = {"h0": h0, "z": z, "a'": a_c}
+                if z <= 0 or sss <= 0:
+                    return skip(f"σss = {sss:.1f} MPa ≤ 0 (z = {z:.0f} mm): no tension in the bars")
+        As_te, a_s, mask, side = As, s.h - h0, bot, "bottom"
+        if th is not None:
+            sst_t, x_t = self_stress(_cracked_under(s, M_na, N_na), k, h0, E)
     if sst_t is not None and k_ != "B":
         dd.update(sigma_ss_load=sss, sigma_s_t=sst_t, x_t=x_t)
         sss = sss + sst_t
@@ -662,13 +706,16 @@ def _cracked_under(s: RCSection, M: float, N: float = 0.0):
     axial force N (kN, compression +) at the gross centroid. Prestressed sections: the resultant F = Np0 + N of Np0 at
     hps (7.1.4-4) and N, on its line of action z_R = (Np0 hps + N zg − M)/F (appendix J; with N a program extension:
     7.1.4 commentary's single eccentric force); reinforced concrete: N alone when N > 0. Without a compressive resultant
-    (reinforced concrete with N ≤ 0, or F ≤ 0) the axis in pure bending (7.2.4), no stress field. Returns _cracked's
-    dict with F (N) and z_R (mm; None in pure bending)."""
+    (reinforced concrete with N ≤ 0, or F ≤ 0) the axis in pure bending (7.2.4), no stress field; likewise when the
+    line of action is more than 10⁶ h away (F → 0: the axis is the pure-bending one to that precision, and the search
+    of _cracked cannot resolve it). Returns _cracked's dict with F (N) and z_R (mm; None in pure bending)."""
     Np0, hps = s.prestress_resultant("p0") if s.prestressed else (0.0, 0.0)
     F = Np0 + N * 1e3
     if F <= 0 or (not s.prestressed and N <= 0):
         return _cracked(s, limits=False) | {"F": 0.0, "z_R": None}
     z_R = hps * (Np0 / F) + (N * 1e3 * s.zg - M * 1e6) / F
+    if abs(z_R) > 1e6 * s.h:
+        return _cracked(s, limits=False) | {"F": 0.0, "z_R": None}
     return _cracked(s, N=F, z_R=z_R) | {"F": F, "z_R": z_R}
 
 
@@ -746,18 +793,19 @@ def precamber_pc(f_s: float, f_pe: float) -> float:
 
 
 # ── 7.1 stresses in service of prestressed members ─────────────────────────────
-def _service_b(sec: RCSection, Mk: float, M_p2: float, th, pt: float) -> dict:
-    """7.1.4 for one case: the cracked section under Np0 and Mk ± Mp2 (appendix J); with a temperature gradient th
-    (ψ = pt) its secondary moment in the moment, its secondary axial force with Np0, its self-stress on that cracked
-    section added to the concrete and (× αEP) to the tendons"""
+def _service_b(sec: RCSection, Mk: float, M_p2: float, th, pt: float, N: float = 0.0) -> dict:
+    """7.1.4 for one case: the cracked section under Np0 (with an axial force N, kN, compression +, at the gross
+    centroid) and Mk ± Mp2 (appendix J); with a temperature gradient th (ψ = pt) its secondary moment in the moment,
+    its secondary axial force with Np0, its self-stress on that cracked section added to the concrete and (× αEP) to
+    the tendons"""
     aEP = sec.tendon.Ep / sec.concrete.Ec if sec.has_internal else 0.0
     Mt = Mk + M_p2 if th is None else Mk + M_p2 + pt * th.M_sec / 1e6
-    Nt = 0.0 if th is None else -pt * th.N_sec / 1e3  # kN, compression +
+    Nt = N if th is None else N - pt * th.N_sec / 1e3  # kN, compression +
     s, k = _orient(sec, Mt)
     Np0, hps = s.prestress_resultant("p0")
     r = _cracked_under(s, k * Mt, Nt)
     if r["z_R"] is None:
-        raise ValueError("the temperature's axial tension exceeds Np0: no compressive resultant (7.1.4)")
+        raise ValueError("the axial tension exceeds Np0: no compressive resultant (7.1.4)")
     eN = -r["z_R"]
     thc = None if th is None else _cracked_thermal(sec, th.profile, r, hogging=k < 0, alpha=th.alpha)
     zo = (lambda z: z) if k > 0 else (lambda z: sec.h - z)  # depth on sec of a depth on s
@@ -783,7 +831,7 @@ def _service_b(sec: RCSection, Mk: float, M_p2: float, th, pt: float) -> dict:
     return {"scc": scc, "details": d}
 
 
-def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 0.0, temperature=None,
+def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 0.0, N: float = 0.0, temperature=None,
                      psi_t: float = 1.0) -> Check:
     """normal stresses of a prestressed flexural member in service under the characteristic Mk (vehicle load with
     impact, 7.1.1) and the prestress after all losses (7.1.3–7.1.5):
@@ -794,6 +842,10 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
     class B: cracked section under Np0 at eN = (Mk ± Mp2)/Np0 − hps (7.1.4, appendix J): σcc ≤ 0.5 fck (the larger of
     the two edges when the whole section stays compressed); tendons σp0 + σp with σp = αEP [Np0/Acr − Np0 e0N (hp − c)
     /Icr] (7.1.4-5, a tension increment where negative).
+    N: an axial force of the characteristic combination (kN, compression +, e.g. a rigid frame's girder or pier) at the
+    gross centroid (program extension, 7.1 is written for flexural members): full and class A N/A0 + N e y0/I0 on the
+    transformed section (e: gross centroid below the transformed one); class B with Np0 into one resultant for appendix
+    J (as the axial force of crack_width).
     temperature: the temperature gradient (thermal_stresses of the uncracked section, with its secondary moment, not in
     Mk) at its characteristic value × psi_t (1.0). Full and class A: the more compressive gradient added at each edge,
     the more tensile one at each tendon (σkt). Class B (program convention): its secondary moment joins Mk ± Mp2 (7.1.4
@@ -812,12 +864,17 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
     if k_ in ("FULL", "A"):
         A0, z0, I0 = sec.props("transformed")
         edge = {}
+        sN = (lambda z: N * 1e3 / A0 + N * 1e3 * (sec.zg - z0) * (z - z0) / I0) if N else (lambda z: 0.0)
         for name, z in (("top", 0.0), ("bottom", sec.h)):
             edge[name] = Mk * 1e6 * (z0 - z) / I0 + float(sec.prestress_stress(z, M_p2))
+            if N:
+                edge[name] += sN(z)
             if temperature is not None:
                 edge[name] += psi_t * temperature.unfavourable(z, "compression")
         gov = max(edge, key=edge.get)
         skt = -Mk * 1e6 * (z0 - sec.tendons[:, 1]) / I0  # tension +
+        if N:
+            skt = skt - sN(sec.tendons[:, 1])
         if temperature is not None:
             skt = skt - psi_t * np.array([temperature.unfavourable(d, "tension") for d in sec.tendons[:, 1]])
         sp = sec._sigma_pe() + aEP * skt
@@ -827,10 +884,10 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
     else:
         if temperature is not None and temperature.kind == "cracked":
             raise ValueError("temperature: thermal_stresses of the uncracked section; the cracked one is built here")
-        cases = {"none": _service_b(sec, Mk, M_p2, None, psi_t)}
+        cases = {"none": _service_b(sec, Mk, M_p2, None, psi_t, N)}
         if temperature is not None:
-            cases["positive"] = _service_b(sec, Mk, M_p2, temperature, psi_t)
-            cases["negative"] = _service_b(sec, Mk, M_p2, temperature.negative(), psi_t)
+            cases["positive"] = _service_b(sec, Mk, M_p2, temperature, psi_t, N)
+            cases["negative"] = _service_b(sec, Mk, M_p2, temperature.negative(), psi_t, N)
         gov = max(cases, key=lambda n: cases[n]["scc"])  # ties: none first
         g = cases[gov]
         d = g["details"]
