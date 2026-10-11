@@ -721,8 +721,9 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
     tendons); the direction of the prestressing moment for α2 counts them at σpe,ex; h0 and P from the bonded steel
     As, Ap only (ρ = (Ap + As)/(b h0), program convention)."""
     s = sec.flipped() if hogging else sec
-    if s.kind in ("circle", "annulus"):
-        raise NotImplementedError("shear of circular sections is not implemented")
+    if s.kind in ("circle", "annulus"):  # 3362 has no rule: GB 50010-2010 6.3.15 (members.shear_circle)
+        from .members import shear_circle
+        return shear_circle(s, Vd, stirrups, gamma0=gamma0, alpha1=alpha1, stirrup_steel=stirrup_steel, bent=bent)
     c, st = s.concrete, s.steel
     b, h0 = s.web(), s.h0(external=False)
     t, _ = s.groups()
@@ -891,21 +892,29 @@ def eta_factor(sec: RCSection, e0: float, l0: float, h0: float) -> float:
     return 1 + (l0 / sec.h) ** 2 * z1 * z2 / (1300 * e0 / h0)
 
 
-def _circle_code(sec: RCSection, e: float):
-    """5.3.8 formula for solid circular sections with at least 8 bars evenly on a circle: (Nu N, α)"""
+def _circle_NM(sec: RCSection, a: float):
+    """right-hand sides of 5.3.8-1, -2 for the angle ratio α: (N_ud N, M_ud N·mm), solid circle, bars evenly round"""
     c, st = sec.concrete, sec.steel
     r, rs = sec.h / 2, sec.ring
     A = math.pi * r * r
     As = sec.bars[:, 0].sum()
+    at = max(1.25 - 2 * a, 0.0)
+    N = a * c.fcd * A * (1 - math.sin(2 * math.pi * a) / (2 * math.pi * a)) + (a - at) * st.fsd * As
+    M = 2 / 3 * c.fcd * A * r * math.sin(math.pi * a) ** 3 / math.pi + st.fsd * As * rs * (math.sin(math.pi * a) + math.sin(math.pi * at)) / math.pi
+    return N, M
 
-    def NM(a):
-        at = max(1.25 - 2 * a, 0.0)
-        N = a * c.fcd * A * (1 - math.sin(2 * math.pi * a) / (2 * math.pi * a)) + (a - at) * st.fsd * As
-        M = 2 / 3 * c.fcd * A * r * math.sin(math.pi * a) ** 3 / math.pi + st.fsd * As * rs * (math.sin(math.pi * a) + math.sin(math.pi * at)) / math.pi
-        return N, M
 
-    a = brentq(lambda a: NM(a)[1] - e * NM(a)[0], 1e-4, 1.0 - 1e-9, xtol=1e-12)
-    return NM(a)[0], a
+def _circle_code(sec: RCSection, e: float):
+    """5.3.8 formula for solid circular sections with at least 8 bars evenly on a circle: (Nu N, α). For small e the
+    equation M = e N also has a root with N < 0 at small α: the root taken is the one with N > 0 (the largest α)."""
+    f = lambda a: _circle_NM(sec, a)[1] - e * _circle_NM(sec, a)[0]  # noqa: E731
+    al = np.linspace(1e-4, 1.0 - 1e-9, 401)
+    fs = [f(a) for a in al]
+    ks = [k for k in range(len(al) - 1) if fs[k] * fs[k + 1] <= 0 and _circle_NM(sec, al[k + 1])[0] > 0]
+    if not ks:
+        raise RuntimeError("5.3.8: no equilibrium at this eccentricity")
+    a = brentq(f, al[ks[-1]], al[ks[-1] + 1], xtol=1e-12)
+    return _circle_NM(sec, a)[0], a
 
 
 def _solve_x(s: RCSection, e: float, xb: float | None):
@@ -926,7 +935,9 @@ def eccentric(sec: RCSection, Nd: float, Md: float, l0: float | None = None, *, 
     e = η e0 and checks γ0 Nd ≤ Nu. e0 = Md / Nd, at least max(20 mm, h/30) (5.3.9; 3362-2018 has no separate
     accidental eccentricity), η from eta_factor. Nd compression positive (kN), Md in kN·m (the sign picks the compressed
     face). method: "code" uses the closed-form formula of 5.3.8 for solid circles with at least 8 bars; "strain" the
-    rule set above (any shape); "auto": "code" where it applies, else "strain".
+    rule set above (any shape); "auto": "code" where it applies, else "strain"; "web": the formulas of 5.3.7 for
+    rectangles, T, I and box sections with longitudinal bars spread evenly over the web (members._eccentric_web);
+    "table": table F.0.1 of appendix F for solid circles (members._eccentric_table). l0: jtg.effective_length (appendix E).
     Small eccentricity with the load between the two steel groups also gets the reverse-failure check (5.3.4-4,
     5.3.5-3/4). Minimum longitudinal reinforcement per 9.1.12 (reinforced concrete). Prestressed sections: tendons in
     every formula, ξb by 5.3.3. Check `axial` out of plane (5.3.10) separately."""
@@ -951,6 +962,11 @@ def eccentric(sec: RCSection, Nd: float, Md: float, l0: float | None = None, *, 
     n_bars = len(s.bars)
     code_ok = s.kind == "circle" and n_bars >= 8
     m = method if method != "auto" else ("code" if code_ok else "strain")
+    if m not in ("code", "strain", "web", "table"):
+        raise ValueError(f"method {method!r}: one of 'auto', 'code', 'strain', 'web', 'table'")
+    if m in ("web", "table"):
+        from . import members  # 5.3.7 and appendix F (members imports this module)
+        return members._eccentric_web(s, chk, e, e0_raw) if m == "web" else members._eccentric_table(s, chk, e)
     if m == "code":
         if not code_ok:
             raise ValueError("method='code' (5.3.8) is for solid circular sections with at least 8 bars")
@@ -992,23 +1008,36 @@ def eccentric(sec: RCSection, Nd: float, Md: float, l0: float | None = None, *, 
             Nu = s0.design_tension_moment(aref, compressed_p) / e_c
             chk.notes.append(f"x < 2a': moments about the compression steel (e' = {e_c:.0f} mm, 5.3.6)")
     else:
-        # reverse failure (5.3.4-4, 5.3.5-3/4): the load between A's/A'p and As/Ap, failure starting at the far face.
-        # Moments about the near-side steel resultant a' of the whole concrete section at fcd, of As at f'sd and of Ap at
-        # (f'pd − σp0); e' = distance from the load (e0 without η) to a'. e0 is taken here without the 5.3.9 minimum,
-        # the more unfavourable reading.
-        F = np.r_[st.fsd * s0.bars[bot, 0], s0.tendon.fpd * s0.tendons[pb, 0] if s0.has_internal else []]
-        d_t = float(np.average(np.r_[s0.bars[bot, 1], s0.tendons[pb, 1]], weights=F))
-        z_load = s0.zg - e0_raw
-        if aref < z_load < d_t:
-            e_r = z_load - aref
-            M_r = c.fcd * s0.area * (s0.zg - aref) + st.fsd_c * (s0.bars[bot, 0] * (s0.bars[bot, 1] - aref)).sum()
-            if s0.has_internal:
-                td = s0.tendons
-                M_r += ((s0.tendon.fpd_c - td[pb, 2]) * td[pb, 0] * (td[pb, 1] - aref)).sum()
-            N_r = M_r / e_r
+        rev = _reverse_failure(s0, e0_raw)
+        if rev is not None:
+            N_r, e_r = rev
             chk.details["N_reverse"] = N_r / 1e3
             if N_r < Nu:
                 Nu = N_r
                 chk.notes.append(f"reverse failure governs (e' = {e_r:.0f} mm, 5.3.4-4)")
     chk.resistance = Nu / 1e3
     return chk
+
+
+def _reverse_failure(s0: RCSection, e0_raw: float):
+    """reverse failure (5.3.4-4, 5.3.5-3/4) when the load lies between A's/A'p and As/Ap: failure starting at the far
+    face. Moments about the near-side steel resultant a' of the whole concrete section at fcd, of As at f'sd and of Ap at
+    (f'pd − σp0); e' = distance from the load (e0 without η) to a'. e0 is taken here without the 5.3.9 minimum, the more
+    unfavourable reading. Returns (N_r N, e' mm), or None when the load is not between the two steel groups."""
+    c, st = s0.concrete, s0.steel
+    aref, _ = s0.comp_ref()
+    bot, _ = s0.edge_masks()
+    pb, _ = s0.tendon_masks()
+    if aref is None or not (bot.any() or pb.any()):
+        return None
+    F = np.r_[st.fsd * s0.bars[bot, 0], s0.tendon.fpd * s0.tendons[pb, 0] if s0.has_internal else []]
+    d_t = float(np.average(np.r_[s0.bars[bot, 1], s0.tendons[pb, 1]], weights=F))
+    z_load = s0.zg - e0_raw
+    if not aref < z_load < d_t:
+        return None
+    e_r = z_load - aref
+    M_r = c.fcd * s0.area * (s0.zg - aref) + st.fsd_c * (s0.bars[bot, 0] * (s0.bars[bot, 1] - aref)).sum()
+    if s0.has_internal:
+        td = s0.tendons
+        M_r += ((s0.tendon.fpd_c - td[pb, 2]) * td[pb, 0] * (td[pb, 1] - aref)).sum()
+    return M_r / e_r, e_r

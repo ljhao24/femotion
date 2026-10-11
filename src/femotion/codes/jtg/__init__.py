@@ -11,6 +11,8 @@
                  cracking moment and minimum reinforcement of prestressed members
     torsion      JTG 3362-2018 5.5, 9.3.13: torsion and shear with torsion of rectangles, boxes, T and I sections
     bearing      JTG 3362-2018 5.7: local compression under anchorages and bearings
+    members      JTG 3362-2018 5.3.2 spiral columns, 5.3.7 bars over the web, 5.3.11 biaxial compression, 5.4 tension
+                 members, appendix E effective lengths, appendix F table; shear of circular sections (GB 50010 6.3.15)
     prestress    JTG 3362-2018: prestress losses (friction, anchorage set with reverse friction, temperature,
                  elastic shortening, relaxation, creep and shrinkage with Appendix C), σpe, σp0; anchorage and
                  transfer lengths of pretensioned tendons
@@ -59,6 +61,8 @@ from .external import deviation_radius_min, external_detailing  # noqa: F401
 from .flange import (box_flange_coefficient, box_flange_width, box_theoretical_span, tee_flange_width,  # noqa: F401
                      tee_flange_width_outer)
 from .materials import Concrete, Rebar, Tendon, concrete, rebar, strength_at, tendon, xi_b  # noqa: F401
+from .members import (LENGTH_FACTORS, TABLE_F01, axial_spiral, biaxial, biaxial_tension, circle_nu,  # noqa: F401
+                      effective_length, length_factor, rect_biaxial, shear_circle, tension)
 from .rc import (Check, RCSection, axial, box, circle, cracking_moment, eccentric, eta_factor, flexure, rect, shear,  # noqa: F401
                  stability_factor, tee)
 from .sls import (CAMBER_LONG_TERM, CRACK_WIDTH_LIMITS, crack_resistance, crack_width, crack_width_limit,  # noqa: F401

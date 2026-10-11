@@ -6,7 +6,9 @@ given (bearing reactions of the two spans), the frequent ones as a ratio of them
     cap beam on the rigid frame (8.4.1) → class by l/h (8.4.2) → flexure with the deep-beam lever arm (8.4.3), shear
     (8.4.4, 8.4.5), crack width with C3 (8.4.8) → torsion from the unequal reactions of the two spans (5.5) →
     cantilever top tie (8.4.6), the same cantilever as a strut-and-tie model (appendix B: strut and node checks) →
-    local compression under a bearing (5.7) → pile forces (8.5.1), pile cap strut-and-tie (8.5.4), punching (8.5.5).
+    local compression under a bearing (5.7) → pile forces (8.5.1), pile cap strut-and-tie (8.5.4), punching (8.5.5) →
+    columns: effective lengths (appendix E), biaxial bending of a circular column (5.3.8, appendix F) → a pile's shear
+    (3362 has no rule for circles: GB 50010-2010 6.3.15) → a tie beam between the pile caps in tension (5.4.2).
 
     uv run python examples/jtg_substructure.py
 """
@@ -111,3 +113,27 @@ for r in rg.pile_cap_stm(Nd[0], Nd[1], x1, x1, h0c, b=0.8 * 1200, s=100, d=28, A
 # punching of the column: the cone reaches the piles, nothing to deduct; ax = column edge to pile edge
 print("  " + str(rg.pile_cap_punching_column(N_col, bx=1200, by=1200, ax=x1 - 0.8 * 1200 / 2, ay=h0c, h0=h0c,
                                               concrete=pc, gamma0=gamma0)))
+
+# ── columns (appendix E, 5.3.8, appendix F): across the bridge the bent sways, each column fixed at its pile cap and
+# held against rotation at the top by the cap beam (antisymmetric sway: 6 E I / l at each column head), with no lateral
+# support (E.0.2, KF = 0); along the bridge each column is a cantilever (the bearings let the deck slide) ──
+col = jtg.circle(D * 1e3, 28, 28, 75, concrete="C35")
+EI_col, EI_cap = col.concrete.Ec * col.I, c.Ec * cap.I  # N·mm²
+l0_t = jtg.effective_length(H_col * 1e3, K_theta=6 * EI_cap / (l * 1e3), K_F=0.0, EI=EI_col)
+l0_l = jtg.effective_length(H_col * 1e3, ends="fixed-free")
+M_long = 450.0  # longitudinal moment at the column base from braking and bearing friction (illustrative, kN·m)
+print(f"\ncolumn: l0 = {l0_t / 1e3:.2f} m across (E.0.2), {l0_l / 1e3:.2f} m along (E.0.1)")
+print("  " + str(jtg.biaxial(col, None, N_col, M_col, M_long, l0x=l0_t, l0y=l0_l, gamma0=gamma0)))
+print("  " + str(jtg.eccentric(col, N_col, math.hypot(M_col, M_long), max(l0_t, l0_l), gamma0=gamma0, method="table")))
+
+# ── a pile (φ1.2 m, 20Φ25, spiral Φ10 at 150 mm = 2 legs) under a horizontal force (illustrative): 3362 has no shear
+# rule for circular sections; b = 1.76 r, h0 = 1.6 r of GB 50010-2010 6.3.15 in the formulas of 5.2.9 ──
+pile = jtg.circle(1200, 20, 25, 70, concrete="C30")
+print("\npile: " + str(jtg.shear_circle(pile, 420.0, (2, 10, 150), gamma0=gamma0, pile=True)))
+
+# ── a tie beam between the two pile caps, 0.8 × 1.0 m, pulled apart by the piles' horizontal forces with a moment
+# from the caps' rotation (illustrative values): eccentric tension (5.4.2) ──
+tie = jtg.rect(800, 1000, concrete="C30", top=[(5, 22, 60)], bottom=[(5, 22, 60)])
+for Nt, Mt in ((380.0, 60.0), (380.0, 260.0)):
+    r = jtg.tension(tie, Nt, Mt, gamma0=gamma0)
+    print(f"tie beam ({r.details['case']}): " + str(r))
