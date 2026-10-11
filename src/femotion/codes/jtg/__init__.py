@@ -87,6 +87,8 @@ from .sls import (CAMBER_LONG_TERM, CRACK_WIDTH_LIMITS, crack_resistance, crack_
                   cracked_section, deflection_check, deflection_limit, inclined_crack_resistance, long_term_factor,
                   precamber_pc, precamber_rc, principal_compression, principal_stresses, service_stresses, stiffness,
                   transient_pc, transient_rc)
+from .composite import composite_prestress_stress  # noqa: F401
+from .sls import CRANE_FACTOR, Transfer, transient_shear  # noqa: F401
 from .stm import StrutTie, strut_width  # noqa: F401
 from .temperature import (EFFECTIVE_TEMPERATURE, EXPANSION, NEGATIVE_GRADIENT, Profile, ThermalStresses,  # noqa: F401
                           effective_temperature, temperature_gradient, thermal_stresses)

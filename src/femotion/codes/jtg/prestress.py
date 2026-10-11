@@ -129,10 +129,36 @@ def anchorage_loss_reverse(sigma_con: float, sigma_end: float, l: float, dl: flo
     if (x < 0).any() or (x > l).any():
         raise ValueError("Appendix G covers 0 ≤ x ≤ l")
     if lf <= l:
-        loss = np.where(x < lf, 2 * dsd * lf * (lf - x) / lf, 0.0)
+        loss = np.where(x < lf, 2 * dsd * (lf - x), 0.0)  # Δσ (lf − x)/lf, Δσ = 2Δσd lf; no division (lf = 0 when ΣΔl = 0)
     else:
         loss = dl * Ep / l + dsd * l - 2 * x * dsd
     return (float(loss) if loss.ndim == 0 else loss), lf
+
+
+def anchorage_loss_two_ends(sigma_con: float, sigma_end: float, l: float, dl: float, Ep: float, x, *,
+                            dl_b: float | None = None, friction=None):
+    """σl1 + σl2 at distance x (mm) from end A of a curved tendon jacked at both ends, A and B (Appendix G, G.0.3).
+    Each end is taken in turn as the jacking end with the other as the fixed end over the whole length l (G.0.2,
+    anchorage_loss_reverse): σl,A = σl1,A + σl2,A from end A, σl,B likewise from end B. Inside the reverse-friction
+    length of one end only, that end's loss; where the two lengths overlap (l − lf,B < x < lf,A), the smaller of σl,A
+    and σl,B (the larger tendon stress, G.0.3); beyond both, the smaller (friction from the end that loses less).
+    sigma_con: σcon at both ends; sigma_end: the stress at the far end after friction (the same from either end, the
+    total angle and length being the same); dl, dl_b: ΣΔl at ends A and B (mm; dl_b default dl); friction: (σl1 from A,
+    σl1 from B) at x (6.2.2, friction_loss), default the straight lines of figure G.0.2, Δσd x and Δσd (l − x),
+    Δσd = (σcon − σend)/l. Where the lengths overlap the result may jump at the edges of the overlap (the clause's
+    simplification). Returns (σl1 + σl2 at x, (lf,A, lf,B))."""
+    x = np.asarray(x, float)
+    dsd = (sigma_con - sigma_end) / l
+    if friction is None:
+        l1a, l1b = dsd * x, dsd * (l - x)
+    else:
+        l1a, l1b = (np.broadcast_to(np.asarray(f, float), x.shape) for f in friction)
+    l2a, lfa = anchorage_loss_reverse(sigma_con, sigma_end, l, dl, Ep, x)
+    l2b, lfb = anchorage_loss_reverse(sigma_con, sigma_end, l, dl if dl_b is None else dl_b, Ep, l - x)
+    la, lb = l1a + l2a, l1b + l2b
+    in_a, in_b = x < lfa, l - x < lfb
+    loss = np.where(in_a & ~in_b, la, np.where(in_b & ~in_a, lb, np.minimum(la, lb)))
+    return (float(loss) if loss.ndim == 0 else loss), (lfa, lfb)
 
 
 # ── 6.2.4 temperature difference (pretensioning) ────────────────────────────

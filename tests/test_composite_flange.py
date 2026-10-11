@@ -99,11 +99,14 @@ def test_composite_crack_resistance_hand():
     _, z0, I0 = comp.elastic.props("transformed")
     W01, W0 = I01 / (1600 - z01), I0 / (1780 - z0)
     spc = float(pre.prestress_stress(1600))
-    assert r1.demand == pytest.approx(1950e6 / W01) and r1.resistance == pytest.approx(spc + 0.7 * 2.65)
-    assert r2.demand == pytest.approx(1800e6 / W01 + 1700e6 / W0)
-    assert r2.details["sigma_lt"] == pytest.approx(1800e6 / W01 + 1100e6 / W0)
+    b1, b2 = r1.details["edges"]["precast bottom"], r2.details["edges"]["precast bottom"]
+    assert b1["demand"] == pytest.approx(1950e6 / W01) and b1["limit"] == pytest.approx(spc + 0.7 * 2.65)
+    assert b2["demand"] == pytest.approx(1800e6 / W01 + 1700e6 / W0)
+    assert b2["sigma_lt"] == pytest.approx(1800e6 / W01 + 1100e6 / W0)
+    # both precast edges and the topping's top are checked; the least margin governs (the precast top here)
+    assert r1.details["edge"] == "precast top" and r1.ok and r2.ok
     full = jtg.composite_crack_resistance(comp, M1k=1950, M1Gk=1800, M2s=1700, M2l=1100, pc_class="full")[1]
-    assert full.resistance == pytest.approx(0.85 * spc)
+    assert full.details["edge"] == "precast bottom" and full.resistance == pytest.approx(0.85 * spc)
     with pytest.raises(ValueError):
         jtg.composite_crack_resistance(comp, M1k=1, M1Gk=1, M2s=1, M2l=1, pc_class="B")
 
