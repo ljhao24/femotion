@@ -236,6 +236,11 @@ class RCSection:
     def replace(self, **kw) -> "RCSection":
         return dataclasses.replace(self, **kw)
 
+    def _repr_svg_(self) -> str:
+        """Jupyter shows the section with its reinforcement (femotion.codes.jtg.figures.section_figure)"""
+        from .figures import section_figure  # figures imports this module
+        return section_figure(self).svg()
+
     def flipped(self):
         """the section turned upside down (for hogging moments)"""
         bars = self.bars.copy()

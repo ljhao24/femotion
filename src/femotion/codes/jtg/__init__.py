@@ -44,6 +44,8 @@
     detailing    JTG 3362-2018 4.5, 9.1, 9.2.5–9.2.8, 9.3: durability (environment classes, minimum concrete classes),
                  cover, bundles, anchorage, hooks, splices, clear spacing, web side bars, stirrups, cut-off and bent-up
                  bars, curved soffits, girder slabs, diaphragms, composite and hinged slabs, composite beams
+    figures      drawings of the sections (femotion.viz SVG): outline, bars, ducts and tendons to scale, with a check
+                 laid over them (compression zone, neutral axis, service stresses, detailing not met)
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
 
@@ -106,3 +108,4 @@ from .actions import braking_force  # noqa: F401
 from .devices import (Laminated, Movements, expansion_joint, hinge_compression, hinge_contact_width,  # noqa: F401
                       hinge_transverse, installation_width, laminated_bearing, laminated_sliding, movements,
                       ptfe_sliding)
+from .figures import bar_layout, section_figure  # noqa: F401
