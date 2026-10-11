@@ -95,9 +95,9 @@ def test_cantilever_root_against_the_strip_formulas(frame):
     # the frame takes each element's thickness at its middle: the taper's moment is off by γ t' L Δ²/12 (Δ = 0.1 m)
     assert G.at("left cantilever root")[1] == pytest.approx(c.M_support[0], rel=2e-4)
     assert G.shear("left cantilever root") == pytest.approx(c.V[0], rel=2e-4)
-    Q = fr.wheels(h=0.10)
+    Q = fr.wheels(h=0.10, two_way=True)
     assert Q.min.at("left cantilever root")[1] == pytest.approx(c.M_support[1], rel=1e-9)
-    assert fr.wheels(h=0.10, target="V").max.shear("left cantilever root") == pytest.approx(c.V[1], rel=1e-9)
+    assert fr.wheels(h=0.10, target="V", two_way=True).max.shear("left cantilever root") == pytest.approx(c.V[1], rel=1e-9)
     assert Q.max.at("left cantilever root")[1] == pytest.approx(0.0, abs=1e-6)
 
 
@@ -105,7 +105,7 @@ def test_wheel_envelope_against_direct_loading(frame):
     """the influence-line envelope against applying the governing vehicles directly as surface loads (P/a over b on the
     slab, × 1.3 × the lane factor)"""
     fr = frame
-    Q = fr.wheels(h=0.10)
+    Q = fr.wheels(h=0.10, two_way=True)
     lay = fr.box.layout(0.10)
     for nm in ("top slab, cell 0 middle", "top slab, web 0 face, cell 0", "web 1 top", "bottom slab, web 1 face, cell 0"):
         i = Q.max.index(nm)
@@ -210,6 +210,10 @@ def test_shear_flow_with_cantilevers_and_inclined_webs():
                          t_web=0.45, t_root=0.5, t_tip=0.2)
     f = tr.shear_flow(box, V=2000.0)
     assert f["top slab middle"]["tau_V"] == 0.0 and f["bottom slab middle"]["tau_V"] == 0.0
+    # at the web's outer face the cantilever's flow is (V/I)(zt − z̄) ∫ t ds over the tapered cantilever (2.775 m)
+    Lc = 6.25 - box.faces(1)[1]
+    q = 2000.0 / f["I"] * (box.z_top - f["z_centroid"]) * Lc * (0.2 + 0.5) / 2
+    assert f["cantilever root"]["tau_V"] == pytest.approx(q / 0.5 / 1e3, rel=1e-6)
     assert abs(f["closure"]) < 1e-9
     with pytest.raises(NotImplementedError):
         tr.shear_flow(tr.BoxGeometry(B=16, H=2.5, webs=(-5, 0, 5), t_top=0.25, t_bottom=0.22, t_web=0.45,
@@ -289,6 +293,13 @@ def test_transverse_crack_width_routes():
     assert c.demand == pytest.approx(jtg.crack_width(sec, 50.0, 35.0, slab=True).demand)
     assert tr.transverse_crack_width(sec, -40.0, 50.0, -30.0, 35.0, axial="all").demand == pytest.approx(
         jtg.crack_width(sec, 50.0, 35.0, N=40.0, Nl=30.0).demand)
+    # class B: the tensile force goes in too (sls.crack_width with N, its program convention), and widens the crack
+    b = jtg.rect(1000, 250, concrete="C50", top=[(7, 16, 45)], bottom=[(7, 16, 45)],
+                 tendons=[(560.0, 170, 1080.0, 55)], sigma_pe=1050.0)
+    kw = dict(pc_class="B", tendon_bundles=[(4 / 3, 3, 15.2)])  # BM15-3 every 0.75 m
+    wb = tr.transverse_crack_width(b, 80.0, 95.0, 50.0, 60.0, **kw)
+    assert wb.demand == pytest.approx(jtg.crack_width(b, 95.0, 60.0, N=-80.0, Nl=-50.0, slab=True, **kw).demand)
+    assert wb.demand > tr.transverse_crack_width(b, 80.0, 95.0, 50.0, 60.0, axial="none", **kw).demand
 
 
 def test_multi_cell_frame_and_geometry_checks():
@@ -315,3 +326,91 @@ def test_box_detailing():
     # tip 120 < 140; top 250 < 8.85/30 = 295; bottom 180 < 295; each web 150 < 160 and 2.97 m > 15 × 0.15
     assert len(chk.failed) == 7
     assert len(tr.box_detailing(bad, vertical_prestress=True).failed) == 4  # tip 120 ≥ 100, 2.97 m ≤ 20 × 0.15
+
+
+def _shoelace(p):
+    x, y = np.array(p).T
+    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+
+
+def test_self_weight_equals_the_section_area(frame):
+    """the joints are counted once: the reactions of the self-weight are γc × the cross-section's area, found here by
+    the shoelace formula on the outline less the cell (haunches as chamfers)"""
+    H, tt, tb = 2.5, 0.25, 0.22
+    outer = [(-6.25, H), (6.25, H), (6.25, H - 0.2), (3.15, H - 0.55), (3.15, 0.0), (-3.15, 0.0), (-3.15, H - 0.55),
+             (-6.25, H - 0.2)]
+    zt, zb = H - tt, tb
+    hole = [(-2.65, zt - 0.3), (-1.75, zt), (1.75, zt), (2.65, zt - 0.3), (2.65, zb + 0.2), (2.15, zb), (-2.15, zb),
+            (-2.65, zb + 0.2)]
+    A = _shoelace(outer) - _shoelace(hole)
+    G = frame.self_weight()
+    assert G.reactions.sum() == pytest.approx(26.0 * A, rel=1e-9)
+
+
+def _hand_width(x):
+    """distribution width of one middle / rear wheel (a1 = 0.2, b1 = 0.6, h = 0.1) on the BOX fixture, written out from
+    4.2.3 and 4.2.5 with the program's conventions (webs ±2.9 m, faces ±2.65 / ±3.15, t = 0.25, l = 5.55 m)"""
+    lc = (-3.15 - x + 0.4) if x < -2.9 else (x - 3.15 + 0.4 if x > 2.9 else 0.0)
+    if lc > 0:
+        return 0.4 + 2 * lc
+    if abs(x) >= 2.65:
+        return 0.4 + 0.25
+    xn = max(min(x - 0.4 + 2.65, 2.65 - x - 0.4), 0.0)
+    return min(0.4 + 0.25 + 2 * xn, max(0.4 + 5.55 / 3, 2 * 5.55 / 3))
+
+
+def test_wheel_envelope_by_brute_force(frame):
+    """the envelope against an independent route: widths written out from the clauses (not slab.DeckLayout), the
+    governing load per metre max(70/a, 140/(a + 1.4) when a > 1.4), the frame loaded directly at every wheel position,
+    and every arrangement of one to three vehicles searched with prefix and suffix maxima (not the dynamic programme);
+    one-way traffic, three lanes, table 4.3.1-5"""
+    fr = frame
+    Q = fr.wheels(h=0.10, two_way=False, dx=0.05)
+    assert Q.details["lanes"] == 3
+    xs = np.round(np.arange(-5.25, 5.25 + 1e-9, 0.05), 10)
+    resp = []
+    for x in xs:
+        a = _hand_width(x)
+        w = max(70 / a, 140 / (a + 1.4) if a > 1.4 else 0.0)
+        resp.append(fr.surface(1.3 * w / 0.8, x - 0.4, x + 0.4).M)
+    resp = np.array(resp).T  # sections × positions
+    k, g = 36, 62  # 1.8 m track, 3.1 m between vehicles' left wheels
+    n = len(xs) - k
+    for i, sec in enumerate(fr.sections):
+        v = resp[i, :n] + resp[i, k:k + n]
+        for sense, F in ((1, Q.max), (-1, Q.min)):
+            u = sense * v
+            best = max(0.0, 1.2 * u.max())
+            pre = np.maximum.accumulate(u)
+            suf = np.maximum.accumulate(u[::-1])[::-1]
+            pairs = [u[j] + pre[j - g] for j in range(g, n)]
+            best = max(best, 1.0 * max(pairs))
+            trip = [u[j] + pre[j - g] + suf[j + g] for j in range(g, n - g)]
+            best = max(best, 0.78 * max(trip))
+            assert sense * F.M[i] == pytest.approx(best, rel=1e-9, abs=1e-9), sec.name
+
+
+def test_long_cantilever_takes_the_sawko_formula():
+    """lc > 2.5 m is outside 4.2.5: the commentary's Sawko formula (4-5) is taken as well, the larger governing. A 4 m
+    cantilever, the outer wheel 0.5 m from the curb at s = 3.0 m (lc = 3.4 m): by hand, A' = 1.30 (lc/a0 = 0.75), the
+    wheels of all five axles (15, 60, 60, 70, 70 kN at 0, 3, 4.4, 11.4, 12.8 m) superposed along the root, against
+    4.2.5 with the overlap (a = 0.4 + 2 × 3.4 + 1.4); the inner wheel at s = 1.2 m by 4.2.5 (lc = 1.6 m). The strip
+    formulas and the frame agree."""
+    A = 1.30
+    y = np.linspace(0, 12.8, 12801)
+    m_s = max(sum(P / math.pi * A / np.cosh(A * (y - yk) / 3.0) for P, yk in
+                  zip((15, 60, 60, 70, 70), (0, 3, 4.4, 11.4, 12.8))))
+    m_425 = 140 / (0.4 + 2 * 3.4 + 1.4) * 3.0
+    assert m_s > m_425
+    inner = 140 / (0.4 + 2 * 1.6 + 1.4) * 1.2
+    c = slab.cantilever_slab(4.0, 0.6, 0.2, h=0.10, curb=3.5, lanes=1)
+    assert c.M_support[1] == pytest.approx(-1.3 * 1.2 * (m_s + inner), rel=1e-6)
+    assert any("Sawko" in n for n in c.notes)
+    box = tr.BoxGeometry(B=2 * (2.9 + 0.25 + 4.0), H=2.5, webs=(-2.9, 2.9), t_top=0.25, t_bottom=0.22, t_web=0.5,
+                         t_root=0.6, t_tip=0.2, carriageway=(-6.65, 6.65))
+    fr = tr.TransverseFrame(box, concrete="C50")
+    Q = fr.wheels(h=0.10, lanes=1)
+    assert Q.min.at("left cantilever root")[1] == pytest.approx(c.M_support[1], rel=1e-6)
+    assert any("Sawko" in n for n in Q.notes) and any("distortion" in n for n in Q.notes)
+    with pytest.raises(ValueError, match="two_way"):
+        fr.wheels(h=0.10)

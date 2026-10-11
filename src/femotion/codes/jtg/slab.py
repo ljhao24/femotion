@@ -89,24 +89,29 @@ def skew_slab(l: float, b: float, phi: float, *, precast: bool = False) -> tuple
     """calculation span (m) of a skew slab (4.2.4) and how it is found: l the skew span (along the bridge axis), b the
     slab width square to the bridge axis, phi the skew angle (°, between the normal to the support axis and the bridge
     axis). Integral slabs with φ ≤ 15° as right slabs: l/b ≤ 1.3 the square distance between the support axes l cos φ,
-    l/b > 1.3 the skew span. Precast hinged planks: the skew span (their width square between the plank edges).
-    Integral slabs with 15° < φ < 40°: table 4-2 of the commentary (informative); larger angles need a skew-plate
-    analysis (ValueError)."""
+    l/b > 1.3 the skew span. Precast hinged planks: the skew span (their width square between the plank edges); the
+    clause sets no angle, its commentary rests on φ ≤ 40° (and a handbook's φ < 45°), noted beyond 40°. Integral slabs
+    beyond 15°: table 4-2 of the commentary (informative): l/b ≥ 1.3 and φ ≤ 40° the skew span, 1.3 > l/b ≥ 0.7 and
+    φ < 40° half of skew + square span, l/b < 0.7 and φ < 40° the square span; otherwise a skew-plate analysis is needed
+    (ValueError)."""
     lb = l / b
     right = l * math.cos(math.radians(phi))
     if precast:
-        return l, "precast hinged planks: skew span (4.2.4)"
+        why = "precast hinged planks: skew span (4.2.4)"
+        if phi > 40:
+            why += f"; φ = {phi:g}° beyond the commentary's basis (table 4-2: φ ≤ 40°, handbook: φ < 45°)"
+        return l, why
     if phi <= 15:
         return (right, "φ ≤ 15°, l/b ≤ 1.3: square span between the support axes (4.2.4)") if lb <= 1.3 else \
             (l, "φ ≤ 15°, l/b > 1.3: skew span (4.2.4)")
-    if phi < 40:  # commentary table 4-2 (Olsen's tests)
-        if lb >= 1.3:
-            return l, "table 4-2 of the commentary (l/b ≥ 1.3, φ ≤ 40°): skew span"
+    if lb >= 1.3 and phi <= 40:  # commentary table 4-2 (Olsen's tests)
+        return l, "table 4-2 of the commentary (l/b ≥ 1.3, φ ≤ 40°): skew span"
+    if phi < 40:
         if lb >= 0.7:
             return (l + right) / 2, "table 4-2 of the commentary (l/b 1.3 … 0.7, 15° < φ < 40°): half of skew + square span"
         return right, "table 4-2 of the commentary (l/b < 0.7, φ < 40°): square span"
-    raise ValueError(f"skew angle {phi:g}° > 15°: 4.2.4 does not cover it (table 4-2 of the commentary goes to 40°); "
-                     "analyse the skew plate")
+    raise ValueError(f"skew angle {phi:g}° with l/b = {lb:.2f}: neither 4.2.4 (φ ≤ 15°) nor table 4-2 of the "
+                     "commentary (φ ≤ 40° for l/b ≥ 1.3, φ < 40° otherwise) covers it; analyse the skew plate")
 
 
 def haunch_depth(hf: float, s: float, tan_alpha: float) -> float:
@@ -141,11 +146,13 @@ def width_cantilever(a1: float, h: float, lc: float) -> float:
     return a1 + 2 * h + 2 * lc
 
 
-def sawko_A(lc: float, a0: float) -> float:
-    """A' of table 4-3 (commentary to 4.2.5) for the load position lc / a0, linear between 0.25 and 1.00"""
+def sawko_A(lc: float, a0: float, clamp: bool = False) -> float:
+    """A' of table 4-3 (commentary to 4.2.5) for the load position lc / a0, linear between 0.25 and 1.00; outside that
+    range a ValueError, or with clamp=True the end values (program convention: A' grows with lc / a0, so 1.07 below
+    0.25 errs on the safe side)"""
     r = lc / a0
     xs, ys = zip(*SAWKO_A)
-    if not xs[0] - 1e-9 <= r <= xs[-1] + 1e-9:
+    if not clamp and not xs[0] - 1e-9 <= r <= xs[-1] + 1e-9:
         raise ValueError(f"lc / a0 = {r:.3f}: table 4-3 gives A' for 0.25 … 1.00 only")
     return float(np.interp(r, xs, ys))
 
@@ -166,6 +173,7 @@ class AxleGroup:
     gaps: tuple  # m, between consecutive axles (for the overlap test)
     a1: float  # m, contact length along the bridge (square to a transversely spanning slab)
     b1: float  # m, contact width across the bridge (parallel to the span)
+    loads: tuple = ()  # kN, one wheel of each axle
 
 
 def axle_groups(axles=VEHICLE_AXLES, spacings=VEHICLE_SPACINGS, contact=WHEEL_CONTACT) -> list[AxleGroup]:
@@ -177,7 +185,8 @@ def axle_groups(axles=VEHICLE_AXLES, spacings=VEHICLE_SPACINGS, contact=WHEEL_CO
         for j in range(i, n):
             gaps = tuple(spacings[i:j])
             out.append(AxleGroup(sum(axles[i:j + 1]) / 2, float(sum(gaps)), gaps,
-                                 max(c[1] for c in contact[i:j + 1]), max(c[0] for c in contact[i:j + 1])))
+                                 max(c[1] for c in contact[i:j + 1]), max(c[0] for c in contact[i:j + 1]),
+                                 tuple(a / 2 for a in axles[i:j + 1])))
     return out
 
 
@@ -196,19 +205,50 @@ def group_widths(a: float, groups, cap: float | None = None) -> list[tuple[float
     return out
 
 
+def sawko_group(group: AxleGroup, s: float, a0: float) -> float:
+    """largest root moment per metre (kN·m/m, magnitude) of a cantilever slab under the wheels of an axle group, each a
+    concentrated load at s (m) from the root, the axles along the root at the group's spacings: the Sawko formula (4-5)
+    superposed, its maximum over the root (A' clamped at the ends of table 4-3)"""
+    ys = np.r_[0.0, np.cumsum(group.gaps)]
+    A = sawko_A(s, a0, clamp=True)
+    y = np.linspace(ys[0], ys[-1], max(2, int(round((ys[-1] - ys[0]) / 0.01)) + 1))
+    m = sum(P / math.pi * A / np.cosh(A * (y - yk) / s) for P, yk in zip(group.loads, ys))
+    return float(np.max(m))
+
+
+def wheel_line_loads(a: float, groups, *, cap: float | None = None, lc: float | None = None, s: float | None = None,
+                     a0: float | None = None) -> list[tuple[float, AxleGroup, str]]:
+    """(load per metre along the bridge kN/m, group, rule) of every axle group at one wheel line of single-wheel width
+    a: 4.2.3-3 overlap (group_widths, with the caps of 4.2.3 items 5, 6). A cantilever wheel whose lc (4.2.5) exceeds
+    2.5 m is outside 4.2.5: with s (m, the wheel's centre from the web face) and a0 (m, the cantilever) the Sawko
+    formula of the commentary (4-5) also counts, as the load per metre m_Sawko / s that gives its root moment (program
+    convention: the larger of the two; every axle of a group superposed, overlapping or not)."""
+    out = [(w, g, "4.2.3-3" if g.d else "single wheel") for w, _, g in group_widths(a, groups, cap)]
+    if lc is None or lc <= 2.5 or s is None or a0 is None or s <= 0:
+        return out
+    best = {id(g): (w, g, why) for w, g, why in out}
+    for g in groups:
+        w = sawko_group(g, s, a0) / s
+        if w > best.get(id(g), (0.0,))[0]:
+            best[id(g)] = (w, g, "Sawko (4-5)")
+    return list(best.values())
+
+
 @dataclass
 class DeckLayout:
     """where a deck slab is supported across the bridge, for the distribution widths of 4.2.3 and 4.2.5.
     faces: (left, right) faces of each rib or web, left to right (m, across the bridge); beyond the first and the last
     the slab is a cantilever. t: mid-span thickness of the interior spans (m; one value or one per span). h: surfacing
     thickness (m). centres: rib centre lines (default the middle of the faces). full_width, precast_width: caps of
-    4.2.3 items 5, 6 (m)."""
+    4.2.3 items 5, 6 (m). tips: (left, right) free edges of the cantilevers (m), for the Sawko formula beyond lc =
+    2.5 m."""
     faces: list
     t: float | list
     h: float
     centres: list | None = None
     full_width: float | None = None
     precast_width: float | None = None
+    tips: tuple | None = None
 
     def __post_init__(self):
         self.faces = [tuple(map(float, f)) for f in self.faces]
@@ -225,7 +265,7 @@ class DeckLayout:
         """(distribution width a of one wheel, clause, lc or the distance to the support) for a wheel centred at x with
         contact a1 × b1 (a1 square to the span). Outboard of the outer ribs' centre lines, as long as the spread b
         reaches past the outer face: the cantilever, 4.2.5 with lc from the face to the outer edge of the spread. Over a
-        rib otherwise: 4.2.3-4. Interior span: 4.2.3-5 with x the distance from the nearer face to the near edge of the
+        rib otherwise: 4.2.3-4 with the thinner adjoining span's t. Interior span: 4.2.3-5 with x the distance from the nearer face to the near edge of the
         spread (program convention), at most the mid-span width 4.2.3-2."""
         b = spread(b1, self.h)
         F, C = self.faces, self._c
@@ -235,7 +275,7 @@ class DeckLayout:
             return min(width_cantilever(a1, self.h, lc), cap), "4.2.5", lc
         for k, (fl, fr) in enumerate(F):
             if fl <= x <= fr or (k == 0 and x < C[0]) or (k == len(F) - 1 and x > C[-1]):
-                t = self._t[0 if k == 0 else k - 1]  # the span on the rib's left (the first span for the first rib)
+                t = min(self._t[j] for j in (k - 1, k) if 0 <= j < len(self._t))  # the thinner adjoining span
                 return min(width_support(a1, self.h, t), cap), "4.2.3-4", 0.0
         k = max(i for i in range(len(F) - 1) if F[i][1] < x)
         l, t = self.span(k), self._t[k]
@@ -243,6 +283,28 @@ class DeckLayout:
         xs = max(min(x - b / 2 - F[k][1], F[k + 1][0] - (x + b / 2)), 0.0)
         a = width_support(a1, self.h, t, xs, am)
         return min(a, cap), ("4.2.3-2" if a >= am else "4.2.3-5"), xs
+
+    def cap(self) -> float | None:
+        """the cap of 4.2.3 items 5, 6 (m), None without one"""
+        v = [c for c in (self.full_width, self.precast_width) if c is not None]
+        return min(v) if v else None
+
+    def loads(self, x: float, groups) -> list[tuple]:
+        """(load per metre kN/m, group, rule, clause of the width, lc) of every axle group for a wheel centred at x: the
+        single-wheel width of `width` for the group's contact, then wheel_line_loads (overlap, caps, and the Sawko
+        formula on a cantilever beyond lc = 2.5 m when `tips` are given)"""
+        out = []
+        for a1, b1 in sorted({(g.a1, g.b1) for g in groups}):
+            gs = [g for g in groups if (g.a1, g.b1) == (a1, b1)]
+            a, cl, lc = self.width(x, a1, b1)
+            s = a0 = None
+            if cl == "4.2.5" and self.tips is not None:
+                left = x < self._c[0]
+                face = self.faces[0][0] if left else self.faces[-1][1]
+                s, a0 = abs(face - x), abs(face - self.tips[0 if left else 1])
+            for w, g, why in wheel_line_loads(a, gs, cap=self.cap(), lc=lc if cl == "4.2.5" else None, s=s, a0=a0):
+                out.append((w, g, why, cl, lc))
+        return out
 
 
 # ── vehicles across a strip ─────────────────────────────────────────────────
@@ -313,27 +375,21 @@ class SlabEffects:
     notes: list = field(default_factory=list)
 
 
-def _wheel_values(xs, width_of, effect, h, mu, cap=None):
-    """response to one wheel centred at each x of xs, × (1 + μ): of the axle groups whose wheels overlap (group_widths;
-    the single-wheel width width_of(x, a1, b1) taken with each group's contact), the one with the largest response,
-    its load P/a per metre spread over b1 + 2h. effect(lo, hi): ∫ of the influence line from lo to hi (m)."""
-    groups = axle_groups()
-    contacts = sorted({(g.a1, g.b1) for g in groups})
+def _wheel_values(xs, loads_of, effect, h, mu):
+    """(responses, rules): the response to one wheel centred at each x of xs, × (1 + μ): of the axle groups' loads per
+    metre loads_of(x) → [(w, group, rule, …)], the one with the largest response, w spread over b1 + 2h; effect(lo,
+    hi): ∫ of the influence line from lo to hi (m)"""
     out = np.zeros(len(xs))
+    how = [""] * len(xs)
     for i, x in enumerate(xs):
         best = 0.0
-        for a1, b1 in contacts:
-            a = width_of(float(x), a1, b1)
-            bb = spread(b1, h)
+        for w, g, why, *_ in loads_of(float(x)):
+            bb = spread(g.b1, h)
             e = effect(x - bb / 2, x + bb / 2)
-            if e == 0.0:
-                continue
-            for w, _, gr in group_widths(a, [g for g in groups if (g.a1, g.b1) == (a1, b1)], cap):
-                v = w / bb * e
-                if abs(v) > abs(best):
-                    best = v
+            if e != 0.0 and abs(w / bb * e) > abs(best):
+                best, how[i] = w / bb * e, why
         out[i] = best
-    return (1 + mu) * out
+    return (1 + mu) * out, how
 
 
 def deck_slab(clear: float, t: float, *, h: float, h_rib: float | None = None, centres: float | None = None,
@@ -346,7 +402,8 @@ def deck_slab(clear: float, t: float, *, h: float, h_rib: float | None = None, c
     shear at the support of the simply supported slab of the clear span (4.2.2). Permanent loads: γc t + surfacing + g
     (kN/m²) over the span. Vehicle: the wheels of D60's vehicle (a1 = 0.2 m along the bridge, b1 = 0.6 m across; the
     heaviest overlapping axle group by 4.2.3-3), each spread over b = b1 + 2h and the width a of DeckLayout.width at its
-    position (4.2.3-2, -4, -5, items 5, 6), × (1 + μ), only the part on the clear span loading it; vehicles side by side
+    position (4.2.3-2, -4, -5; the caps of items 5, 6 also on the widths of overlapping wheels), × (1 + μ), only the
+    part on the clear span loading it; vehicles side by side
     (1.8 m track, 1.3 m between vehicles, up to `lanes`) placed for the largest effect, × table 4.3.1-5 with
     lane_factors. h: surfacing thickness (m).
     moment_width: "mid" (default) spreads every wheel over the mid-span width 4.2.3-2 for M0, the mid-span moment, as
@@ -359,12 +416,18 @@ def deck_slab(clear: float, t: float, *, h: float, h_rib: float | None = None, c
     lay = DeckLayout([(-clear / 2 - 10.0, -clear / 2), (clear / 2, clear / 2 + 10.0)], t, h,
                      centres=None if centres is None else [-centres / 2, centres / 2],
                      full_width=full_width, precast_width=precast_width)
-    width_of = lambda x, a1, b1: lay.width(x, a1, b1)[0]
-    cap = min(v for v in (full_width, precast_width, math.inf) if v is not None)
+    groups = axle_groups()
+    cap = lay.cap()
     if moment_width == "mid":
-        width_M = lambda x, a1, b1: min(width_mid(a1, h, lM), cap)
+        def loads_M(x):
+            out = []
+            for a1, b1 in sorted({(g.a1, g.b1) for g in groups}):
+                gs = [g for g in groups if (g.a1, g.b1) == (a1, b1)]
+                a = width_mid(a1, h, lM) if cap is None else min(width_mid(a1, h, lM), cap)
+                out += wheel_line_loads(a, gs, cap=cap)
+            return out
     elif moment_width == "position":
-        width_M = width_of
+        loads_M = lambda x: lay.loads(x, groups)
     else:
         raise ValueError("moment_width: 'mid' or 'position'")
     c0, c1 = -clear / 2, clear / 2
@@ -379,13 +442,14 @@ def deck_slab(clear: float, t: float, *, h: float, h_rib: float | None = None, c
     eV = on_span(lambda lo, hi: _ss_reaction_int(lo + lV / 2, hi + lV / 2, lV))
     b = spread(max(g_.b1 for g_ in axle_groups()), h)
     xs = np.arange(c0 - b / 2 - WHEEL_TRACK - dx, c1 + b / 2 + dx, dx)  # left wheels that can touch the span
-    rM = _wheel_values(np.r_[xs, xs[-1] + dx * np.arange(1, int(round(WHEEL_TRACK / dx)) + 1)], width_M, eM, h, mu)
-    rV = _wheel_values(np.r_[xs, xs[-1] + dx * np.arange(1, int(round(WHEEL_TRACK / dx)) + 1)], width_of, eV, h, mu)
+    xw = np.r_[xs, xs[-1] + dx * np.arange(1, int(round(WHEEL_TRACK / dx)) + 1)]
+    rM, _ = _wheel_values(xw, loads_M, eM, h, mu)
+    rV, _ = _wheel_values(xw, lambda x: lay.loads(x, groups), eV, h, mu)
     k = int(round(WHEEL_TRACK / dx))
     vM = rM[:len(xs)] + rM[k:k + len(xs)]
     vV = rV[:len(xs)] + rV[k:k + len(xs)]
-    M0Q, kM, posM = best_row(xs, vM, kmax=lanes, lane_factors=lane_factors)
-    VQ, kV, posV = best_row(xs, vV, kmax=lanes, lane_factors=lane_factors)
+    M0Q, _, posM = best_row(xs, vM, kmax=lanes, lane_factors=lane_factors)
+    VQ, _, posV = best_row(xs, vV, kmax=lanes, lane_factors=lane_factors)
     M0 = (q * lM ** 2 / 8, M0Q)
     out = SlabEffects("JTG 3362-2018 4.2.2, 4.2.3", {"moment": lM, "shear": lV}, M0=M0, V=(q * lV / 2, VQ),
                       details={"q": q, "b": b, "a_mid": width_mid(axle_groups()[0].a1, h, lM), "vehicles_M": posM,
@@ -411,7 +475,9 @@ def cantilever_slab(length: float, t_root: float, t_tip: float, *, h: float, cur
     action, reported separately in details["crowd"] as (M, V)). Vehicle: wheels by 4.2.5 (a = a1 + 2h + 2lc, lc to the
     outer edge of the spread), the heaviest overlapping axle group (program convention, 4.2.3-3 applied to the
     cantilever), × (1 + μ); the outer wheel at least 0.5 m from the curb at s = `curb` (default the tip), the vehicle's
-    other wheel 1.8 m inboard; vehicles side by side as in deck_slab."""
+    other wheel 1.8 m inboard; vehicles side by side as in deck_slab. Where lc exceeds 2.5 m, outside 4.2.5, the
+    Sawko formula of the commentary (4-5) is applied as well and the larger root moment governs (wheel_line_loads;
+    noted)."""
     L = length
     MG = -gamma_c * L * L * (t_root / 6 + t_tip / 3)
     VG = gamma_c * L * (t_root + t_tip) / 2
@@ -426,8 +492,15 @@ def cantilever_slab(length: float, t_root: float, t_tip: float, *, h: float, cur
         qc, c1, c2 = crowd
         out.details["crowd"] = (-qc * (c2 * c2 - c1 * c1) / 2, qc * (c2 - c1))
     smax = (L if curb is None else curb) - CURB_CLEARANCE
-    def width_of(s, a1, b1):
-        return width_cantilever(a1, h, max(s + spread(b1, h) / 2, 0.0))
+    groups = axle_groups()
+
+    def loads_of(s):
+        out = []
+        for a1, b1 in sorted({(g.a1, g.b1) for g in groups}):
+            lc = s + spread(b1, h) / 2
+            gs = [g for g in groups if (g.a1, g.b1) == (a1, b1)]
+            out += wheel_line_loads(width_cantilever(a1, h, max(lc, 0.0)), gs, lc=lc, s=s, a0=L)
+        return out
 
     def on(f):
         def eff(lo, hi):
@@ -439,18 +512,19 @@ def cantilever_slab(length: float, t_root: float, t_tip: float, *, h: float, cur
     eV = on(lambda lo, hi: hi - lo)
     k = int(round(WHEEL_TRACK / dx))
     ss = smax - dx * np.arange(int(math.ceil((smax + lanes * (WHEEL_TRACK + WHEEL_GAP) + 1.0) / dx)) + k)
-    rM = _wheel_values(ss, width_of, eM, h, mu)
-    rV = _wheel_values(ss, width_of, eV, h, mu)
+    rM, howM = _wheel_values(ss, loads_of, eM, h, mu)
+    rV, howV = _wheel_values(ss, loads_of, eV, h, mu)
     n = len(ss) - k
     xs = -ss[:n]  # the outer wheel as the vehicle's left wheel, x = −s growing inboard
-    MQ, kM, posM = best_row(xs, rM[:n] + rM[k:k + n], kmax=lanes, lane_factors=lane_factors, sense=-1)
-    VQ, kV, posV = best_row(xs, rV[:n] + rV[k:k + n], kmax=lanes, lane_factors=lane_factors)
+    MQ, _, posM = best_row(xs, rM[:n] + rM[k:k + n], kmax=lanes, lane_factors=lane_factors, sense=-1)
+    VQ, _, posV = best_row(xs, rV[:n] + rV[k:k + n], kmax=lanes, lane_factors=lane_factors)
     out.M_support, out.V = (MG, MQ), (VG, VQ)
     lcmax = max((s + spread(WHEEL_CONTACT[-1][0], h) / 2 for s, r in zip(ss, rM) if r != 0), default=0.0)
     out.details.update({"wheel_s_M": [-p for p in posM], "wheel_s_V": [-p for p in posV], "lc_max": lcmax, "mu": mu})
     if lcmax > 2.5:
-        out.notes.append(f"lc up to {lcmax:.2f} m > 2.5 m: 4.2.5 does not apply; the commentary gives the Sawko formula "
-                         "(sawko_moment)")
+        used = any(w.startswith("Sawko") for w in howM + howV)
+        out.notes.append(f"lc up to {lcmax:.2f} m > 2.5 m, outside 4.2.5: the Sawko formula of the commentary (4-5) "
+                         f"applied too, the larger governs ({'Sawko governs somewhere' if used else '4.2.5 governs'})")
     return out
 
 
@@ -485,7 +559,8 @@ def punching(Fld: float, *, Um: float, h0: float, h: float, concrete, sigma_pc: 
              gamma0: float = 1.0) -> Check:
     """punching of a slab under a concentrated force (5.6). Fld (kN): the largest concentrated design force; for a slab
     on a column the column force less the loads inside the cone. Um (mm): punching_perimeter; h0, h (mm); sigma_pc:
-    σpc,m, the mean effective precompression of a prestressed slab (MPa; the code advises 1.0 … 3.5).
+    σpc,m, the mean effective precompression of a prestressed slab (MPa). The code keeps σpc,m within 1.0 … 3.5 MPa:
+    above 3.5 it is taken as 3.5 (program convention, on the safe side; noted), below 1.0 as given (noted).
         no punching steel (5.6.1):  γ0 Fld ≤ (0.7 βh ftd + 0.15 σpc,m) Um h0
         stirrups=Asvu (mm², all legs crossing the cone's inclined face) (5.6.2-2) or bent=(Asbu mm², θ °) (5.6.2-3):
             γ0 Fld ≤ (0.35 βh ftd + 0.15 σpc,m) Um h0 + 0.75 fsv Asvu   or   + 0.75 fsd Asbu sin θ
@@ -498,10 +573,13 @@ def punching(Fld: float, *, Um: float, h0: float, h: float, concrete, sigma_pc: 
     bh = beta_h(h)
     if stirrups is not None and bent is not None:
         raise ValueError("5.6.2 gives one formula for stirrups (5.6.2-2) and one for bent bars (5.6.2-3): pass one")
-    d = {"beta_h": bh, "Um": Um, "h0": h0, "sigma_pc_m": sigma_pc, "ftd": c.ftd}
     notes = []
-    if sigma_pc and not 1.0 <= sigma_pc <= 3.5:
-        notes.append(f"σpc,m = {sigma_pc:.2f} MPa outside 1.0 … 3.5 MPa advised by 5.6.1")
+    if sigma_pc > 3.5:
+        notes.append(f"σpc,m = {sigma_pc:.2f} MPa > 3.5 MPa: taken as 3.5 MPa (5.6.1 keeps it within 1.0 … 3.5)")
+        sigma_pc = 3.5
+    elif 0 < sigma_pc < 1.0:
+        notes.append(f"σpc,m = {sigma_pc:.2f} MPa < 1.0 MPa, below the range 1.0 … 3.5 of 5.6.1 (taken as given)")
+    d = {"beta_h": bh, "Um": Um, "h0": h0, "sigma_pc_m": sigma_pc, "ftd": c.ftd}
     if stirrups is None and bent is None:
         R = (0.7 * bh * c.ftd + 0.15 * sigma_pc) * Um * h0 / 1e3
         return Check("punching (slab, 5.6.1)", gamma0 * Fld, R, "kN", "JTG 3362-2018 5.6.1", d, notes)
