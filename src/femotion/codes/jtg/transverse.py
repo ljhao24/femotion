@@ -101,7 +101,8 @@ class BoxGeometry:
 
     def layout(self, h: float) -> _slab.DeckLayout:
         """the top slab as a deck slab for the wheel distribution widths (4.2.3, 4.2.5); h: surfacing thickness (m)"""
-        return _slab.DeckLayout([self.faces(k) for k in range(len(self.webs))], self.t_top, h, centres=list(self.webs))
+        return _slab.DeckLayout([self.faces(k) for k in range(len(self.webs))], self.t_top, h, centres=list(self.webs),
+                                tips=(-self.B / 2, self.B / 2))
 
 
 @dataclass
@@ -185,6 +186,7 @@ class WheelEffects:
     min: Forces
     positions: list
     details: dict = field(default_factory=dict)
+    notes: list = field(default_factory=list)
 
 
 # ── consistent loads on a beam element (local x along it, w along local z) ──
@@ -241,6 +243,7 @@ class TransverseFrame:
         self.E = self.concrete.Ec * 1e3  # kPa
         self.fI = 0.8 if allow_cracking else 1.0
         self.m = Model()
+        self.notes = []
         self.el = []  # (plate, t, first face, second face, centre (x, z))
         self._build()
         self.sv = Solver(self.m)
@@ -388,8 +391,16 @@ class TransverseFrame:
         dt = lambda h: (h - b.t_top) / 2  # top slab axis above a check section hanging from the deck
         db = lambda h: (b.t_bottom - h) / 2
         cl, cr = b.cantilevers()
+        h_root = {}
+        for side, L in (("left", cl), ("right", cr)):  # 4.2.6 on the cantilever's taper: at most 1:3 counts
+            if L > 1e-9:
+                h_root[side] = min(b.t_root, b.t_tip + L / 3)
+                if h_root[side] < b.t_root - 1e-12:
+                    self.notes.append(f"{side} cantilever tapers steeper than 1:3: root checked with {h_root[side]:.3f} m "
+                                      f"(4.2.6), not t_root = {b.t_root:.3f} m")
         if cl > 1e-9:
-            add("left cantilever root", top(b.faces(0)[0], -1), "top", b.t_root, dt(b.t_root), ("top", "bottom"))
+            add("left cantilever root", top(b.faces(0)[0], -1), "top", h_root["left"], dt(h_root["left"]),
+                ("top", "bottom"))
         for c in range(n - 1):
             fl, fr = b.faces(c)[1], b.faces(c + 1)[0]
             mid = (b.webs[c] + b.webs[c + 1]) / 2
@@ -402,7 +413,8 @@ class TransverseFrame:
                     ("top", "bottom"))
             add(f"top slab, web {c + 1} face, cell {c}", top(fr, -1), "top", he_t, dt(he_t), ("top", "bottom"))
         if cr > 1e-9:
-            add("right cantilever root", top(b.faces(n - 1)[1], +1), "top", b.t_root, dt(b.t_root), ("top", "bottom"))
+            add("right cantilever root", top(b.faces(n - 1)[1], +1), "top", h_root["right"], dt(h_root["right"]),
+                ("top", "bottom"))
         for c in range(n - 1):
             fl, fr = b.faces(c, "bottom")[1], b.faces(c + 1, "bottom")[0]
             mid = (b.webs_bottom[c] + b.webs_bottom[c + 1]) / 2
@@ -474,11 +486,25 @@ class TransverseFrame:
         return loads
 
     def self_weight(self) -> Forces:
-        """the concrete's weight γc × thickness of every element (kN/m per metre of member)"""
+        """the concrete's weight, γc × thickness of every element (kN/m per metre of member). The joints are counted
+        once: the slab elements inside a web's width weigh nothing, and each web carries its full height (the parts
+        above the top slab's and below the bottom slab's mid-planes as loads at its end nodes), so that the total is
+        γc × the cross-section's area (straight-line haunches and tapers)."""
+        b = self.box
         loads = {}
-        for e, (plate, t, *_rest) in enumerate(self.el):
+        joints = {"top": [b.faces(k) for k in range(len(b.webs))],
+                  "bottom": [b.faces(k, "bottom") for k in range(len(b.webs))]}
+        for e, (plate, t, _, _, (xm, _)) in enumerate(self.el):
+            if plate in joints and any(fl < xm < fr for fl, fr in joints[plate]):
+                continue
             L, R, _ = self.sv._beam_cache[e]
             loads[e] = _feq(L, R @ np.array([0.0, 0.0, -self.gamma_c * t]))
+        for k, els in enumerate(self.web_el):
+            ext = {els[0]: ("i", b.t_bottom / 2), els[-1]: ("j", b.t_top / 2)}
+            for e, (end, d) in ext.items():
+                L, R, _ = self.sv._beam_cache[e]
+                P = self.gamma_c * b.tw[k] * d / b.cos(k)
+                loads[e] = loads.get(e, 0.0) + _feq_point(L, R @ np.array([0.0, 0.0, -P]), 0.0 if end == "i" else L)
         return self._apply(loads)
 
     def surface(self, q: float, x1: float | None = None, x2: float | None = None, on: str = "top") -> Forces:
@@ -591,19 +617,25 @@ class TransverseFrame:
         return xs, out
 
     def wheels(self, h: float, *, target: str = "M", mu: float = _slab.LOCAL_IMPACT, lanes: int | None = None,
-               two_way: bool = True, lane_factors: bool = True, dx: float = 0.05) -> WheelEffects:
+               two_way: bool | None = None, lane_factors: bool = True, dx: float = 0.05) -> WheelEffects:
         """the vehicle load (D60 4.3.1) on the carriageway, per metre of girder, enveloped at every control section.
         Each wheel's load per metre is the heaviest of the vehicle's overlapping axle groups at its distribution width
         (slab.DeckLayout.width: 4.2.5 on the cantilevers, 4.2.3-4 over a web, 4.2.3-5 near and 4.2.3-2 away from the
         webs inside a cell; program convention: the width at the wheel's position for every effect, as figure 4-6 of the
         commentary draws it for box top slabs), spread over b1 + 2h (h: surfacing thickness, m), × (1 + μ) (μ = 0.3,
-        D60 4.3.2 item 6). Vehicles side by side (1.8 m track, 1.3 m apart, outer wheels ≥ 0.5 m from the curbs), at
-        most `lanes` (default table 4.3.1-4 for the carriageway width), × table 4.3.1-5 (lane_factors). target: "M",
-        "N", "V", "top"/"first" or "bottom"/"second" (face stress on the gross section): the quantity enveloped; the other
-        forces are the concurrent ones."""
+        D60 4.3.2 item 6; the serviceability combinations take no impact, 6.1.1: mu=0). On a cantilever beyond lc =
+        2.5 m (outside 4.2.5) the Sawko formula of the commentary also counts and the larger load per metre governs
+        (slab.wheel_line_loads; noted). Vehicles side by side (1.8 m track, 1.3 m apart, outer wheels ≥ 0.5 m from the
+        curbs), at most `lanes`, by default table 4.3.1-4 for the carriageway width with `two_way` (one-way or two-way
+        traffic, required then), × table 4.3.1-5 (lane_factors; 1.2 for one vehicle). target: "M", "N", "V",
+        "top"/"first" or "bottom"/"second" (face stress on the gross section): the quantity enveloped; the other forces
+        are the concurrent ones. The frame on rigid supports leaves out the box's torsion and distortion under eccentric
+        wheels (noted)."""
         b = self.box
         cl, cr = b.carriageway
         if lanes is None:
+            if two_way is None:
+                raise ValueError("pass two_way (one-way or two-way traffic, table 4.3.1-4) or lanes")
             lanes = design_lanes(cr - cl, two_way=two_way)
         xs, ils = self.wheel_influence(h, dx)
         lay = b.layout(h)
@@ -612,12 +644,14 @@ class TransverseFrame:
         # heaviest load per metre at every position, with its contact
         wmax = np.zeros(len(xs))
         cont = [None] * len(xs)
+        rule = [""] * len(xs)
+        lc_max = 0.0
         for p, x in enumerate(xs):
-            for a1, b1 in ils:
-                a, _, _ = lay.width(float(x), a1, b1)
-                for w, _, g in _slab.group_widths(a, [g for g in groups if (g.a1, g.b1) == (a1, b1)]):
-                    if w > wmax[p]:
-                        wmax[p], cont[p] = w, (a1, b1)
+            for w, g, why, clause, lc in lay.loads(float(x), groups):
+                if clause == "4.2.5":
+                    lc_max = max(lc_max, lc)
+                if w > wmax[p]:
+                    wmax[p], cont[p], rule[p] = w, (g.a1, g.b1), why
         RN = np.zeros((nsec, len(xs)))
         RM = np.zeros_like(RN)
         RV = np.zeros_like(RN)
@@ -643,7 +677,7 @@ class TransverseFrame:
         for s_ in range(nsec):
             pr = []
             for sense, F in ((1, mx), (-1, mn)):
-                val, kk, ps = _slab.best_row(vx, R[s_, :nv] + R[s_, k:k + nv], kmax=lanes, lane_factors=lane_factors,
+                _, kk, ps = _slab.best_row(vx, R[s_, :nv] + R[s_, k:k + nv], kmax=lanes, lane_factors=lane_factors,
                                              sense=sense)
                 fac = transverse_reduction(kk) if (lane_factors and kk) else 1.0
                 idx = [int(round((p_ - vx[0]) / dx)) for p_ in ps]
@@ -652,7 +686,13 @@ class TransverseFrame:
                 F.V[s_] = fac * sum(RV[s_, i] + RV[s_, i + k] for i in idx)
                 pr.append(ps)
             pos.append(tuple(pr))
-        return WheelEffects(target, mx, mn, pos, {"lanes": lanes, "mu": mu, "xs": xs, "w": wmax})
+        notes = ["the frame on rigid supports leaves out the box's torsion and distortion under eccentric wheels"]
+        if lc_max > 2.5:
+            n_s = sum(r.startswith("Sawko") for r in rule)
+            notes.append(f"wheels on a cantilever with lc up to {lc_max:.2f} m > 2.5 m, outside 4.2.5: the Sawko formula "
+                         f"(commentary, 4-5) governs at {n_s} of {len(xs)} wheel positions")
+        return WheelEffects(target, mx, mn, pos, {"lanes": lanes, "mu": mu, "xs": xs, "w": wmax, "rule": rule,
+                                                  "lc_max": lc_max}, notes + self.notes)
 
     def table(self, f: Forces, title: str = "") -> str:
         """the forces and the face stresses as a text table"""
@@ -676,10 +716,15 @@ def box_detailing(box: BoxGeometry, *, transverse_prestress: bool = False, verti
     """the box's plate dimensions against 9.3.2 (items 1–3): cantilever tips ≥ 100 mm, 140 mm with transverse
     prestress (the code writes it for precast T and box girders; program convention: checked for every box); top and
     bottom slabs ≥ their clear span between the web faces / 30 and ≥ 200 mm at mid-span; webs ≥ 160 mm and their height
-    between the haunches ≤ 15 web widths (20 with vertical prestress). Returns a Check (resistance 1, demand 0) whose
-    `failed` lists the unmet rules."""
+    between the haunches ≤ 15 web widths (20 with vertical prestress); the haunches item 2 asks for (notes). Returns a
+    Check (resistance 1, demand 0) whose `failed` lists the unmet rules."""
     b = box
     chk = Check("box detailing (9.3.2)", 0.0, 1.0, "-", "JTG 3362-2018 9.3.2", {})
+    if b.haunch_top[0] <= 0 or b.haunch_top[1] <= 0:
+        chk.notes.append("no haunch between the top slab and the webs: 9.3.2 item 2 asks for one")
+    if b.haunch_bottom[0] <= 0 or b.haunch_bottom[1] <= 0:
+        chk.notes.append("no fillet between the bottom slab and the webs: 9.3.2 item 2 asks for a chamfer (a haunch "
+                         "where needed)")
     tip = 0.140 if transverse_prestress else 0.100
     if min(b.cantilevers()) > 1e-9 and b.t_tip < tip - 1e-12:
         chk.failed.append(f"cantilever tip {b.t_tip * 1e3:.0f} mm < {tip * 1e3:.0f} mm (9.3.2 item 1)")
@@ -710,10 +755,10 @@ def shear_flow(box: BoxGeometry, V: float, T: float = 0.0, *, n: int = 400) -> d
     taper followed): the open-section flow of V from the free edges and from the plane of symmetry, where it vanishes
     (the box must be symmetric), and Bredt's T / (2 A0) around the cell (the cantilevers carry none). The usual
     centre-line idealisation: the slabs meet the webs at the webs' centre lines, a cantilever runs from there to its tip.
-    Returns, for the
-    points "cantilever root", "top slab at web", "top slab middle", "web top", "web at centroid", "web bottom",
-    "bottom slab at web", "bottom slab middle": {"tau_V", "tau_T", "tau": |τV| + |τT| (the web and the half of each
-    slab where the two add), "t"}, plus "I" (m⁴) and "A0" (m²) of the model."""
+    Returns, for the points "cantilever root" (at the web's outer face), "top slab at web" and "bottom slab at web" (at
+    its inner face), "top slab middle", "web top" and "web bottom" (at the slabs' faces), "web at centroid", "bottom
+    slab middle": {"tau_V", "tau_T", "tau": |τV| + |τT| (the web and the half of each slab where the two add), "t"},
+    plus "I" (m⁴), "A0" (m²) and "z_centroid" (m) of the model."""
     b = box
     if len(b.webs) != 2:
         raise NotImplementedError("shear_flow: single-cell boxes only (multi-cell boxes need one closing flow per cell)")
@@ -724,14 +769,19 @@ def shear_flow(box: BoxGeometry, V: float, T: float = 0.0, *, n: int = 400) -> d
     xw, xwb = b.webs[1], b.webs_bottom[1]
     f_out = b.faces(1)[1]
     # half section (x ≥ 0): (segments as point lists with thickness)
+    f_in, fb_in = b.faces(1)[0], b.faces(1, "bottom")[0]
     lc = b.B / 2 - f_out
-    s_c = np.linspace(b.B / 2, xw, n)  # cantilever from the tip to the web's centre line (none: zero thickness)
-    t_c = np.where(s_c >= f_out, b.t_tip + (b.t_root - b.t_tip) * (b.B / 2 - s_c) / lc, b.t_root) if lc > 1e-9 \
-        else np.zeros(n)
-    s_t = np.linspace(0.0, xw, n)  # top slab from the axis
-    zs_w = np.linspace(zt, zb, n)  # web from the top
-    xs_w = xw + (xwb - xw) * (zt - zs_w) / (zt - zb)
-    s_b = np.linspace(0.0, xwb, n)
+
+    def grid(a, c, *nodes):  # a … c through the given nodes (the faces), n points between each
+        pts = [a] + sorted(v for v in nodes if min(a, c) < v < max(a, c))[::1 if c > a else -1] + [c]
+        return np.concatenate([np.linspace(p, q, n)[:-1] for p, q in zip(pts[:-1], pts[1:])] + [[c]])
+
+    s_c = grid(b.B / 2, xw, f_out)  # cantilever from the tip to the web's centre line (none: zero thickness)
+    t_c = np.where(s_c >= f_out - 1e-12, b.t_tip + (b.t_root - b.t_tip) * (b.B / 2 - s_c) / lc, b.t_root) \
+        if lc > 1e-9 else np.zeros(len(s_c))
+    s_t = grid(0.0, xw, f_in)  # top slab from the axis
+    zs_w = grid(zt, zb, zt - b.t_top / 2, zb + b.t_bottom / 2)  # web from the top
+    s_b = grid(0.0, xwb, fb_in)
     lw = math.hypot(xw - xwb, zt - zb)
 
     def trap(y, x):
@@ -740,7 +790,6 @@ def shear_flow(box: BoxGeometry, V: float, T: float = 0.0, *, n: int = 400) -> d
     def cum(y, x):
         return np.r_[0.0, np.cumsum((y[1:] + y[:-1]) / 2 * np.abs(np.diff(x)))]
 
-    dl_c = np.abs(np.diff(s_c)).sum()
     # area and first moment of the half section (thin-walled, own inertia of the slabs included in I)
     A = trap(t_c, -s_c) + b.t_top * xw + b.tw[1] * lw + b.t_bottom * xwb
     Qz = trap(t_c, -s_c) * zt + b.t_top * xw * zt + b.tw[1] * lw * (zt + zb) / 2 + b.t_bottom * xwb * zb
@@ -751,16 +800,19 @@ def shear_flow(box: BoxGeometry, V: float, T: float = 0.0, *, n: int = 400) -> d
     I = 2 * I_half
     k = V / I
     q_c = k * cum(t_c * (zt - zc), s_c)  # kN/m from the tip
-    q_t = k * cum(np.full(n, b.t_top) * (zt - zc), s_t)  # from the axis
+    q_t = k * cum(np.full(len(s_t), b.t_top) * (zt - zc), s_t)  # from the axis
     q_w = q_c[-1] + q_t[-1] + k * (lw / (zt - zb)) * cum(b.tw[1] * (zs_w - zc), zs_w)
-    q_b = k * cum(np.full(n, b.t_bottom) * (zb - zc), s_b)
+    q_b = k * cum(np.full(len(s_b), b.t_bottom) * (zb - zc), s_b)
     A0 = (xw + xwb) * (zt - zb)  # the cell's mid-plane area (trapezoid, both halves)
     qT = T / (2 * A0)
-    iz = int(np.argmin(np.abs(zs_w - zc)))
-    pts = {"cantilever root": (q_c[-1], 0.0, b.t_root), "top slab at web": (q_t[-1], qT, b.t_top),
-           "top slab middle": (q_t[0], qT, b.t_top), "web top": (q_w[0], qT, b.tw[1]),
-           "web at centroid": (q_w[iz], qT, b.tw[1]), "web bottom": (q_w[-1], qT, b.tw[1]),
-           "bottom slab at web": (q_b[-1], qT, b.t_bottom), "bottom slab middle": (q_b[0], qT, b.t_bottom)}
+    at_w = lambda z: float(np.interp(z, zs_w[::-1], q_w[::-1]))
+    t_face = float(np.interp(f_out, s_c[::-1], t_c[::-1])) if lc > 1e-9 else b.t_root
+    pts = {"cantilever root": (float(np.interp(f_out, s_c[::-1], q_c[::-1])), 0.0, t_face),
+           "top slab at web": (float(np.interp(f_in, s_t, q_t)), qT, b.t_top),
+           "top slab middle": (q_t[0], qT, b.t_top), "web top": (at_w(zt - b.t_top / 2), qT, b.tw[1]),
+           "web at centroid": (at_w(zc), qT, b.tw[1]), "web bottom": (at_w(zb + b.t_bottom / 2), qT, b.tw[1]),
+           "bottom slab at web": (float(np.interp(fb_in, s_b, q_b)), qT, b.t_bottom),
+           "bottom slab middle": (q_b[0], qT, b.t_bottom)}
     out = {nm: {"tau_V": qv / t / 1e3, "tau_T": qt / t / 1e3, "tau": (abs(qv) + abs(qt)) / t / 1e3, "t": t}
            for nm, (qv, qt, t) in pts.items()}
     out["I"], out["A0"], out["z_centroid"] = I, A0, zc
@@ -853,12 +905,13 @@ def transverse_normal_stresses(sec: RCSection, Ns: float, Ms: float, Nl: float, 
 
 def transverse_crack_width(sec: RCSection, Ns: float, Ms: float, Nl: float, Ml: float, *, env: str = "I",
                            axial: str = "tension", **kw) -> Check:
-    """crack width of a reinforced concrete (or class B) box slab or web across the girder (table 6.1.3, 6.4), per metre
-    (sec = rc.rect(1000, h_check, …)), through sls.crack_width with C3 of slabs (1.15) in flexure. axial: "tension"
-    (default, program convention: a tensile Ns is counted, eccentric tension; a compressive one, favourable to σss, is
-    left out and the slab taken in flexure), "all" (compression too: eccentric compression, C3 0.9) or "none". Ns, Nl
-    tension + (kN/m); Ms, Ml sagging + (kN·m/m); further arguments go to sls.crack_width."""
+    """crack width of a reinforced concrete or class B box slab or web across the girder (table 6.1.3, 6.4), per metre
+    (sec = rc.rect(1000, h_check, …); class B: pass pc_class="B"), through sls.crack_width, with C3 of slabs (1.15) in
+    flexure. axial: "tension" (default, program convention: a tensile Ns is counted, eccentric tension; a compressive
+    one, favourable to σss, is left out and the slab taken in flexure), "all" (compression too: eccentric compression)
+    or "none". Ns, Nl tension + (kN/m); Ms, Ml sagging + (kN·m/m); further arguments go to sls.crack_width (class B
+    with an axial force: its program convention there)."""
     use = {"tension": Ns > 0, "all": Ns != 0, "none": False}[axial]
-    if use and not sec.prestressed:
-        return _crack_width(sec, Ms, Ml, N=-Ns, Nl=-Nl if Nl else None, env=env, **kw)
+    if use:
+        return _crack_width(sec, Ms, Ml, N=-Ns, Nl=-Nl if Nl else None, env=env, slab=True, **kw)
     return _crack_width(sec, Ms, Ml, env=env, slab=True, **kw)

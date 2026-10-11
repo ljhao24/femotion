@@ -63,8 +63,11 @@ def test_skew_slab_and_haunch():
     assert slab.skew_slab(14, 9, 10)[0] == pytest.approx(14)  # l/b > 1.3
     assert slab.skew_slab(10, 12, 30)[0] == pytest.approx((10 + 10 * math.cos(math.radians(30))) / 2)
     assert slab.skew_slab(10, 4, 45, precast=True)[0] == pytest.approx(10)
-    with pytest.raises(ValueError):
-        slab.skew_slab(10, 9, 45)
+    assert "40°" in slab.skew_slab(10, 4, 45, precast=True)[1]  # beyond the commentary's basis: noted
+    assert slab.skew_slab(15, 10, 40)[0] == pytest.approx(15)  # table 4-2 no. 1: φ ≤ 40°
+    for l_, phi in ((10, 40), (6, 40), (10, 45)):
+        with pytest.raises(ValueError, match="table 4-2"):
+            slab.skew_slab(l_, 9, phi)
     assert slab.haunch_depth(0.25, 0.6, 0.2) == pytest.approx(0.37)
     assert slab.haunch_depth(0.25, 0.6, 0.5) == pytest.approx(0.25 + 0.6 / 3)  # steeper than 1:3
 
@@ -154,12 +157,31 @@ def test_best_row_against_brute_force():
         gap = int(round(3.1 / dx))
         best = max([1.2 * a for a in v] + [v[i] + v[j] for i, j in itertools.combinations(range(len(xs)), 2)
                                            if j - i >= gap] + [0.0])
-        val, k, pos = slab.best_row(xs, v, kmax=2)
+        val, _, _ = slab.best_row(xs, v, kmax=2)
         assert val == pytest.approx(best)
         worst = min([1.2 * a for a in v] + [v[i] + v[j] for i, j in itertools.combinations(range(len(xs)), 2)
                                             if j - i >= gap] + [0.0])
         assert slab.best_row(xs, v, kmax=2, sense=-1)[0] == pytest.approx(worst)
     assert slab.best_row(xs, -np.ones(len(xs)), kmax=2) == (0.0, 0, [])  # no unfavourable vehicle
+
+    def rows(n, k, gap, start=0):  # every placement of k vehicles, consecutive left wheels ≥ gap grid steps apart
+        if k == 0:
+            yield ()
+            return
+        for i in range(start, n):
+            for rest in rows(n, k - 1, gap, i + gap):
+                yield (i,) + rest
+
+    fac = {1: 1.20, 2: 1.00, 3: 0.78, 4: 0.67}
+    for dx, kmax in ((0.1, 3), (0.2, 4)):
+        xs = np.arange(0, 3.1 * kmax + 2.0, dx)
+        gap = math.ceil(3.1 / dx - 1e-9)
+        for _ in range(5):
+            v = rng.normal(size=len(xs))
+            for sense in (1, -1):
+                best = max([0.0] + [fac[k] * sense * sum(v[list(r)]) for k in range(1, kmax + 1)
+                                    for r in rows(len(xs), k, gap)])
+                assert sense * slab.best_row(xs, v, kmax=kmax, sense=sense)[0] == pytest.approx(best)
 
 
 def test_axle_groups_overlap():
@@ -185,6 +207,27 @@ def test_deck_slab_by_hand():
     r = (0.8 - 0.8 ** 2 / (2 * 1.6)) / 0.8  # the spread from the face over 0.8 m on a 1.6 m clear span
     assert s.V[1] == pytest.approx(70 / (0.4 + 0.18) * r * 1.3 * 1.2, rel=1e-9)
     assert s.V[0] == pytest.approx((26 * 0.18 + 2.4) * 0.8)
+
+
+def test_caps_of_items_5_and_6_reach_overlapping_wheels():
+    """4.2.3 items 5, 6: every width found by the clause, also a + d of overlapping wheels, is cut to the slab's width.
+    Clear span 2.5 m (l = 2.7 m), a = 1.8 m > 1.4 m: the rear axles overlap, a + d = 3.2 m, cut to full_width = 2.0 m,
+    so every wheel line carries 140 / 2.0 kN/m. M0 for one vehicle (× 1.3 × 1.2) by brute force over its position,
+    each spread (0.8 m, cut at the faces) integrated exactly against the mid-span influence line (l/2 − |ξ|)/2."""
+    l, c = 2.7, 1.25
+
+    def m_patch(x):
+        lo, hi = max(x - 0.4, -c), min(x + 0.4, c)
+        if hi <= lo:
+            return 0.0
+        pts = np.unique(np.r_[np.linspace(lo, hi, 401), [0.0] if lo < 0 < hi else []])
+        return float(np.trapezoid((l / 2 - np.abs(pts)) / 2, pts)) / 0.8
+    xs = np.round(np.arange(-3.0, 1.25, 0.01), 10)
+    best = max(m_patch(x) + m_patch(x + 1.8) for x in xs)
+    capped = slab.deck_slab(clear=2.5, t=0.2, h=0.1, h_rib=1.5, full_width=2.0, lanes=1)
+    assert capped.M0[1] == pytest.approx(70.0 * best * 1.3 * 1.2, rel=1e-6)
+    free = slab.deck_slab(clear=2.5, t=0.2, h=0.1, h_rib=1.5, lanes=1)
+    assert free.M0[1] == pytest.approx(140 / 3.2 * best * 1.3 * 1.2, rel=1e-6)
 
 
 def test_cantilever_slab_statics():
@@ -239,7 +282,11 @@ def test_punching_by_hand():
     bh = 1.0 - 0.15 * 180 / 500
     assert chk.resistance == pytest.approx((0.7 * bh * c.ftd + 0.15 * 2.0) * Um * 420 / 1e3)
     assert chk.demand == pytest.approx(1650)
-    assert any("1.0 … 3.5" in n for n in slab.punching(1, Um=Um, h0=420, h=480, concrete="C40", sigma_pc=4.0).notes)
+    high = slab.punching(1, Um=Um, h0=420, h=480, concrete="C40", sigma_pc=5.0)  # taken as 3.5 MPa (5.6.1)
+    assert high.resistance == pytest.approx(slab.punching(1, Um=Um, h0=420, h=480, concrete="C40",
+                                                          sigma_pc=3.5).resistance)
+    assert high.details["sigma_pc_m"] == 3.5 and any("3.5" in n for n in high.notes)
+    assert any("1.0 … 3.5" in n for n in slab.punching(1, Um=Um, h0=420, h=480, concrete="C40", sigma_pc=0.5).notes)
     thin = slab.punching(5000, Um=Um, h0=100, h=140, concrete="C40", stirrups=2000, Um_outer=100,
                          detailing={"stirrup_d": 6, "stirrup_s": 60})
     assert len(thin.failed) == 5  # 1.05 limit, outside the steel, h < 150, d < 8, s > h0/3
