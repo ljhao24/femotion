@@ -2,8 +2,7 @@
 
 Independent sources, besides hand calculations with the code's own formulas:
   - concrete hinges: Hertz line contact (contact width and pressure of two cylinders, ν = 0.2, from the elastic
-    solution, not from the code's constants 7.14 and 2.74) and Mörsch's transverse tension z = 1.5 (a − b) / (4h) P
-    with the allowable stresses of the commentary (p221–222);
+    solution, not from the code's constants 7.14 and 2.74);
   - figure 5.7.1, bottom row (strip loads): Ab read off the figure for c ≥ b and c < b;
   - laminated bearings: JT/T 4-2019 (another standard): tan α ≤ 0.5 / 0.7 (5.4.5) against te ≥ 2 Δl / 1.43 Δl, the
     shape factor as "loaded area / free side area of one layer" computed on a polygon (5.4.7 formula vs definition);
@@ -12,8 +11,10 @@ Independent sources, besides hand calculations with the code's own formulas:
     the geometry of a joint gap for the installation width (8.8.3), equilibrium of a deck on springs;
   - braking force: the commentary of D60 4.3.5 (p62): the multi-lane factors are the lane count × the transverse
     reduction of table 4.3.1-5;
-  - lifting loops: GB 50010-2010 9.7.6 states the same 65 MPa rule (the commentary of 9.8.2 cites it).
-Boundaries ("not less than", "not more than") are tested on both sides.
+  - JT/T 4-2019 5.4.1 (σc), 5.4.3 (Eb), 5.4.4 (μ), 5.3.1.2, 5.3.2.1 for the defaults.
+Not independent, but a check of the code's own derivation: the hinge's transverse tension against Mörsch's
+z = 1.5 (a − b) / (4h) P with the allowable stresses of the commentary (p222), which only tests the rounding of 0.425;
+the lifting loops by hand. Boundaries ("not less than", "not more than") are tested on both sides.
 """
 import math
 
@@ -94,8 +95,8 @@ def test_hinge_detailing_9_8_3_warns_only():
 
 
 def test_hinge_transverse_morsch():
-    """8.6.2 from Mörsch (commentary 8-14, 8-15): 0.68 fsd As ≥ 1.5 (a − b)/(4h) γ0 Fhd / 1.3; the code's 0.425 rounds
-    1.5 / (4 × 1.3 × 0.68) = 0.4242 up, so its capacity is 0.2 % below Mörsch's"""
+    """8.6.2 against the commentary's own derivation from Mörsch (8-14, 8-15, p222): 0.68 fsd As ≥ 1.5 (a − b)/(4h)
+    γ0 Fhd / 1.3; the code's 0.425 rounds 1.5 / (4 × 1.3 × 0.68) = 0.4242 up, so its capacity is 0.2 % below"""
     a, h, b, As = 600.0, 650.0, 12.0, 2400.0
     chk = jtg.hinge_transverse(1500, a=a, h=h, b=b, As=As, steel="HRB400", gamma0=1.1)
     fsd = 330.0
@@ -236,6 +237,60 @@ def test_laminated_detailing_and_shape_factor_range():
     assert cm.warnings and not cm.failed
 
 
+def test_jtt4_defaults_sigma_c_mu_plates():
+    """review M1, M3, L2, L4: JT/T 4-2019 5.4.1 σc = 10 MPa, 8 MPa when S < 7 (S = 7 exactly: 10); a larger σc given
+    fails; 5.4.4 μ = 0.3 on concrete, 0.2 on steel; 5.3.2.1 plates Q235C → fy 235 MPa; Rck ≥ 5000 kN outside JT/T 4"""
+    sq = dv.Laminated(290, 290, t1=10, n=3, ts=3)  # plates 280 × 280: S = 280 / (4 × 10) = 7 exactly
+    assert sq.S == pytest.approx(7.0) and dv.sigma_c_limit(sq) == 10.0
+    low = dv.Laminated(300, 400, t1=14, n=2, ts=3)  # S = 5.94
+    assert 5 < low.S < 7 and dv.sigma_c_limit(low) == 8.0
+    R = 8.0 * low.Ae / 1e3  # exactly 8 MPa
+    a = _checks(dv.laminated_bearing(low, R, dl=5.0))["bearing area"]
+    assert a.resistance == 8.0 and a.ok and a.details["sigma_c_jtt4"] == 8.0
+    assert not _checks(dv.laminated_bearing(low, R * 1.001, dl=5.0))["bearing area"].ok
+    given = _checks(dv.laminated_bearing(low, R, dl=5.0, sigma_c=10.0))["bearing area"]
+    assert given.failed and not given.ok  # 10 MPa for S < 7: above 5.4.1
+    assert _checks(dv.laminated_bearing(low, R, dl=5.0, sigma_c=7.0))["bearing area"].ok is False  # 8 > 7: R too high
+    b = dv.Laminated(300, 400, t1=8, n=4, ts=3)
+    pl = _checks(dv.laminated_bearing(b, 850, dl=5.0))["steel plates"]
+    assert pl.details["sigma_s"] == pytest.approx(0.65 * 235)
+    big = dv.Laminated(700, 900, t1=12, n=5, ts=4)
+    assert _checks(dv.laminated_bearing(big, 5000, dl=5.0))["bearing area"].warnings
+    assert not _checks(dv.laminated_bearing(big, 4999, dl=5.0))["bearing area"].warnings
+    cs = dv.laminated_sliding(b, RGk=500.0, dl=6.0)
+    assert cs[0].resistance == pytest.approx(150.0) and cs[0].details["mu"] == 0.3
+    assert dv.laminated_sliding(b, RGk=500.0, dl=6.0, contact="steel")[0].resistance == pytest.approx(100.0)
+    assert dv.laminated_sliding(b, RGk=500.0, dl=6.0, mu=0.25)[0].resistance == pytest.approx(125.0)
+    with pytest.raises(ValueError):
+        dv.laminated_sliding(b, RGk=500.0, dl=6.0, contact="rubber")
+
+
+def test_slopes_consistent_and_cross_slope_only_shear():
+    """review L1, L6: a cross slope over 2 % fails the shear checks only (the commentary: no uneven compression across);
+    laminated_sliding adds the soffit-grade shear like laminated_bearing (with the reaction of 8.7.3)"""
+    b = dv.Laminated(300, 400, t1=8, n=4, ts=3)
+    cs = _checks(dv.laminated_bearing(b, 700, dl=3.0, slope_t=0.025, Fbk=10.0))
+    assert cs["rubber thickness, shear without braking"].failed and cs["rubber thickness, shear with braking"].failed
+    assert not cs["compression of the bearing"].failed
+    i = 0.008
+    bear = _checks(dv.laminated_bearing(b, 700, dl=3.0, slope=i))["rubber thickness, shear without braking"]
+    sl = dv.laminated_sliding(b, RGk=450.0, RQk=250.0, dl=3.0, slope=i, Fbk=10.0)
+    assert sl[0].details["dl"] == pytest.approx(bear.details["dl"])
+    assert sl[1].details["dl"] == pytest.approx(bear.details["dl"])
+    assert sl[0].demand == pytest.approx(1.4 * b.k * bear.details["dl"])
+    over = dv.laminated_sliding(b, RGk=450.0, RQk=250.0, dl=3.0, slope=0.012, Fbk=10.0)
+    assert all(c.failed for c in over)
+
+
+def test_rubber_layers_between_plates_5mm():
+    """review L3: JT/T 4-2019 5.3.1.2, rubber between plates ≥ 5 mm (a warning; closed at 5)"""
+    kw = dict(dl=2.0)
+    w = _checks(dv.laminated_bearing(dv.Laminated(300, 400, t1=4.9, n=6, ts=2), 300, **kw))["steel plates"]
+    assert any("5.3.1.2" in x for x in w.warnings) and w.ok
+    ok = _checks(dv.laminated_bearing(dv.Laminated(300, 400, t1=5.0, n=6, ts=2), 300, **kw))["steel plates"]
+    assert not any("5.3.1.2" in x for x in ok.warnings)
+
+
 def test_sliding_8_7_4_hooke():
     """8.7.4: the horizontal force of a sheared bearing Ge Ag Δl / te is k Δl (Hooke, the commentary's
     tan α = Δl / te = Fk / (Ag Ge)); Rck = RGk + 0.5 RQk with braking; boundary μ R = demand passes"""
@@ -270,15 +325,35 @@ def test_temperature_movements_d60():
     """8.8.2-1, -2 with the effective temperatures of D60 table 4.3.12-2 (concrete bridges: cold 34 / −10, severe cold
     34 / −23, mild south 34 / 0 °C) and αc = 1e-5"""
     for zone, south, hi, lo in [("cold", False, 34, -10), ("severe cold", False, 34, -23), ("mild", True, 34, 0)]:
-        m = dv.movements(40_000, T_set=(5, 15), zone=zone, south=south)
+        m = dv.movements(40_000, T_set=(5, 15), zone=zone, south=south, eps_cs=0.0, sigma_pc=0.0)
         assert m.t_plus == pytest.approx(1e-5 * 40_000 * (hi - 5)) and m.t_minus == pytest.approx(1e-5 * 40_000 * (15 - lo))
-        assert m.shrinkage == 0 and m.creep == 0 and m.notes
+        assert m.shrinkage == 0 and m.creep == 0
     s = dv.movements(40_000, T_set=10, zone="cold", structure="steel deck", alpha=jtg.EXPANSION["steel"])
     assert s.t_plus == pytest.approx(12e-6 * 40_000 * 36) and s.t_minus == pytest.approx(12e-6 * 40_000 * 31)
     with pytest.raises(ValueError):
-        dv.movements(40_000, T_set=(20, 10), T_max=34, T_min=-10)
+        dv.movements(40_000, T_set=(20, 10), T_max=34, T_min=-10, eps_cs=0.0, sigma_pc=0.0)
     with pytest.raises(ValueError):
-        dv.movements(40_000, T_set=(5, 40), T_max=34, T_min=-10)
+        dv.movements(40_000, T_set=(5, 40), T_max=34, T_min=-10, eps_cs=0.0, sigma_pc=0.0)
+
+
+def test_movements_steel_alpha_and_explicit_concrete_terms():
+    """review L5, M2: steel bridges of D60 table 4.3.12-2 default to α = 1.2e-5 of table 4.3.12-1 (steel), concrete ones
+    to 1e-5; a concrete bridge must state its shrinkage (concrete or eps_cs) and precompression (sigma_pc), else
+    ValueError; a steel bridge takes them as 0 with a note"""
+    for st in ("steel deck", "concrete deck"):
+        m = dv.movements(30_000, T_set=(10, 20), zone="cold", structure=st)
+        hi, lo = jtg.effective_temperature("cold", st)
+        assert m.t_plus == pytest.approx(12e-6 * 30_000 * (hi - 10)) and m.details["alpha"] == 12e-6
+        assert m.shrinkage == 0 and m.creep == 0 and m.notes
+    assert dv.movements(30_000, T_set=(10, 20), zone="cold", structure="steel deck", alpha=1e-5).details["alpha"] == 1e-5
+    c = dv.movements(30_000, T_set=(10, 20), zone="cold", eps_cs=0.0, sigma_pc=0.0)
+    assert c.details["alpha"] == 1e-5
+    with pytest.raises(ValueError, match="shrinkage"):
+        dv.movements(30_000, T_set=(10, 20), zone="cold", sigma_pc=0.0)
+    with pytest.raises(ValueError, match="sigma_pc"):
+        dv.movements(30_000, T_set=(10, 20), zone="cold", concrete="C50", RH=70, h=250, t0=90)
+    assert dv.movements(30_000, T_set=(10, 20), zone="cold", concrete="C50", RH=70, h=250, t0=90,
+                        sigma_pc=0.0).shrinkage > 0
 
 
 def test_shrinkage_creep_movements_commentary_tables():
@@ -288,7 +363,8 @@ def test_shrinkage_creep_movements_commentary_tables():
     l, spc = 50_000.0, 6.0
     cells = [(55, 200, 28, 0.38, 2.20), (55, 300, 90, 0.30, 1.65), (80, 100, 60, 0.18, 1.55), (80, 600, 14, 0.14, 1.65)]
     for RH, h, t0, eps, phi in cells:
-        sh = dv.movements(l, T_set=15, T_max=34, T_min=-10, concrete=c, RH=RH, h=h, t0=t0, tu=7 + 3650, ts=7)
+        sh = dv.movements(l, T_set=15, T_max=34, T_min=-10, concrete=c, RH=RH, h=h, t0=t0, tu=7 + 3650, ts=7,
+                          sigma_pc=0.0)
         assert sh.shrinkage / l * 1e3 == pytest.approx(eps, abs=0.0101)
         cr = dv.movements(l, T_set=15, T_max=34, T_min=-10, concrete=c, RH=RH, h=h, t0=t0, ts=7, sigma_pc=spc)
         assert cr.details["tu"] == t0 + 3650  # default: 10 years
@@ -332,7 +408,7 @@ def test_installation_width_is_the_gap_geometry():
 
 def test_expansion_joint_selection():
     """8.8.2-7 C ≥ C⁺ + C⁻ (boundary passes), β 1.2 … 1.4 (below fails, above a note), 9.7.7 joint types (warning)"""
-    m = dv.movements(30_000, T_set=(10, 20), T_max=34, T_min=-10, brake=2.0)
+    m = dv.movements(30_000, T_set=(10, 20), T_max=34, T_min=-10, brake=2.0, eps_cs=0.0, sigma_pc=0.0)
     need = m.closing(1.3) + m.opening(1.3)
     ok = jtg.expansion_joint(m, need, beta=1.3, Bmin=10, kind="modular")
     assert ok.ok and not ok.warnings and ok.details["installation"][0] == pytest.approx(ok.details["installation"][1])
@@ -378,8 +454,8 @@ def test_braking_force_d60():
 
 # ── 9.7, 9.8 ────────────────────────────────────────────────────────────────
 def test_lifting_loops_9_8_2():
-    """9.8.2 (GB 50010-2010 9.7.6): two legs per loop, three of four act, σ ≤ 65 MPa under the characteristic
-    self-weight (boundary passes); HPB300, not cold-worked, embedment ≥ 35 d, inner diameter ≥ 3 d and ≥ 60 mm"""
+    """9.8.2 by hand: two legs per loop, three of four act, σ ≤ 65 MPa under the characteristic self-weight (boundary
+    passes); HPB300, not cold-worked, embedment ≥ 35 d, inner diameter ≥ 3 d and ≥ 60 mm"""
     d = 16.0
     A = 2 * math.pi * d * d / 4
     G = 65.0 * 3 * A / 1e3

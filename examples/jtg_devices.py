@@ -8,7 +8,8 @@ bearings on the two piers, PTFE sliding laminated bearings on the abutments, an 
     joint movements and selection (8.8.2), installation width (8.8.3) → detailing (9.7) → a concrete hinge of a
     small arch (8.6, 9.8.3) → lifting loops of a precast slab (9.8.2).
 
-σc, μ, μf and the plate steel are the designer's values from JT/T 4 (the library has no defaults for them).
+σc (10 MPa, 8 MPa when S < 7), μ (0.3 on concrete) and the plate steel (Q235C) are JT/T 4-2019's (5.4.1, 5.4.4,
+5.3.2.1), the library's defaults; μf of PTFE on stainless steel has no design value there and is the designer's.
 
     uv run python examples/jtg_devices.py
 """
@@ -17,7 +18,7 @@ import numpy as np
 from femotion.codes import jtg
 from femotion.codes.jtg import devices as dv
 
-SIGMA_C, MU, MU_F, FY_PLATE = 10.0, 0.3, 0.06, 235.0  # MPa, -, -, MPa: designer's values (JT/T 4, plate steel)
+MU_F = 0.06  # PTFE on stainless steel with grease: the designer's value (JT/T 4-2019 has a test limit only)
 spans, n_beams = (30.0, 30.0, 30.0), 5
 x_sup = np.r_[0.0, np.cumsum(spans)]  # support lines (m): abutment, pier, pier, abutment
 c50 = jtg.concrete("C50")
@@ -44,17 +45,16 @@ mv_pier = dv.movements(abs(x_sup[1] - x0) * 1e3, T_set=T_set, zone="cold", concr
 RGk, RQk = 1050.0, 420.0  # kN, self-weight and vehicle with impact (characteristic, 8.7.1 item 3)
 print(f"pier bearing, l = {mv_pier.l / 1e3:g} m: expansion {mv_pier.t_plus:.1f} mm; contraction {mv_pier.t_minus:.1f} "
       f"+ shrinkage {mv_pier.shrinkage:.1f} + creep {mv_pier.creep:.1f} mm → Δl = {mv_pier.bearing_shear():.1f} mm")
-for chk in dv.laminated_bearing(pier_brg, RGk + RQk, sigma_c=SIGMA_C, dl=mv_pier.bearing_shear(), Fbk=Fbk,
-                                theta=0.0015, fy_plate=FY_PLATE):
+for chk in dv.laminated_bearing(pier_brg, RGk + RQk, dl=mv_pier.bearing_shear(), Fbk=Fbk, theta=0.0015):
     print("  " + str(chk))
-for chk in dv.laminated_sliding(pier_brg, mu=MU, RGk=RGk, RQk=RQk, dl=mv_pier.bearing_shear(), Fbk=Fbk):
+for chk in dv.laminated_sliding(pier_brg, RGk=RGk, RQk=RQk, dl=mv_pier.bearing_shear(), Fbk=Fbk, contact="concrete"):
     print("  " + str(chk))
 
 # ── an abutment bearing: PTFE sliding laminated bearing (8.7.3-1, 8.7.5) ──
 abut_brg = dv.Laminated(250, 350, t1=8, n=3, ts=3)
 RGa, RQa = 420.0, 300.0
 print("abutment bearing (PTFE sliding):")
-print("  " + str(dv.laminated_bearing(abut_brg, RGa + RQa, sigma_c=SIGMA_C, dl=0.0, fy_plate=FY_PLATE)[0]))
+print("  " + str(dv.laminated_bearing(abut_brg, RGa + RQa, dl=0.0)[0]))
 for chk in dv.ptfe_sliding(abut_brg, mu_f=MU_F, RGk=RGa, RQk=RQa):
     print("  " + str(chk))
 print("  " + str(dv.bearing_detailing(kind="ptfe", rubber="CR", site_T=(-22, 38), n_longitudinal=1, n_transverse=1)))
