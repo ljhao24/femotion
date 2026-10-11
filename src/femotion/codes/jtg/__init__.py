@@ -44,8 +44,8 @@ Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_gir
     Ml = jtg.quasi_permanent_combination(G, Q0, [C], kinds=["crowd"])[0]
     jtg.crack_width(section, Ms[k], Ml[k], env="I")
 
-Secondary effects of prestress on statically indeterminate structures: femotion.frame.prestress; of temperature and
-shrinkage: femotion.frame.thermal (external tendons too: straight between deviators). Unbonded internal tendons are not
+Secondary effects of prestress on statically indeterminate structures: femotion.frame.prestress (external tendons too:
+straight between deviators); of temperature and shrinkage: femotion.frame.thermal. Unbonded internal tendons are not
 covered (JTG 3362-2018 has no provisions for them).
 """
 from .actions import (DYNAMIC_FACTOR, GAMMA_0, PSI, RAILING_LOADS, SIDEWALK_SLAB_LOAD, VEHICLE_AXLES,  # noqa: F401

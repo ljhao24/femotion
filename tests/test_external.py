@@ -45,8 +45,9 @@ def test_jacking_and_service_limits():
 
 
 def test_friction_at_deviators():
-    """table 6.2.2 (p56) as printed; k = 0 and only the deviator and anchorage ducts count (table note). Independent:
-    the capstan (Euler–Eytelwein) equation, a tendon over successive deviators losing the factor e^(−μθ) at each one."""
+    """table 6.2.2 (p56) as printed; k = 0 and only the deviator and anchorage ducts count (table note). Consistency
+    with the capstan (Euler–Eytelwein) law behind 6.2.2: deviator by deviator, the factor e^(−μθ) at each one (the same
+    identity as e^(−μΣθ), so a check of the summing, not an independent source)."""
     assert ps.DUCT_FRICTION_EXTERNAL == {"steel pipe": ((0.20, 0.30), (0.08, 0.10)), "HDPE": ((0.12, 0.15), (0.08, 0.10))}
     s, mu, th = 1302.0, 0.12, [0.10, 0.06, 0.12]
     after = s
@@ -75,9 +76,10 @@ def test_flexure_rectangle_as_eccentric_compression_5_3_4():
     r = jtg.flexure(s, 1000.0, pc_class="A")
     assert x > 90 and r.details["x"] == pytest.approx(x, rel=1e-9)
     assert r.resistance == pytest.approx(M / 1e6, rel=1e-9)
-    # h0 of figure 5.2.5: the resultant of As (fsd) and Aex (σpe,ex); ξb from the bars (table 5.2.1)
+    # h0 of figure 5.2.5: the resultant of As (fsd) and Aex (σpe,ex); ξb by table 5.2.1 note 1: the strand's 0.40
     assert r.details["h0"] == pytest.approx((FSD * As * 1440 + P * 1300) / (FSD * As + P), rel=1e-12)
-    assert r.details["xi_b"] == 0.53 and r.clause.endswith("5.2.5 / 5.2.6")
+    assert r.details["xi_b"] == 0.40 and r.clause.endswith("5.2.5 / 5.2.6")
+    assert r.details["xi_b_alternative"]["xi_b"] == 0.53  # bonded steel only (note 2)
 
 
 def test_tee_web_5_2_5_5():
@@ -212,8 +214,9 @@ def _rect_props(b, h, pts):
 
 
 def test_mixed_prestress_stress_6_1_6_7():
-    """hand calculation with 6.1.7-5, -6 and 6.1.6-7 (p53–54) on a closed-form transformed section (6.1.6: Aex, Iex with
-    the ducts grouted; note 3 of 6.1.7: net before grouting); σ'l6 counts since A'p,ex ≠ 0 (6.1.7 note 2)"""
+    """hand calculation on closed-form sections: before grouting 6.1.7-5, -6 and 6.1.6-7 on the net section (6.1.7 note
+    3); after grouting Np,ex split by 6.1.5 item 2 (p52): the internal tendons and the bars' σl6 on the net section with
+    Mp2, the external tendons on the transformed one; σ'l6 counts since A'p,ex ≠ 0 (6.1.7 note 2)"""
     s = _mixed()
     Ec, Es, Ep = 3.45e4, 2.0e5, 1.95e5
     As, Asc, duct = 4 * A20, 4 * A16, math.pi * 70 ** 2 / 4
@@ -223,49 +226,63 @@ def test_mixed_prestress_stress_6_1_6_7():
     N = sum(f for f, _ in F)  # 6.1.7-5
     e = sum(f * (d - z0) for f, d in F) / N  # 6.1.7-6, below the centroid +
     assert s.prestress_resultant("pe")[0] == pytest.approx(N, rel=1e-12)
-    Mp2 = 150.0
-    for z in (0.0, 600.0, 1200.0):
-        y = z - z0
-        hand = N / A0 + N * e * y / I0 - Mp2 * 1e6 * y / I0
-        assert float(s.prestress_stress(z, Mp2)) == pytest.approx(hand, rel=1e-10)
     An, zn, In = _rect_props(500, 1200, net)
     en = sum(f * (d - zn) for f, d in F) / N
     assert float(s.prestress_stress(1200.0, grouted=False)) == pytest.approx(N / An + N * en * (1200 - zn) / In, rel=1e-10)
+    Mp2 = 150.0
+    Fi, Fx = [F[0], F[3], F[4]], [F[1], F[2]]
+    for z in (0.0, 600.0, 1200.0):
+        hand = (sum(f for f, _ in Fi) / An + sum(f * (d - zn) for f, d in Fi) * (z - zn) / In - Mp2 * 1e6 * (z - zn) / In
+                + sum(f for f, _ in Fx) / A0 + sum(f * (d - z0) for f, d in Fx) * (z - z0) / I0)
+        assert float(s.prestress_stress(z, Mp2)) == pytest.approx(hand, rel=1e-10)
+    # the literal single-section reading of 6.1.6-7 (everything on A0, I0) differs by a few per cent at the edges
+    lit = N / A0 + N * e * (1200 - z0) / I0
+    assert abs(float(s.prestress_stress(1200.0)) / lit - 1) < 0.05
     # 6.1.7 note 2: without A'p and A'p,ex the top bars take no σ'l6
     s2 = s.replace(external=s.external[:1])
     assert s2.prestress_resultant("pe")[0] == pytest.approx(N - 900 * 278 + 40 * Asc, rel=1e-12)
 
 
 def test_prestress_stress_equilibrium():
-    """physics: the stress field of 6.1.6-7 integrated over its own (transformed) section, slice by slice for the
-    concrete plus the steel points, gives back Np,ex and its moment about the top fibre"""
+    """physics: before grouting the stress field of 6.1.6-7 integrated over its own (net) section, slice by slice for
+    the concrete plus the bars and the duct, gives back Np,ex and its moment about the top fibre"""
     s = _mixed()
-    A0, z0, I0 = s.props("transformed")
     n = 200000
     z = (np.arange(n) + 0.5) * 1200 / n
-    sig = s.prestress_stress(z)
+    sig = s.prestress_stress(z, grouted=False)
     F = (sig * 500 * 1200 / n).sum()
     M = (sig * z * 500 * 1200 / n).sum()
-    for a, d in s._steel_points("transformed"):
-        F += float(s.prestress_stress(d)) * a
-        M += float(s.prestress_stress(d)) * a * d
+    for a, d in s._steel_points("net"):
+        F += float(s.prestress_stress(d, grouted=False)) * a
+        M += float(s.prestress_stress(d, grouted=False)) * a * d
     N, zN = s.prestress_resultant("pe")
     assert F == pytest.approx(N, rel=1e-6) and M / F == pytest.approx(zN, rel=1e-6)
     ex_only = jtg.rect(500, 1200, concrete="C50", bottom=[(4, 20, 50)], external=[(834, 1000, 1000)])
-    assert float(ex_only.prestress_stress(0.0, grouted=False)) == float(ex_only.prestress_stress(0.0))
+    assert float(ex_only.prestress_stress(0.0, grouted=False)) == pytest.approx(float(ex_only.prestress_stress(0.0)))
+
+
+def test_no_jump_when_an_external_tendon_is_added():
+    """continuity: an external tendon of vanishing force changes neither the prestress stresses (6.1.5 item 2: the
+    internal tendons stay on the net section) nor the cracking moment (6.5.2-7: net section)"""
+    kw = dict(concrete="C50", bottom=[(4, 20, 50)], tendons=[(1112, 1050, 1200, 70)], sigma_pe=1100.0)
+    a, b = jtg.rect(500, 1200, **kw), jtg.rect(500, 1200, external=[(1e-9, 1000, 1000)], **kw)
+    for z in (0.0, 1200.0):
+        assert float(b.prestress_stress(z, 80.0)) == pytest.approx(float(a.prestress_stress(z, 80.0)), rel=1e-9)
+    assert jtg.cracking_moment(b)[0] == pytest.approx(jtg.cracking_moment(a)[0], rel=1e-9)
 
 
 def test_cracking_moment_mixed():
-    """hand calculation with 6.5.2-7, -8 (p66): Np0 with the internal tendon at σp0 and the external one at σpe,ex
-    (program convention), σpc on the section of 6.1.6-7, W0 and S0 of the transformed section"""
+    """hand calculation with 6.5.2-7, -8 (p66): σpc as printed, from Np0 on the net section for post-tensioned members
+    (the external tendon at σpe,ex in Np0, program convention); W0 and S0 of the transformed section"""
     s = jtg.rect(500, 1200, concrete="C50", bottom=[(4, 20, 50)], tendons=[(1112, 1050, 1200, 70)], sigma_pe=1100.0,
                  external=[(834, 1000, 1000)])
     Ec = 3.45e4
     pts = [((2e5 / Ec - 1) * 4 * A20, 1150), (-math.pi * 35 ** 2, 1050), (1.95e5 / Ec * 1112, 1050)]
     A0, z0, I0 = _rect_props(500, 1200, pts)
+    An, zn, In = _rect_props(500, 1200, pts[:2])
     N = 1200 * 1112 + 1000 * 834
-    e = (1200 * 1112 * 1050 + 1000 * 834 * 1000) / N - z0
-    spc = N / A0 + N * e * (1200 - z0) / I0
+    e = (1200 * 1112 * 1050 + 1000 * 834 * 1000) / N - zn
+    spc = N / An + N * e * (1200 - zn) / In
     W0 = I0 / (1200 - z0)
     S0 = 500 * z0 * z0 / 2  # the part above the centroid: concrete only
     Mcr = (spc + 2 * S0 / W0 * 2.65) * W0
@@ -340,16 +357,18 @@ def test_external_only_class_B_conventions():
 
 
 def test_principal_stress_bent_external():
-    """hand calculation with 6.3.3-5 (p61) at the centroid: τ = V S0/(b I0) − σ A sinθ S/(b I); on a mixed member the
-    prestress takes the section of 6.1.6-7 (transformed), and a bent external tendon counts like a bent internal one"""
+    """hand calculation with 6.3.3-5 (p61) at the centroid: τ = V S0/(b I0) − σ″pe Apb sinθp Sn/(b In) for a bent
+    internal tendon (net section, as printed) and the same term on the transformed section for a bent external tendon
+    (its section after grouting, 6.1.5 item 2; program convention)"""
     s = _mixed()
     _, z0, I0 = s.props("transformed")
-    S0 = s.first_moment(z0)
+    _, _, In = s.props("net")
+    S0, Sn = s.first_moment(z0), s.first_moment(z0, "net")
     V, Pv = 600.0e3, 1000 * 834 * math.sin(math.radians(5))
     pts = jtg.principal_stresses(s, 0.0, 600.0, depths=[z0], bent_external=[(834, 5.0, 1000.0)])
     assert pts[0]["tau"] == pytest.approx(V * S0 / (500 * I0) - Pv * S0 / (500 * I0), rel=1e-12)
-    same = jtg.principal_stresses(s, 0.0, 600.0, depths=[z0], bent_tendons=[(834, 5.0, 1000.0)])
-    assert same[0]["tau"] == pytest.approx(pts[0]["tau"], rel=1e-12)
+    internal = jtg.principal_stresses(s, 0.0, 600.0, depths=[z0], bent_tendons=[(834, 5.0, 1000.0)])
+    assert internal[0]["tau"] == pytest.approx(V * S0 / (500 * I0) - Pv * Sn / (500 * In), rel=1e-12)
     mean = (1000 * 834 + 900 * 278) / (834 + 278)  # σpe,ex by default: the section's external tendons, by area
     dflt = jtg.principal_stresses(s, 0.0, 600.0, depths=[z0], bent_external=[(834, 5.0)])
     assert dflt[0]["tau"] == pytest.approx((V - Pv * mean / 1000) * S0 / (500 * I0), rel=1e-12)
@@ -364,9 +383,76 @@ def test_transient_before_grouting():
     top = N / An + N * (zN - zn) * (0 - zn) / In + M * 1e6 * zn / In
     r = jtg.transient_pc(s, M, fcu=45, grouted=False)
     assert r.details["top"] == pytest.approx(top, rel=1e-12)
-    g = jtg.transient_pc(s, M, fcu=45, grouted=True)
+    g = jtg.transient_pc(s, M, fcu=45, grouted=True)  # after grouting: 6.1.5 item 2, internal net, external transformed
     A0, z0, I0 = s.props("transformed")
-    assert g.details["top"] == pytest.approx(N / A0 + N * (zN - z0) * (-z0) / I0 + M * 1e6 * z0 / I0, rel=1e-12)
+    Nx = 1000 * 834 + 900 * 278
+    zx = (1000 * 834 * 1000 + 900 * 278 * 200) / Nx
+    Ni = N - Nx
+    zi = (N * zN - Nx * zx) / Ni
+    top = Ni / An + Ni * (zi - zn) * (0 - zn) / In + Nx / A0 + Nx * (zx - z0) * (0 - z0) / I0 + M * 1e6 * z0 / I0
+    assert g.details["top"] == pytest.approx(top, rel=1e-12)
+
+
+def test_xi_b_readings():
+    """table 5.2.1 (p23): note 1 takes the smallest ξb of the kinds of steel in the tension zone, so external strand
+    there gives 0.40 (default); note 2 defines ξb by the tension steel reaching its design strength, which the external
+    tendon at σpe,ex never does: xi_b_bonded_only=True keeps the bars' 0.53. With x/h0 = 0.455 the two disagree."""
+    s = jtg.rect(400, 1000, concrete="C50", bottom=[(6, 28, 60)], external=[(2500, 900, 1000)])
+    T = FSD * 6 * A28 + 1000 * 2500
+    x, h0 = T / (FCD * 400), (FSD * 6 * A28 * 940 + 1000 * 2500 * 900) / T
+    lit, bonded = jtg.flexure(s, 1.0, pc_class="A"), jtg.flexure(s, 1.0, pc_class="A", xi_b_bonded_only=True)
+    assert lit.details["x"] == pytest.approx(x, rel=1e-9) and 0.40 < x / h0 < 0.53
+    assert lit.details["xi_b"] == 0.40 and any("over-reinforced" in f for f in lit.failed)
+    assert bonded.details["xi_b"] == 0.53 and not any("over-reinforced" in f for f in bonded.failed)
+    assert lit.details["xi_b_alternative"] == {"reading": "bonded steel only (note 2)", "xi_b": 0.53,
+                                               "x": pytest.approx(x), "over_reinforced": False}
+    assert bonded.details["xi_b_alternative"]["over_reinforced"] is True
+    assert lit.resistance == pytest.approx(bonded.resistance, rel=1e-12)
+
+
+def test_minimum_bars_9_1_13_bonded_h0():
+    """9.1.13 (p102): bars ≥ 0.003 b h0 in partially prestressed members, h0 of the bonded steel (program convention):
+    0.003 × 600 × 1440 = 2592 mm² > As = 2454 mm², although 0.003 b h0 with the external tendon in h0 would pass"""
+    s = jtg.rect(600, 1500, concrete="C50", bottom=[(5, 25, 60)], external=[(2780, 1000, 1000)])
+    r = jtg.flexure(s, 1.0, pc_class="A")
+    assert r.details["h0"] < 1100 and any("0.003 b h0 = 2592" in f for f in r.failed)
+
+
+def _stiffless_pair(d_in=1100.0, d_ex=1050.0):
+    """a mixed section and its limit with the external tendon as an internal one of vanishing area and the same force"""
+    kw = dict(concrete="C50", bottom=[(6, 25, 50)], top=[(4, 12, 40)])
+    P, a = 1000.0 * 834, 1e-6
+    ex = jtg.rect(500, 1200, tendons=[(834, d_in, 1250, 70)], sigma_pe=1120.0, external=[(834, d_ex, 1000)], **kw)
+    lim = jtg.rect(500, 1200, tendons=[(834, d_in, 1250, 70), (a, d_ex, P / a, 1e-6)], sigma_pe=[1120.0, P / a], **kw)
+    return ex, lim
+
+
+def test_temperature_and_torsion_with_external_tendons():
+    """physics, as above: a force without stiffness. Class B crack width and cracked-section stresses with the
+    temperature gradient (D60 4.3.12, 3362 appendix D), and the prestress term of torsion (5.5.1, Np0 with the external
+    tendon at σpe,ex) agree with the internal tendon of vanishing area"""
+    ex, lim = _stiffless_pair()
+    grad = jtg.temperature_gradient(1200)
+    w = [jtg.crack_width(s, 1300.0, 900.0, pc_class="B", tendon_bundles=[(1, 6, 15.2)],
+                         temperature=jtg.thermal_stresses(s, grad)) for s in (ex, lim)]
+    assert w[0].demand > 0 and w[0].demand == pytest.approx(w[1].demand, rel=1e-6)
+    v = [jtg.service_stresses(s, 1500.0, pc_class="B", temperature=jtg.thermal_stresses(s, grad)) for s in (ex, lim)]
+    assert v[0].demand == pytest.approx(v[1].demand, rel=1e-6)
+    ex, lim = _stiffless_pair(700.0, 650.0)  # near the centroid: ep0 ≤ h/6, the prestress term counts
+    t = [jtg.torsion(s, 150.0, 300.0, stirrups=(2, 12, 100), Ast=6000, core=(400, 1100), pc_class="A") for s in (ex, lim)]
+    assert t[0].resistance == pytest.approx(t[1].resistance, rel=1e-6)
+    assert any("0.05 Np0" in n for n in t[0].notes)
+
+
+def test_crack_width_limit_column():
+    """table 6.4.2 (p62): members using wire or strand take the second column, internal or external (program reading
+    of the column heading); threaded bars alone and reinforced concrete the first"""
+    bar = dict(concrete="C50", bottom=[(6, 25, 50)], tendons=[(1000, 1100, 600, 60)], tendon="bar930", sigma_pe=550.0)
+    assert jtg.crack_width_limit("I", jtg.rect(500, 1200, **bar)) == 0.20
+    assert jtg.crack_width_limit("I", jtg.rect(500, 1200, external=[(834, 1050, 1000)],
+                                               external_tendon="strand1860", **bar)) == 0.10
+    assert jtg.crack_width_limit("I", jtg.rect(500, 1200, concrete="C50", external=[(834, 1050, 1000)])) == 0.10
+    assert jtg.crack_width_limit("I", jtg.rect(500, 1200, concrete="C50", bottom=[(6, 25, 50)])) == 0.20
 
 
 # ── 9.4 detailing ─────────────────────────────────────────────────────────

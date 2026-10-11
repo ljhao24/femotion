@@ -78,7 +78,8 @@ print(f"  external σl1 {l1_e:.1f}, σl2 {l2_e:.1f}, σl4 {l4:.1f}, σl5 {l5_e:.
 
 
 def section(d_ex, sp_ex, sp_in, sp0=None):
-    """the box with both kinds of tendon; σp0 of the internal tendon from 6.1.6-5 with σpc of Np,ex (6.1.6-7, note 3)"""
+    """the box with both kinds of tendon; σp0 of the internal tendon from 6.1.6-5 with σpc of Np,ex (note 3; the
+    internal part on the net section, the external part on the transformed one, 6.1.5 item 2)"""
     s = jtg.box(**geo, tendons=[(Ap, d_int, sp_in, duct)], sigma_pe=sp_in, external=[(Aex, d_ex, sp_ex)])
     if sp0 is None:
         sp0 = ps.sigma_p0(sp_in, 0.0, post=True, alpha_EP=aEP, sigma_pc=float(s.prestress_stress(d_int)))
@@ -125,6 +126,7 @@ print(jtg.inclined_crack_resistance(near, Ms_x, float(Vs), pc_class="full", prec
 at_transfer = section(d_dev, s_con_e - lI_e, s_con_i - lI_i, sp0=s_con_i - lI_i)
 print(jtg.transient_pc(at_transfer, Mg1, fcu=45, grouted=False))
 
-# ── detailing: φs15.2 strand (wires of about 5 mm), deviator pipes bent to 5 m, positioners halfway ──
-print(jtg.external_detailing(wire_d=5.0, radius=5000, free_length=x_dev / 2 * 1000, hoop_d=22, hoop_spacing=80,
+# ── detailing: the centre wire of φs15.2 strand is a little over 5 mm, so the 6 m class of 9.4.10 is taken (5.0 would
+# give 4 m: the strand sits on the boundary); deviator pipes bent to 6.5 m, positioners halfway ──
+print(jtg.external_detailing(wire_d=5.2, radius=6500, free_length=x_dev / 2 * 1000, hoop_d=22, hoop_spacing=80,
                              crossbeam=1200))

@@ -10,9 +10,10 @@ load with impact, 7.1.1). The prestress is a permanent action (D60 4.2.2) carrie
 (`tendons`), σpe per tendon (`sigma_pe`), σl6 at the bars (`sigma_l6`). The secondary moment Mp2 of post-tensioned
 statically indeterminate members is passed separately (M_p2, kN·m, sagging +): it enters σpc through 6.1.6-4 and the
 terms Ms ± Mp2 (6.4.4-11), Mk ± Mp2 (7.1.4-3), so it must not be part of Ms, Ml or Mk. The secondary shear goes in V_p2.
-External tendons (`external` rows with σpe,ex) are a constant force σpe,ex Ap,ex: in σpc through Np,ex on the section of
-6.1.6-7 (Mp2,ex then is the secondary moment of all the tendons), in Np0 and its line of action, never in the
-transformed or cracked section (they are not bonded); their stress is checked against 0.60 fpk in service (7.1.5-3).
+External tendons (`external` rows with σpe,ex) are a constant force σpe,ex Ap,ex: in σpc through Np,ex of 6.1.6-7, split
+by 6.1.5 item 2 (RCSection.prestress_stress; Mp2,ex then is the secondary moment of all the tendons), in Np0 and its line
+of action, never in the transformed or cracked section (they are not bonded); their stress is checked against 0.60 fpk
+in service (7.1.5-3).
 
     from femotion.codes import jtg
     rc = jtg.tee(200, 1100, 1600, 160, concrete="C40", bottom=[(10, 28, 110)], top=[(8, 20, 50)])
@@ -161,19 +162,21 @@ def principal_stresses(sec: RCSection, M: float, V: float, *, N: float = 0.0, M_
     part of M), × psi_t into σcx at each point, the positive or negative gradient whichever is unfavourable there:
     worst="tension" the smaller σcx (larger σtp), "compression" the larger σcx (larger σcp). Set by
     inclined_crack_resistance (ψ 0.8, tension) and principal_compression (1.0, compression).
-    External tendons: σpc from Np,ex on the section of 6.1.6-7 (RCSection.prestress_kind), which then also takes the
-    bent-tendon term; bent_external: rows of (Ap,ex mm², θex degrees[, σpe,ex MPa]) of the external tendons inclined at
-    the section, subtracted from τ like the bent internal tendons (6.3.3-5 lists internal ones only; program convention,
-    as Vpb,ex in 5.2.9-5); σpe,ex defaults to the mean of the section's external tendons."""
+    External tendons: in σpc (RCSection.prestress_stress); bent_external: rows of (Ap,ex mm², θex degrees[, σpe,ex MPa])
+    of the external tendons inclined at the section, subtracted from τ like the bent internal tendons but on the
+    external tendons' section (transformed: the ducts are grouted in service, 6.1.5 item 2; 6.3.3-5 lists internal ones
+    only, program convention as Vpb,ex in 5.2.9-5); σpe,ex defaults to the mean of the section's external tendons. The
+    bent internal tendons keep Sn, In (6.3.3-5)."""
     A0, z0, I0 = sec.props("transformed")
-    kind_p = sec.prestress_kind()
+    kind_p, kind_x = sec.prestress_kind(), sec.prestress_kind(external=True)
     _, _, Ip = sec.props(kind_p)
+    _, _, Ix = sec.props(kind_x)
     if depths is None:
         zs = [z0] + [z for z in _bounds(sec) if 0 < z < sec.h and
                      abs(sec.width(z - 1e-6 * sec.h) - sec.width(z + 1e-6 * sec.h)) > 1e-9]
     else:
         zs = list(depths)
-    rows = []
+    rows, rows_x = [], []
     for bt in bent_tendons:
         sp = bt[2] if len(bt) > 2 else float(np.mean(sec._sigma_pe()))
         rows.append(sp * bt[0] * math.sin(math.radians(bt[1])))
@@ -184,8 +187,8 @@ def principal_stresses(sec: RCSection, M: float, V: float, *, N: float = 0.0, M_
             sp = float(np.average(sec.external[:, 2], weights=sec.external[:, 0]))
         else:
             raise ValueError("bent_external: give σpe,ex per row (the section has no external tendons)")
-        rows.append(sp * bt[0] * math.sin(math.radians(bt[1])))
-    Pv = sum(rows)
+        rows_x.append(sp * bt[0] * math.sin(math.radians(bt[1])))
+    Pv, Pv_x = sum(rows), sum(rows_x)
     out = []
     for z in sorted(set(float(v) for v in zs)):
         b = _b_at(sec, z)
@@ -196,7 +199,8 @@ def principal_stresses(sec: RCSection, M: float, V: float, *, N: float = 0.0, M_
         if vertical is not None:
             Apv, sp_v, spe_v = vertical
             scy += 0.6 * spe_v * Apv / (b * sp_v)
-        tau = abs(V + V_p2) * 1e3 * sec.first_moment(z) / (b * I0) - Pv * sec.first_moment(z, kind_p) / (b * Ip) + tau_t
+        tau = (abs(V + V_p2) * 1e3 * sec.first_moment(z) / (b * I0) - Pv * sec.first_moment(z, kind_p) / (b * Ip)
+               - Pv_x * sec.first_moment(z, kind_x) / (b * Ix) + tau_t)
         m, r = (scx + scy) / 2, math.hypot((scx - scy) / 2, tau)
         out.append({"z": z, "b": b, "sigma_cx": scx, "sigma_cy": scy, "tau": tau, "sigma_tp": r - m, "sigma_cp": m + r,
                     "sigma_t": st})
@@ -293,15 +297,16 @@ def _cover(s: RCSection, mask, side: str = "bottom") -> float:
 
 
 def _ptendon(sec: RCSection):
-    """the prestressing steel that sets the column of table 6.4.2: the internal tendons', else the external ones'
-    (program convention: a member prestressed with external strand only takes the strand column)"""
-    return sec.tendon if sec.has_internal else sec.ext_tendon
+    """the prestressing steel that sets the column of table 6.4.2: wire or strand anywhere in the member, internal or
+    external, takes the second column (members "using wire or strand", read literally), else the threaded bars"""
+    ts = [t for t in (sec.tendon if sec.has_internal else None, sec.ext_tendon if sec.has_external else None) if t]
+    return next((t for t in ts if t.kind in ("strand", "wire")), ts[0])
 
 
 def crack_width_limit(env: str, sec: RCSection | None = None) -> float | None:
     """limit of table 6.4.2 (mm) for an environment class "I" … "VII": reinforced concrete and class B members with
-    prestressing threaded bars, or class B members with wire or strand (sec prestressed with such tendons, internal or,
-    without internal ones, external); None where the latter are not allowed (class V)"""
+    prestressing threaded bars, or class B members with wire or strand (sec prestressed with such tendons, internal or
+    external); None where the latter are not allowed (class V)"""
     e = str(env).upper().replace("CLASS", "").strip()
     if e not in CRACK_WIDTH_LIMITS:
         raise ValueError(f"environment class {env!r}: one of {', '.join(CRACK_WIDTH_LIMITS)} (table 6.4.2)")
@@ -918,8 +923,8 @@ def transient_pc(sec: RCSection, M: float, *, fcu: float, grouted: bool = False,
     section of post-tensioned members before grouting (grouted=False), else the transformed section (6.1.5).
     σtcc ≤ 0.70 f'ck (7.2.8); σtct ≤ 1.15 f'tk, with (A's + A'p)/A in the pretensioned zone at least 0.2 % up to
     σtct = 0.70 f'tk, 0.4 % at 1.15 f'tk, linear between (A'p only for pretensioned members; A gross; the zone from the
-    tension edge to the zero-stress depth). External tendons (sigma_pe,ex of the stage in the `external` rows): with the
-    internal ones on the section of 6.1.6-7, net before grouting and transformed after (grouted)."""
+    tension edge to the zero-stress depth). External tendons (sigma_pe,ex of the stage in the `external` rows): on the
+    net section before grouting, the transformed one after (grouted; RCSection.prestress_stress)."""
     if not sec.prestressed:
         raise ValueError("7.2.8 is for prestressed members; reinforced concrete: transient_rc")
     fck_t, ftk_t = strength_at(fcu)

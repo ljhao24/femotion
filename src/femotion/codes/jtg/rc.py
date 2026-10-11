@@ -306,29 +306,39 @@ class RCSection:
         N = F.sum()
         return N, float((F * d).sum() / N)
 
-    def prestress_kind(self, grouted: bool = True) -> str:
-        """the section that takes the stresses from the prestress (6.1.5, 6.1.6): "transformed" for pretensioned members
-        (6.1.6-1); "net" for post-tensioned members with internal tendons only (6.1.6-4); with external tendons (internal
-        and external, or external only) the section of 6.1.6-7, which accounts for the grouting: "transformed" once the
-        internal ducts are grouted, "net" before (6.1.7 note 3). Without internal tendons both are the same."""
-        if self.pretensioned:
-            return "transformed"
-        if not self.has_external:
-            return "net"
+    def prestress_kind(self, grouted: bool = True, external: bool = False) -> str:
+        """the section that carries the stresses from a part of the prestress (6.1.5): the internal tendons (with the
+        bars' σl6) the transformed section of pretensioned members (item 1, 6.1.6-1) and the net section of
+        post-tensioned ones (item 2, 6.1.6-4); the external tendons (external=True) the transformed section once the
+        internal ducts are grouted, the net section before (item 2; Aex, Iex of 6.1.6-7 "per 6.1.5, with the grouting";
+        6.1.7 note 3). Without internal ducts the two are the same."""
+        if not external:
+            return "transformed" if self.pretensioned else "net"
         return "transformed" if grouted else "net"
 
     def prestress_stress(self, z, M_p2: float = 0.0, grouted: bool = True):
         """normal concrete stress (MPa, compression +) at depth z from the prestress after the losses carried by the
-        section (6.1.6): pretensioned members Np0 on the transformed section (6.1.6-1); post-tensioned members Np on the
-        net section with the secondary moment Mp2 (kN·m, sagging +) (6.1.6-4); with external tendons Np,ex (6.1.7-5) on
-        the section of prestress_kind(grouted) with Mp2,ex (6.1.6-7). 0 for reinforced concrete."""
+        section (6.1.6), with the secondary moment Mp2 (kN·m, sagging +): pretensioned members Np0 on the transformed
+        section (6.1.6-1); post-tensioned members Np on the net section (6.1.6-4). External tendons add σpe,ex Ap,ex on
+        the section of prestress_kind(grouted, external=True), so that Np,ex of 6.1.7-5 is split by 6.1.5 item 2 (the
+        internal part on the net section, the external part on the transformed one after grouting); Mp2 (Mp2,ex) on the
+        internal tendons' section. Before grouting, and with external tendons only, this is 6.1.6-7 on one section.
+        0 for reinforced concrete."""
         z = np.asarray(z, float)
         if not self.prestressed:
             return 0.0 * z
-        N, zN = self.prestress_resultant("p0" if self.pretensioned else "pe")
-        A, zc, I = self.props(self.prestress_kind(grouted))
-        y = z - zc
-        return N / A + N * (zN - zc) * y / I - M_p2 * 1e6 * y / I
+        td, ex = self.tendons, self.external
+        sp = td[:, 2] if self.pretensioned else self._sigma_pe()
+        parts = ((np.r_[sp * td[:, 0], -self._l6() * self.bars[:, 0]], np.r_[td[:, 1], self.bars[:, 1]],
+                  self.prestress_kind()),
+                 (ex[:, 2] * ex[:, 0], ex[:, 1], self.prestress_kind(grouted, external=True)))
+        out = 0.0 * z
+        for F, d, kind in parts:
+            if len(F):
+                A, zc, I = self.props(kind)
+                out = out + F.sum() / A + (F * (d - zc)).sum() * (z - zc) / I
+        _, zc, I = self.props(self.prestress_kind())
+        return out - M_p2 * 1e6 * (z - zc) / I
 
     # edge rows (program convention, docs/codes/JTG_3362-2018.md §10)
     def edge_masks(self):
@@ -376,14 +386,19 @@ class RCSection:
             return float(np.average(self.bars[top, 1], weights=Fs)), False
         return None, False
 
-    def xi_b(self, eccentric: bool = False) -> float:
+    def xi_b(self, eccentric: bool = False, external: bool = True) -> float:
         """ξb of the tension steel: table 5.2.1 for bars and, for flexure, tendons (the smallest when both are present,
-        note 1); for eccentric compression of prestressed members the tendons follow 5.3.3-1 / -2"""
+        note 1); for eccentric compression of prestressed members the tendons follow 5.3.3-1 / -2. External strand below
+        the gross centroid joins the tension-zone steel of note 1 (external=True, default); external=False leaves it out
+        (only the bonded steel, which reaches its design strength as note 2 defines ξb)."""
         bot, _ = self.edge_masks()
         pb, _ = self.tendon_masks()
+        ext_b = external and not eccentric and self.has_external and bool((self.external[:, 1] > self.zg).any())
         v = []
-        if bot.any() or not pb.any():
+        if bot.any() or not (pb.any() or ext_b):
             v.append(xi_b(self.concrete, self.steel))
+        if ext_b:
+            v.append(xi_b(self.concrete, self.ext_tendon))
         if pb.any():
             if eccentric:
                 c, t = self.concrete, self.tendon
@@ -599,10 +614,11 @@ class Check:
         extra = ("; " + "; ".join(self.failed)) if self.failed else ""
         if self.limit_check:
             p = 3 if self.unit == "mm" else 2
+            u = f" {self.unit}" if self.unit else ""
             r = (f"ratio {self.ratio:.3f}" if self.resistance > 0
-                 else f"margin {self.resistance - self.demand:.{p}f} {self.unit}")
-            return (f"{self.name}: {self.symbol} = {self.demand:.{p}f} {self.unit}, limit {self.resistance:.{p}f} "
-                    f"{self.unit}, {r} → {v}{extra}")
+                 else f"margin {self.resistance - self.demand:.{p}f}{u}")
+            return (f"{self.name}: {self.symbol} = {self.demand:.{p}f}{u}, limit {self.resistance:.{p}f}{u}, "
+                    f"{r} → {v}{extra}")
         return f"{self.name}: γ0Sd = {self.demand:.1f} {self.unit}, R = {self.resistance:.1f} {self.unit}, ratio {self.ratio:.3f} → {v}{extra}"
 
 
@@ -610,13 +626,13 @@ class Check:
 def cracking_moment(sec: RCSection, hogging: bool = False) -> tuple[float, dict]:
     """cracking moment Mcr = (σpc + γ ftk) W0, γ = 2 S0 / W0 (6.5.2-7, -8), for the minimum-reinforcement rule 9.1.13
     and the stiffness of class B members. σpc: precompression at the tension edge from Np0 = Σ σp0 Ap − σl6 As (6.1.7-1)
-    by 6.1.6-1, on the transformed section for pretensioned members and on the net section for post-tensioned ones;
-    with external tendons Np0 takes them at σpe,ex and the section is that of 6.1.6-7 (RCSection.prestress_kind:
-    transformed, ducts grouted); W0, S0 on the transformed section. Returns (Mcr kN·m, details)."""
+    by 6.1.6-1, on the transformed section for pretensioned members and on the net section for post-tensioned ones,
+    those with external tendons included (6.5.2-7 as printed; Np0 then takes the external tendons at σpe,ex); W0, S0
+    on the transformed section. Returns (Mcr kN·m, details)."""
     s = sec.flipped() if hogging else sec
     c = s.concrete
     A0, z0, I0 = s.props("transformed")
-    A, zc, I = s.props(s.prestress_kind())
+    A, zc, I = (A0, z0, I0) if s.pretensioned else s.props("net")
     N, zN = s.prestress_resultant("p0")
     sig_pc = N / A + N * (zN - zc) / I * (s.h - zc)  # compression + at the bottom (tension) edge
     W0 = I0 / (s.h - z0)
@@ -627,25 +643,34 @@ def cracking_moment(sec: RCSection, hogging: bool = False) -> tuple[float, dict]
 
 
 # ── flexure ─────────────────────────────────────────────────────────────────
-def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | None = None) -> Check:
+def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | None = None,
+            xi_b_bonded_only: bool = False) -> Check:
     """normal-section flexural resistance of a member without axial force (5.2.2 rectangle, 5.2.3 T / I / box, 5.2.4
     x < 2a') plus the condition x ≤ ξb h0 and the minimum reinforcement: 9.1.12 for reinforced concrete; 9.1.13 for
     prestressed concrete (Mud / Mcr ≥ 1.0, and As ≥ 0.003 b h0 for partially prestressed members: pc_class "A" or "B";
     "full" for fully prestressed). External tendons (5.2.5, 5.2.6): a tension σpe,ex Aex at their depth, h0 to the
-    resultant of As, Ap and the external tendons below the centroid (figure 5.2.5); ξb from the bonded steel."""
+    resultant of As, Ap and the external tendons below the centroid (figure 5.2.5); ξb by table 5.2.1 note 1 with the
+    external strand among the tension-zone steel, or with xi_b_bonded_only=True from the bonded steel only (note 2);
+    details["xi_b_alternative"] gives the other reading's ξb, x and verdict."""
     s = sec if Md >= 0 else sec.flipped()
     c, st = s.concrete, s.steel
     h0 = s.h0()
     t, comp = s.groups()
     lo, hi = 1e-6 * s.h, 20 * s.h
-    x = brentq(lambda x: s.forces(x)[0], lo, hi, xtol=1e-9 * s.h)
-    xb = s.xi_b()
+    xb = s.xi_b(external=not xi_b_bonded_only)
+    x = brentq(lambda x: s.forces(x, xb)[0], lo, hi, xtol=1e-9 * s.h)
     chk = Check("flexure" + (" (hogging)" if Md < 0 else ""), gamma0 * Md, 0.0, "kN·m",
                 "JTG 3362-2018 5.2.5 / 5.2.6" if s.has_external else "JTG 3362-2018 5.2.2 / 5.2.3",
                 {"x": x, "h0": h0, "xi": x / h0, "xi_b": xb})
     if s.has_external:
         chk.details["N_ex"] = float((s.external[:, 2] * s.external[:, 0]).sum()) / 1e3
         chk.notes.append("external tendons at σpe,ex (5.2.5)")
+        xb2 = s.xi_b(external=xi_b_bonded_only)
+        if xb2 != xb:
+            x2 = brentq(lambda x: s.forces(x, xb2)[0], lo, hi, xtol=1e-9 * s.h)
+            chk.details["xi_b_alternative"] = {
+                "reading": "table 5.2.1 note 1 (external strand included)" if xi_b_bonded_only else
+                "bonded steel only (note 2)", "xi_b": xb2, "x": x2, "over_reinforced": x2 > xb2 * h0}
     if x > xb * h0:
         chk.failed.append(f"over-reinforced: x = {x:.0f} > ξb h0 = {xb * h0:.0f} mm")
     ring = s.kind in ("circle", "annulus")  # bars all round: no separate compression reinforcement
@@ -660,15 +685,15 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
         if not pt.any():
             bot, top = s.edge_masks()
             single = s.replace(bars=s.bars[~top], bar_d=s.bar_d[~top])
-            x1 = brentq(lambda x: single.forces(x)[0], lo, hi, xtol=1e-9 * s.h)
+            x1 = brentq(lambda x: single.forces(x, xb)[0], lo, hi, xtol=1e-9 * s.h)
             if x1 <= xb * single.h0():  # an over-reinforced single section is not a valid alternative (5.2.2-3)
-                M_single = single.forces(x1)[1]
+                M_single = single.forces(x1, xb)[1]
         Mu = max(M_about, M_single)
         how = "moments about the compression steel" if M_about >= M_single else "compression bars ignored (singly reinforced)"
         chk.notes.append(f"x = {x:.0f} < 2a' = {2 * aref:.0f} mm: {how} governs ({'5.2.6' if s.has_external else '5.2.4'})")
         chk.details.update(a_ref=aref, M_about_compression_steel=M_about / 1e6, M_singly_reinforced=M_single / 1e6)
     else:
-        Mu = s.forces(x)[1]
+        Mu = s.forces(x, xb)[1]
     chk.resistance = Mu / 1e6
     if not ring:
         b = s.web()
@@ -681,7 +706,7 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
             if pc_class is None:
                 chk.notes.append("pc_class not given: As ≥ 0.003 b h0 of partially prestressed members not checked (9.1.13)")
             elif pc_class.upper() in ("A", "B"):
-                As_min = 0.003 * b * h0
+                As_min = 0.003 * b * s.h0(external=False)  # h0 of the bonded steel (program convention)
                 if t[:, 0].sum() < As_min:
                     chk.failed.append(f"As = {t[:, 0].sum():.0f} mm² < 0.003 b h0 = {As_min:.0f} mm² (9.1.13)")
         else:
