@@ -971,7 +971,6 @@ def eccentric(sec: RCSection, Nd: float, Md: float, l0: float | None = None, *, 
     if sec.has_external:
         raise NotImplementedError("5.3 has no provisions for compression members with external tendons")
     s = sec if Md >= 0 else sec.flipped()
-    c, st = s.concrete, s.steel
     e0_raw = abs(Md) / Nd * 1e3  # mm
     e0 = max(e0_raw, 20.0, s.h / 30)
     ring = s.kind in ("circle", "annulus")
