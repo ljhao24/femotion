@@ -169,8 +169,8 @@ def cap_flexure(sec: RCSection, Md: float, l: float, *, gamma0: float = 1.0) -> 
         chk.failed.append(f"over-reinforced: x = {x:.0f} > ξb h0 = {xb * h0:.0f} mm (5.2.2-3)")
     rho, rmin = As / (b * h0), max(0.45 * c.ftd / st.fsd, 0.002)
     if rho < rmin:
-        chk.failed.append(f"tension reinforcement ratio {rho:.4%} < minimum {rmin:.4%} (9.1.12)")
-    chk.failed += s.material_rules()
+        chk.warnings.append(f"tension reinforcement ratio {rho:.4%} < minimum {rmin:.4%} (9.1.12)")
+    chk.warnings += s.material_rules()
     return chk
 
 
@@ -199,7 +199,7 @@ def cap_shear(sec: RCSection, Vd: float, l: float, stirrups, *, gamma0: float = 
     if gamma0 * abs(Vd) > Vmax:
         chk.failed.append(f"section too small: γ0Vd > 0.33e-4 (l/h + 10.3) √fcu,k b h0 = {Vmax:.0f} kN (8.4.4)")
     if rho_sv < sst.rho_sv_min:
-        chk.failed.append(f"stirrup ratio {rho_sv:.4%} < minimum {sst.rho_sv_min:.2%} (9.3.12)")
+        chk.warnings.append(f"stirrup ratio {rho_sv:.4%} < minimum {sst.rho_sv_min:.2%} (9.3.12)")
     return chk
 
 
@@ -312,7 +312,7 @@ def pile_cap_stm(N1d: float, N2d: float, x1: float, x2: float, h0: float, *, b: 
     tie = Check("pile cap tie", gamma0 * max(Ts), st.fsd * As / 1e3, "kN", "JTG 3362-2018 8.5.4-6",
                 {"T1": Ts[0], "T2": Ts[1], "rho": As / (bs * h0)})
     if As / (bs * h0) < 0.0015:
-        tie.failed.append(f"tie steel {As / (bs * h0):.3%} < 0.15 % within bs (8.5.4)")
+        tie.warnings.append(f"tie steel {As / (bs * h0):.3%} < 0.15 % within bs (8.5.4)")
     out.append(tie)
     return out
 

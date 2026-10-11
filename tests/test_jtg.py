@@ -89,7 +89,8 @@ def test_over_reinforced_and_minimum_steel():
     heavy = jtg.rect(250, 500, bottom=[(8, 32, 60)])
     assert any("over-reinforced" in f for f in jtg.flexure(heavy, 10.0).failed)
     light = jtg.rect(400, 1000, bottom=[(2, 12, 40)])
-    assert any("minimum" in f for f in jtg.flexure(light, 1.0).failed)
+    r = jtg.flexure(light, 1.0)
+    assert any("minimum" in f for f in r.warnings) and r.ok  # 9.1.12 warns (detailing does not fail the check)
 
 
 def test_hogging_uses_top_bars():
@@ -109,7 +110,7 @@ def test_shear_formula():
     Vcs = 1.1 * 0.45e-3 * 200 * h0 * math.sqrt((2 + 0.6 * P) * math.sqrt(40) * rho * 330)
     assert r.resistance == pytest.approx(Vcs, rel=1e-9) and r.details["alpha3"] == 1.1
     assert r.details["V_section_max"] == pytest.approx(0.51e-3 * math.sqrt(40) * 200 * h0)
-    assert jtg.shear(s, 600.0, stirrups=(2, 6, 300)).failed  # 0.094 % < 0.11 %
+    assert jtg.shear(s, 600.0, stirrups=(2, 6, 300)).warnings  # 0.094 % < 0.11 %
 
 
 # ── compression ─────────────────────────────────────────────────────────────
@@ -197,8 +198,9 @@ def test_reverse_failure():
 
 def test_compression_member_minimum_steel():
     s = jtg.rect(500, 500, bottom=[(2, 16, 40)], top=[(2, 16, 40)])  # 0.32 %
-    assert any("0.5" in f for f in jtg.axial(s, 1000.0, 3000).failed)
-    assert any("0.5" in f for f in jtg.eccentric(s, 1000.0, 100.0).failed)
+    assert any("0.5" in f for f in jtg.axial(s, 1000.0, 3000).warnings)
+    assert any("0.5" in f for f in jtg.eccentric(s, 1000.0, 100.0).warnings)
+    assert jtg.axial(s, 1000.0, 3000).ok
 
 
 def test_axial_weak_axis_required_for_tee():
@@ -236,9 +238,10 @@ def test_compression_bars_take_fsd_prime_hrb500():
 
 def test_stirrup_detailing_and_slab():
     s = jtg.rect(300, 700, concrete="C30", bottom=[(4, 25, 50)])
-    assert any("diameter" in f for f in jtg.shear(s, 100.0, (4, 6, 100)).failed)
-    assert any("spacing" in f for f in jtg.shear(s, 100.0, (2, 10, 360)).failed)  # h/2 = 350
-    assert not jtg.shear(s, 100.0, (2, 10, 300)).failed
+    assert any("diameter" in f for f in jtg.shear(s, 100.0, (4, 6, 100)).warnings)
+    assert any("spacing" in f for f in jtg.shear(s, 100.0, (2, 10, 360)).warnings)  # h/2 = 350
+    assert jtg.shear(s, 100.0, (2, 10, 360)).ok
+    assert not jtg.shear(s, 100.0, (2, 10, 300)).warnings
     slab = jtg.rect(1000, 300, concrete="C30", bottom=[(8, 16, 40)])
     r = jtg.shear(slab, 200.0, slab=True)
     assert r.resistance == pytest.approx(1.25 * 0.50e-3 * 1.39 * 1000 * 260)
@@ -248,9 +251,9 @@ def test_stirrup_detailing_and_slab():
 
 def test_concrete_class_with_400_mpa_bars():
     s = jtg.rect(300, 600, concrete="C25", steel="HRB400", bottom=[(3, 20, 45)])
-    assert any("3.1.2" in f for f in jtg.flexure(s, 10.0).failed)
+    assert any("3.1.2" in f for f in jtg.flexure(s, 10.0).warnings)
     ok = jtg.rect(300, 600, concrete="C25", steel="HPB300", bottom=[(3, 20, 45)])
-    assert not any("3.1.2" in f for f in jtg.flexure(ok, 10.0).failed)
+    assert not any("3.1.2" in f for f in jtg.flexure(ok, 10.0).warnings)
 
 
 def test_continuous_beam_frequencies():
@@ -275,7 +278,7 @@ def test_one_side_ratio_uses_edge_rows_only():
     a = math.pi * 16 ** 2 / 4
     s = jtg.rect(600, 600, bars=[(3 * a, 50), (3 * a, 550), (2 * a, 200), (2 * a, 400)])
     r = jtg.axial(s, 1000.0, l0=3000)
-    assert any("tension side" in f and "0.2" in f for f in r.failed)
+    assert any("tension side" in f and "0.2" in f for f in r.warnings)
 
 
 def test_small_eccentricity_rectangle_5_3_4():
@@ -328,8 +331,8 @@ def test_stirrup_steel_grade():
     s = jtg.rect(300, 700, concrete="C30", steel="HRB400", bottom=[(4, 25, 50)])
     r = jtg.shear(s, 100.0, (2, 8, 250), stirrup_steel="HPB300")  # ρsv = 0.134 %: between 0.11 % and 0.14 %
     assert r.details["fsv"] == 250.0
-    assert any("0.14" in f for f in r.failed)
-    assert not jtg.shear(s, 100.0, (2, 8, 250)).failed  # HRB400 stirrups: 0.11 % suffices
+    assert any("0.14" in f for f in r.warnings)
+    assert not jtg.shear(s, 100.0, (2, 8, 250)).warnings  # HRB400 stirrups: 0.11 % suffices
 
 
 def test_singly_reinforced_alternative_keeps_inner_tension_rows():

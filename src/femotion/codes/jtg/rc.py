@@ -24,6 +24,9 @@ compression. A hogging moment is checked on the section turned upside down.
                  external=[(8 * 2085, 2150, 1050)])   # Aex, depth, σpe,ex: external tendons only
     print(r, v, c, jtg.flexure(pc, 4800.0, pc_class="A"), jtg.flexure(ex, 30000.0, pc_class="A"))
 
+Detailing does not change a verdict: the minimum reinforcement (9.1.12, 9.1.13), the stirrup rules (9.3.12), the other
+chapter 9 rules and the minimum concrete classes (3.1.2, 4.5) go to Check.warnings, `ok` reflects the calculation only.
+
 Behind the code's simplified formulas sits one rule set, used for every shape: plane sections; concrete tension
 ignored; a rectangular block of fcd over x = β·xc; steel stresses from 5.1.5 within the limits of 5.1.3; the edge rows
 (As, Ap on the tension face, A's, A'p on the compressed face) at the design values the code's formulas use; external
@@ -591,9 +594,19 @@ class Check:
     details: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
     failed: list = field(default_factory=list)  # conditions not met (besides demand ≤ resistance)
+    # detailing (chapter 9), minimum reinforcement, material and durability rules (3.1.2, 4.5) not met: reported, but
+    # they do not change the verdict of the calculation (`ok`)
+    warnings: list = field(default_factory=list)
     # serviceability and stress checks: a signed quantity against a limit (demand ≤ limit), e.g. σst ≤ 0.85 σpc
     limit_check: bool = False
     symbol: str = "γ0Sd"
+    # a detailing report (Check.report): no demand and resistance, `ok` always True, the unmet rules in `warnings`
+    detailing: bool = False
+
+    @classmethod
+    def report(cls, name: str, clause: str, details: dict | None = None, notes: list | None = None) -> "Check":
+        """an empty detailing report: add the unmet rules to `warnings`, the values to `details`"""
+        return cls(name, 0.0, 1.0, "", clause, dict(details or {}), list(notes or []), detailing=True)
 
     @property
     def ratio(self):
@@ -605,6 +618,9 @@ class Check:
 
     @property
     def ok(self):
+        """the verdict of the calculation; detailing, minimum-reinforcement and material warnings do not count"""
+        if self.detailing:
+            return not self.failed
         if self.limit_check:
             return self.demand <= self.resistance + 1e-9 * max(abs(self.resistance), 1.0) and not self.failed
         return self.ratio <= 1.0 and not self.failed
@@ -612,6 +628,11 @@ class Check:
     def __str__(self):
         v = "OK" if self.ok else "NOT OK"
         extra = ("; " + "; ".join(self.failed)) if self.failed else ""
+        if self.detailing:
+            w = ("WARNING: " + "; ".join(self.warnings)) if self.warnings else "rules met"
+            return f"{self.name}: {w}" + extra
+        if self.warnings:
+            extra += " [warnings: " + "; ".join(self.warnings) + "]"
         if self.limit_check:
             p = 3 if self.unit == "mm" else 2
             u = f" {self.unit}" if self.unit else ""
@@ -702,22 +723,22 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
             Mcr, d = cracking_moment(s)
             chk.details.update(Mcr=Mcr, cracking=d)
             if chk.resistance < Mcr:
-                chk.failed.append(f"Mud / Mcr = {chk.resistance / Mcr:.3f} < 1.0 (9.1.13)")
+                chk.warnings.append(f"Mud / Mcr = {chk.resistance / Mcr:.3f} < 1.0 (9.1.13)")
             if pc_class is None:
                 chk.notes.append("pc_class not given: As ≥ 0.003 b h0 of partially prestressed members not checked (9.1.13)")
             elif pc_class.upper() in ("A", "B"):
                 As_min = 0.003 * b * s.h0(external=False)  # h0 of the bonded steel (program convention)
                 if t[:, 0].sum() < As_min:
-                    chk.failed.append(f"As = {t[:, 0].sum():.0f} mm² < 0.003 b h0 = {As_min:.0f} mm² (9.1.13)")
+                    chk.warnings.append(f"As = {t[:, 0].sum():.0f} mm² < 0.003 b h0 = {As_min:.0f} mm² (9.1.13)")
         else:
             rho = t[:, 0].sum() / (b * h0)
             rmin = max(0.45 * c.ftd / st.fsd, 0.002)
             chk.details.update(rho=rho, rho_min=rmin)
             if rho < rmin:
-                chk.failed.append(f"tension reinforcement ratio {rho:.4%} < minimum {rmin:.4%} (9.1.12)")
+                chk.warnings.append(f"tension reinforcement ratio {rho:.4%} < minimum {rmin:.4%} (9.1.12)")
     if gamma0 * abs(Md) > 0 and chk.resistance <= 0:
         chk.failed.append("no flexural resistance")
-    chk.failed += s.material_rules()
+    chk.warnings += s.material_rules()
     return chk
 
 
@@ -782,7 +803,7 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
         vslab = 1.25 * vmin
         chk = Check("shear (slab without stirrups)", gamma0 * Vd, vslab, "kN", "JTG 3362-2018 5.2.12",
                     {"b": b, "h0": h0, "alpha2": alpha2, "V_detailing": vslab}, notes)
-        chk.failed += s.material_rules()
+        chk.warnings += s.material_rules()
         return chk
     sst = st if stirrup_steel is None else (stirrup_steel if isinstance(stirrup_steel, Rebar) else _rebar(stirrup_steel))
     legs, dia, sv = stirrups
@@ -824,13 +845,13 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
     if gamma0 * abs(Vd) <= vmin:
         chk.notes.append(f"γ0Vd ≤ {vmin:.0f} kN: detailing stirrups per 9.3.12 suffice (5.2.12)")
     if rho_sv < sst.rho_sv_min:
-        chk.failed.append(f"stirrup ratio {rho_sv:.4%} < minimum {sst.rho_sv_min:.2%} (9.3.12)")
+        chk.warnings.append(f"stirrup ratio {rho_sv:.4%} < minimum {sst.rho_sv_min:.2%} (9.3.12)")
     if dia < 8:
-        chk.failed.append(f"stirrup diameter {dia} mm < 8 mm (9.3.12)")
+        chk.warnings.append(f"stirrup diameter {dia} mm < 8 mm (9.3.12)")
     smax = min(s.h / 2, 400.0)
     if sv > smax:
-        chk.failed.append(f"stirrup spacing {sv} mm > {smax:.0f} mm (h/2 and 400 mm, 9.3.12)")
-    chk.failed += s.material_rules()
+        chk.warnings.append(f"stirrup spacing {sv} mm > {smax:.0f} mm (h/2 and 400 mm, 9.3.12)")
+    chk.warnings += s.material_rules()
     return chk
 
 
@@ -846,12 +867,12 @@ def _min_compression_steel(sec: RCSection, chk: Check):
     need = 0.006 if sec.concrete.grade >= 50 else 0.005
     chk.details["rho_total"] = tot
     if tot < need:
-        chk.failed.append(f"longitudinal reinforcement {tot:.3%} < minimum {need:.1%} (9.1.12)")
+        chk.warnings.append(f"longitudinal reinforcement {tot:.3%} < minimum {need:.1%} (9.1.12)")
     if sec.kind not in ("circle", "annulus"):
         for side, g in zip(("tension side", "compression side"), sec.groups()):
             r = g[:, 0].sum() / A
             if r < 0.002:
-                chk.failed.append(f"{side} reinforcement {r:.3%} < minimum 0.2 % (9.1.12)")
+                chk.warnings.append(f"{side} reinforcement {r:.3%} < minimum 0.2 % (9.1.12)")
 
 
 _PHI = np.array([1.0, 0.98, 0.95, 0.92, 0.87, 0.81, 0.75, 0.70, 0.65, 0.60, 0.56, 0.52, 0.48, 0.44, 0.40, 0.36, 0.32,
@@ -910,7 +931,7 @@ def axial(sec: RCSection, Nd: float, l0: float | None = None, *, gamma0: float =
     Nu = 0.9 * phi * (c.fcd * A + st.fsd_c * As) / 1e3
     chk = Check("axial compression", gamma0 * Nd, Nu, "kN", "JTG 3362-2018 5.3.1", {"phi": phi, "rho": As / sec.area})
     _min_compression_steel(sec, chk)
-    chk.failed += sec.material_rules()
+    chk.warnings += sec.material_rules()
     return chk
 
 
@@ -989,7 +1010,7 @@ def eccentric(sec: RCSection, Nd: float, Md: float, l0: float | None = None, *, 
     if e0 > e0_raw:
         chk.notes.append(f"e0 = {e0_raw:.1f} mm raised to the minimum {e0:.1f} mm (5.3.9)")
     _min_compression_steel(s, chk)
-    chk.failed += s.material_rules()
+    chk.warnings += s.material_rules()
     n_bars = len(s.bars)
     code_ok = s.kind == "circle" and n_bars >= 8
     m = method if method != "auto" else ("code" if code_ok else "strain")

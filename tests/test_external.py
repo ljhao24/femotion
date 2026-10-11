@@ -417,7 +417,7 @@ def test_minimum_bars_9_1_13_bonded_h0():
     0.003 × 600 × 1440 = 2592 mm² > As = 2454 mm², although 0.003 b h0 with the external tendon in h0 would pass"""
     s = jtg.rect(600, 1500, concrete="C50", bottom=[(5, 25, 60)], external=[(2780, 1000, 1000)])
     r = jtg.flexure(s, 1.0, pc_class="A")
-    assert r.details["h0"] < 1100 and any("0.003 b h0 = 2592" in f for f in r.failed)
+    assert r.details["h0"] < 1100 and any("0.003 b h0 = 2592" in f for f in r.warnings) and r.ok
 
 
 def _stiffless_pair(d_in=1100.0, d_ex=1050.0):
@@ -463,10 +463,11 @@ def test_detailing_9_4():
     (9.4.25); free length ≤ 8.0 m (9.4.26); anchorage crossbeam ≥ 1000 mm (9.4.27)"""
     assert jtg.deviation_radius_min(5.0) == 4000 and jtg.deviation_radius_min(5.2) == 6000
     ok = jtg.external_detailing(wire_d=5.0, radius=4000, free_length=8000, hoop_d=20, hoop_spacing=100, crossbeam=1000)
-    assert ok.ok and ok.demand == pytest.approx(1.0)
+    assert ok.ok and not ok.warnings and ok.details["worst_ratio"] == pytest.approx(1.0)
     for kw in (dict(wire_d=5.2, radius=5999), dict(free_length=8001), dict(hoop_d=18), dict(hoop_spacing=110),
                dict(crossbeam=950)):
-        assert not jtg.external_detailing(**kw).ok
+        r = jtg.external_detailing(**kw)
+        assert len(r.warnings) == 1 and r.ok  # detailing warns, it does not fail (Check.report)
     with pytest.raises(ValueError):
         jtg.external_detailing(radius=5000)
 

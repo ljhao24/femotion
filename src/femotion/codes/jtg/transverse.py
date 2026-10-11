@@ -717,9 +717,9 @@ def box_detailing(box: BoxGeometry, *, transverse_prestress: bool = False, verti
     prestress (the code writes it for precast T and box girders; program convention: checked for every box); top and
     bottom slabs ≥ their clear span between the web faces / 30 and ≥ 200 mm at mid-span; webs ≥ 160 mm and their height
     between the haunches ≤ 15 web widths (20 with vertical prestress); the haunches item 2 asks for (notes). Returns a
-    Check (resistance 1, demand 0) whose `failed` lists the unmet rules."""
+    detailing report (Check.report) whose `warnings` list the unmet rules."""
     b = box
-    chk = Check("box detailing (9.3.2)", 0.0, 1.0, "-", "JTG 3362-2018 9.3.2", {})
+    chk = Check.report("box detailing (9.3.2)", "JTG 3362-2018 9.3.2")
     if b.haunch_top[0] <= 0 or b.haunch_top[1] <= 0:
         chk.notes.append("no haunch between the top slab and the webs: 9.3.2 item 2 asks for one")
     if b.haunch_bottom[0] <= 0 or b.haunch_bottom[1] <= 0:
@@ -727,24 +727,24 @@ def box_detailing(box: BoxGeometry, *, transverse_prestress: bool = False, verti
                          "where needed)")
     tip = 0.140 if transverse_prestress else 0.100
     if min(b.cantilevers()) > 1e-9 and b.t_tip < tip - 1e-12:
-        chk.failed.append(f"cantilever tip {b.t_tip * 1e3:.0f} mm < {tip * 1e3:.0f} mm (9.3.2 item 1)")
+        chk.warnings.append(f"cantilever tip {b.t_tip * 1e3:.0f} mm < {tip * 1e3:.0f} mm (9.3.2 item 1)")
     for nm, t, lvl in (("top", b.t_top, "top"), ("bottom", b.t_bottom, "bottom")):
         for k in range(len(b.webs) - 1):
             ln = b.faces(k + 1, lvl)[0] - b.faces(k, lvl)[1]
             need = max(ln / 30, 0.200)
             chk.details[f"{nm} slab, cell {k}: ln/30"] = ln / 30
             if t < need - 1e-12:
-                chk.failed.append(f"{nm} slab {t * 1e3:.0f} mm < max(ln/30, 200) = {need * 1e3:.0f} mm in cell {k} "
-                                  "(9.3.2 item 2)")
+                chk.warnings.append(f"{nm} slab {t * 1e3:.0f} mm < max(ln/30, 200) = {need * 1e3:.0f} mm in cell {k} "
+                                    "(9.3.2 item 2)")
     hw = (b.z_top - b.t_top / 2 - b.haunch_top[1]) - (b.z_bottom + b.t_bottom / 2 + b.haunch_bottom[1])
     lim = 20 if vertical_prestress else 15
     for k, tw in enumerate(b.tw):
         if tw < 0.160:
-            chk.failed.append(f"web {k} {tw * 1e3:.0f} mm < 160 mm (9.3.2 item 3)")
+            chk.warnings.append(f"web {k} {tw * 1e3:.0f} mm < 160 mm (9.3.2 item 3)")
         h_k = hw / b.cos(k)
         if h_k > lim * tw:
-            chk.failed.append(f"web {k}: {h_k * 1e3:.0f} mm between the haunches > {lim} × {tw * 1e3:.0f} mm "
-                              "(9.3.2 item 3)")
+            chk.warnings.append(f"web {k}: {h_k * 1e3:.0f} mm between the haunches > {lim} × {tw * 1e3:.0f} mm "
+                                "(9.3.2 item 3)")
     return chk
 
 

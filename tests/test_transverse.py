@@ -319,13 +319,13 @@ def test_multi_cell_frame_and_geometry_checks():
 
 def test_box_detailing():
     """9.3.2 items 1–3: cantilever tip, slab thickness ≥ max(ln/30, 200 mm), web ≥ 160 mm and ≤ 15 (20) widths tall"""
-    assert tr.box_detailing(tr.BoxGeometry(**BOX), transverse_prestress=True).ok
+    assert not tr.box_detailing(tr.BoxGeometry(**BOX), transverse_prestress=True).warnings
     bad = tr.BoxGeometry(B=16.0, H=3.4, webs=(-4.5, 4.5), t_top=0.25, t_bottom=0.18, t_web=0.15, t_root=0.5,
                          t_tip=0.12)
     chk = tr.box_detailing(bad, transverse_prestress=True)
     # tip 120 < 140; top 250 < 8.85/30 = 295; bottom 180 < 295; each web 150 < 160 and 2.97 m > 15 × 0.15
-    assert len(chk.failed) == 7
-    assert len(tr.box_detailing(bad, vertical_prestress=True).failed) == 4  # tip 120 ≥ 100, 2.97 m ≤ 20 × 0.15
+    assert len(chk.warnings) == 7 and chk.ok
+    assert len(tr.box_detailing(bad, vertical_prestress=True).warnings) == 4  # tip 120 ≥ 100, 2.97 m ≤ 20 × 0.15
 
 
 def _shoelace(p):

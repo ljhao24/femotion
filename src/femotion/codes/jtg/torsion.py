@@ -160,9 +160,9 @@ def _detailing(chk: Check, sec, sst, stirrups, Ast, b_part, h_part, beta_t, b_sv
     rho_st = Ast / (b_part * h_part)
     chk.details.update(rho_sv=rho_sv, rho_sv_min=need_sv, rho_st=rho_st, rho_st_min=need_st)
     if rho_sv < need_sv - 1e-12:
-        chk.failed.append(f"stirrup ratio {rho_sv:.4%} < {need_sv:.4%} (9.3.13 item 3)")
+        chk.warnings.append(f"stirrup ratio {rho_sv:.4%} < {need_sv:.4%} (9.3.13 item 3)")
     if rho_st < need_st - 1e-12:
-        chk.failed.append(f"longitudinal torsion steel Ast/(bh) = {rho_st:.4%} < {need_st:.4%} (9.3.13 item 4)")
+        chk.warnings.append(f"longitudinal torsion steel Ast/(bh) = {rho_st:.4%} < {need_st:.4%} (9.3.13 item 4)")
 
 
 def torsion(sec: RCSection, Td: float, Vd: float = 0.0, *, stirrups, Ast: float, core, gamma0: float = 1.0,
@@ -249,7 +249,7 @@ def torsion(sec: RCSection, Td: float, Vd: float = 0.0, *, stirrups, Ast: float,
         chk.notes.append(f"γ0Vd/(bh0) + γ0Td/Wt = {tau:.2f} ≤ 0.50 α2 ftd = {0.5 * alpha2 * c.ftd:.2f} MPa: torsion "
                          "detailing reinforcement suffices (5.5.3-2, 9.3.13)")
     _detailing(chk, sec, sst, stirrups, Ast, b_body, h_body, beta_t, b)
-    chk.failed += sec.material_rules()
+    chk.warnings += sec.material_rules()
     return chk
 
 

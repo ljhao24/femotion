@@ -566,8 +566,8 @@ def punching(Fld: float, *, Um: float, h0: float, h: float, concrete, sigma_pc: 
             γ0 Fld ≤ (0.35 βh ftd + 0.15 σpc,m) Um h0 + 0.75 fsv Asvu   or   + 0.75 fsd Asbu sin θ
         with punching steel the section limit γ0 Fld ≤ 1.05 βh ftd Um h0 (5.6.2-1), and outside the reinforced zone
         5.6.1 again with Um_outer, the least favourable perimeter 0.5 h0 beyond it (5.6.2).
-    detailing (9.2.9): {"stirrup_d": mm, "stirrup_s": mm} and/or {"bent_d": mm, "bent_n": per direction}; the slab
-    must be at least 150 mm thick; bent bars at 30°…45°. Steel: `steel` for stirrups (fsv) and bent bars (fsd)."""
+    detailing (9.2.9, reported in `warnings`): {"stirrup_d": mm, "stirrup_s": mm} and/or {"bent_d": mm, "bent_n": per
+    direction}; the slab must be at least 150 mm thick; bent bars at 30°…45°. Steel: `steel` for stirrups (fsv) and bent bars (fsd)."""
     c = _c(concrete)
     st = _s(steel)
     bh = beta_h(h)
@@ -605,20 +605,20 @@ def punching(Fld: float, *, Um: float, h0: float, h: float, concrete, sigma_pc: 
         if gamma0 * Fld > out:
             chk.failed.append(f"outside the punching steel: γ0Fld > {out:.0f} kN (5.6.1 on Um = {Um_outer:.0f} mm, 5.6.2)")
     if h < 150:
-        chk.failed.append(f"slab {h:.0f} mm < 150 mm with punching steel (9.2.9)")
+        chk.warnings.append(f"slab {h:.0f} mm < 150 mm with punching steel (9.2.9)")
     dt = detailing or {}
     if stirrups is not None:
         if "stirrup_d" in dt and dt["stirrup_d"] < 8:
-            chk.failed.append(f"punching stirrups {dt['stirrup_d']} mm < 8 mm (9.2.9)")
+            chk.warnings.append(f"punching stirrups {dt['stirrup_d']} mm < 8 mm (9.2.9)")
         if "stirrup_s" in dt and dt["stirrup_s"] > h0 / 3:
-            chk.failed.append(f"punching stirrup spacing {dt['stirrup_s']} mm > h0/3 = {h0 / 3:.0f} mm (9.2.9)")
+            chk.warnings.append(f"punching stirrup spacing {dt['stirrup_s']} mm > h0/3 = {h0 / 3:.0f} mm (9.2.9)")
     else:
         if not 30 <= bent[1] <= 45:
-            chk.failed.append(f"bent bars at {bent[1]}°: 9.2.9 asks for 30° … 45°")
+            chk.warnings.append(f"bent bars at {bent[1]}°: 9.2.9 asks for 30° … 45°")
         if "bent_d" in dt and dt["bent_d"] < 12:
-            chk.failed.append(f"bent bars {dt['bent_d']} mm < 12 mm (9.2.9)")
+            chk.warnings.append(f"bent bars {dt['bent_d']} mm < 12 mm (9.2.9)")
         if "bent_n" in dt and dt["bent_n"] < 5:
-            chk.failed.append(f"{dt['bent_n']} bent bars per direction < 5 (9.2.9)")
+            chk.warnings.append(f"{dt['bent_n']} bent bars per direction < 5 (9.2.9)")
     return chk
 
 
@@ -659,33 +659,33 @@ def slab_detailing(t: float, *, main: tuple, distribution: tuple | None = None, 
     distribution bars ≥ 8 mm (sidewalks 6 mm), spacing ≤ 200 mm, area preferably ≥ 0.1 % of the slab (roadway).
     Thickness: hollow slabs' top and bottom ≥ 80 mm; sidewalk slabs ≥ 80 mm cast in place, 60 mm precast.
     bent_at_support: (bars through the support per metre, their area / the main bars' area) ≥ (3, 1/4) (9.2.3).
-    Returns a Check (resistance 1, demand 0) whose `failed` lists the unmet rules."""
-    chk = Check("slab detailing (9.2)", 0.0, 1.0, "-", "JTG 3362-2018 9.2.1–9.2.4", {"t": t})
+    Returns a detailing report (Check.report) whose `warnings` list the unmet rules."""
+    chk = Check.report("slab detailing (9.2)", "JTG 3362-2018 9.2.1–9.2.4", {"t": t})
     d, s = main
     dmin = 8 if sidewalk else 10
     if d < dmin:
-        chk.failed.append(f"main bars {d} mm < {dmin} mm (9.2.2)")
+        chk.warnings.append(f"main bars {d} mm < {dmin} mm (9.2.2)")
     if s > 200:
-        chk.failed.append(f"main bar spacing {s} mm > 200 mm (9.2.2)")
+        chk.warnings.append(f"main bar spacing {s} mm > 200 mm (9.2.2)")
     if distribution is not None:
         dd, ds = distribution
         dmin = 6 if sidewalk else 8
         if dd < dmin:
-            chk.failed.append(f"distribution bars {dd} mm < {dmin} mm (9.2.4)")
+            chk.warnings.append(f"distribution bars {dd} mm < {dmin} mm (9.2.4)")
         if ds > 200:
-            chk.failed.append(f"distribution bar spacing {ds} mm > 200 mm (9.2.4)")
+            chk.warnings.append(f"distribution bar spacing {ds} mm > 200 mm (9.2.4)")
         if not sidewalk:
             r = math.pi * dd * dd / 4 * 1000 / ds / (t * 1000)
             chk.details["distribution_ratio"] = r
             if r < 0.001:
                 chk.notes.append(f"distribution bars {r:.3%} < 0.1 % of the slab (9.2.4, advisory)")
     if hollow and t < 80:
-        chk.failed.append(f"hollow slab top / bottom {t} mm < 80 mm (9.2.1)")
+        chk.warnings.append(f"hollow slab top / bottom {t} mm < 80 mm (9.2.1)")
     if sidewalk and t < (60 if precast else 80):
-        chk.failed.append(f"sidewalk slab {t} mm < {60 if precast else 80} mm (9.2.1)")
+        chk.warnings.append(f"sidewalk slab {t} mm < {60 if precast else 80} mm (9.2.1)")
     if bent_at_support is not None:
         n, share = bent_at_support
         if n < 3 or share < 0.25:
-            chk.failed.append(f"straight bars through the support: {n} per metre, {share:.0%} of the main bars; "
-                              "9.2.3 asks for ≥ 3 and ≥ 1/4")
+            chk.warnings.append(f"straight bars through the support: {n} per metre, {share:.0%} of the main bars; "
+                                "9.2.3 asks for ≥ 3 and ≥ 1/4")
     return chk

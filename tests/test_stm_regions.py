@@ -121,7 +121,7 @@ def test_strut_tie_checks():
     assert any("25°" in f for r in m2.check() for f in r.failed)
     # B.3.5 surface mesh
     mesh = m2.check(mesh=(0.0025, 0.004, 350))[-1]
-    assert len(mesh.failed) == 2
+    assert len(mesh.warnings) == 2 and mesh.ok
 
 
 def test_anchorage_zone():
@@ -197,7 +197,7 @@ def test_pile_caps():
     assert res[0].demand == pytest.approx(1.1 * C1) and res[0].resistance == pytest.approx(t * 4000 * fce / 1e3)
     assert res[2].demand == pytest.approx(1.1 * T1) and res[2].resistance == pytest.approx(330 * 40 * 616 / 1e3)
     low = rg.pile_cap_stm(6000, 5000, 1250, 1250, 1880, b=1200, s=100, d=28, As=10 * 616, bs=4000, concrete="C30")
-    assert any("0.15 %" in f for f in low[2].failed)
+    assert any("0.15 %" in f for f in low[2].warnings)
 
 
 def test_pile_cap_punching():

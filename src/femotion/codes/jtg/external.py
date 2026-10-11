@@ -31,8 +31,8 @@ def external_detailing(*, wire_d: float | None = None, radius: float | None = No
     """the numeric detailing rules for external tendons, each checked when its value is given (all "should" rules):
     deviation radius ≥ deviation_radius_min(wire_d) (9.4.23, 9.4.10); free length ≤ 8.0 m (9.4.26); inner closed hoops of
     block deviators ≥ 20 mm in diameter, inner and outer hoops at ≤ 100 mm along the deviator (9.4.25); anchorage
-    crossbeam ≥ 1000 mm thick (9.4.27). The Check's demand is the largest ratio of a value to its limit (limit / value
-    for minima), 1.0 the limit; details hold each item."""
+    crossbeam ≥ 1000 mm thick (9.4.27). Returns a detailing report (Check.report): the unmet rules in `warnings`;
+    details hold each item and "worst_ratio", the largest ratio of a value to its limit (limit / value for minima)."""
     items = []
     if radius is not None or wire_d is not None:
         if radius is None or wire_d is None:
@@ -48,19 +48,21 @@ def external_detailing(*, wire_d: float | None = None, radius: float | None = No
         items.append(("anchorage crossbeam thickness", crossbeam, CROSSBEAM_MIN, "min", "9.4.27"))
     if not items:
         raise ValueError("give at least one of wire_d and radius, free_length, hoop_d, hoop_spacing, crossbeam")
-    details, failed, notes = {}, [], []
+    details, warnings, notes = {}, [], []
     worst = 0.0
     for name, v, lim, kind, cl in items:
         r = v / lim if kind == "max" else (lim / v if v > 0 else float("inf"))
         details[name] = {"value": v, "limit": lim, "ratio": r}
         worst = max(worst, r)
         if r > 1 + 1e-12:
-            failed.append(f"{name} {v:g} mm {'>' if kind == 'max' else '<'} {lim:g} mm ({cl})")
+            warnings.append(f"{name} {v:g} mm {'>' if kind == 'max' else '<'} {lim:g} mm ({cl})")
     if free_length is not None and free_length > FREE_LENGTH_MAX:
         notes.append("free length over 8 m: fix it by calculation and allow for its effect on the structure "
                      "(commentary to 9.4.25–9.4.27)")
     if hoop_d is not None or hoop_spacing is not None:
         notes.append("block deviators need both inner closed hoops (round each deviator) and outer ones (round all of "
                      "them, 9.4.25)")
-    return Check("external tendon detailing", worst, 1.0, "", "JTG 3362-2018 9.4.23–9.4.27", details, notes, failed,
-                 limit_check=True, symbol="value/limit")
+    chk = Check.report("external tendon detailing", "JTG 3362-2018 9.4.23–9.4.27", details | {"worst_ratio": worst},
+                       notes)
+    chk.warnings += warnings
+    return chk

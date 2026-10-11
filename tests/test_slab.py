@@ -289,10 +289,10 @@ def test_punching_by_hand():
     assert any("1.0 … 3.5" in n for n in slab.punching(1, Um=Um, h0=420, h=480, concrete="C40", sigma_pc=0.5).notes)
     thin = slab.punching(5000, Um=Um, h0=100, h=140, concrete="C40", stirrups=2000, Um_outer=100,
                          detailing={"stirrup_d": 6, "stirrup_s": 60})
-    assert len(thin.failed) == 5  # 1.05 limit, outside the steel, h < 150, d < 8, s > h0/3
+    assert len(thin.failed) == 2 and len(thin.warnings) == 3  # 1.05 limit, outside the steel; h < 150, d < 8, s > h0/3
     steep = slab.punching(100, Um=Um, h0=420, h=480, concrete="C40", bent=(1000, 60), Um_outer=1e5,
                           detailing={"bent_d": 10, "bent_n": 4})
-    assert len(steep.failed) == 3
+    assert not steep.failed and len(steep.warnings) == 3 and steep.ok
 
 
 def test_footing_area_against_the_polygon():
@@ -319,9 +319,9 @@ def test_footing_area_against_the_polygon():
 
 def test_slab_detailing():
     """9.2.1, 9.2.2, 9.2.3, 9.2.4 thresholds"""
-    assert slab.slab_detailing(200, main=(12, 150), distribution=(10, 200)).ok
+    assert not slab.slab_detailing(200, main=(12, 150), distribution=(10, 200)).warnings
     bad = slab.slab_detailing(200, main=(8, 220), distribution=(6, 250), bent_at_support=(2, 0.2))
-    assert len(bad.failed) == 5
-    assert slab.slab_detailing(70, main=(8, 150), sidewalk=True).failed
-    assert slab.slab_detailing(70, main=(8, 150), sidewalk=True, precast=True).ok
+    assert len(bad.warnings) == 5 and bad.ok  # a detailing report: unmet rules warn
+    assert slab.slab_detailing(70, main=(8, 150), sidewalk=True).warnings
+    assert not slab.slab_detailing(70, main=(8, 150), sidewalk=True, precast=True).warnings
     assert slab.slab_detailing(300, main=(12, 150), distribution=(8, 200)).notes  # 0.084 % < 0.1 % (advisory)

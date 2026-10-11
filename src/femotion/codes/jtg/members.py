@@ -135,25 +135,28 @@ def axial_spiral(sec: RCSection, Nd: float, l0: float | None = None, *, spiral, 
     if why:
         chk.notes.append("spiral not counted (" + "; ".join(why) + "): 5.3.1 governs (5.3.2)")
         chk.failed += base.failed
+        chk.warnings += base.warnings
         return chk
     if N532 < N531:
         chk.notes.append("5.3.2-1 below 5.3.1: the spiral's confinement is not counted (5.3.2)")
         chk.failed += base.failed
+        chk.warnings += base.warnings
         return chk
     chk.resistance = min(N532, 1.5 * N531)
     if N532 > 1.5 * N531:
         chk.notes.append(f"5.3.2-1 = {N532:.0f} kN limited to 1.5 × 5.3.1 = {1.5 * N531:.0f} kN (5.3.2)")
     chk.clause = "JTG 3362-2018 5.3.2, 9.6.2"
-    chk.failed += base.failed  # 9.1.12 and 3.1.2 apply as well
+    chk.failed += base.failed
+    chk.warnings += base.warnings  # 9.1.12 and 3.1.2 apply as well
     if As < 0.005 * Acor:
-        chk.failed.append(f"longitudinal bars {As / Acor:.3%} of Acor < 0.5 % (9.6.2)")
+        chk.warnings.append(f"longitudinal bars {As / Acor:.3%} of Acor < 0.5 % (9.6.2)")
     if Acor < 2 / 3 * sec.area:
-        chk.failed.append(f"core area {Acor / sec.area:.1%} of the section < 2/3 (9.6.2)")
+        chk.warnings.append(f"core area {Acor / sec.area:.1%} of the section < 2/3 (9.6.2)")
     if s < 40:
-        chk.failed.append(f"pitch {s:g} mm < 40 mm (9.6.2)")
+        chk.warnings.append(f"pitch {s:g} mm < 40 mm (9.6.2)")
     d_long = _d_long(sec, 0.0)
     if ds < max(8.0, d_long / 4):
-        chk.failed.append(f"spiral diameter {ds:g} mm < max(8 mm, d/4 = {d_long / 4:.1f} mm) (9.6.2)")
+        chk.warnings.append(f"spiral diameter {ds:g} mm < max(8 mm, d/4 = {d_long / 4:.1f} mm) (9.6.2)")
     return chk
 
 
@@ -434,8 +437,8 @@ def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, al
         chk.notes.append(f"axial tension {abs(Nd):g} kN: Vcs − 0.2 γ0 N = {Vt:.0f} kN, not below fsv Asv h0/s = {Vs:.0f} kN "
                          "(GB 50010 6.3.14, program convention)")
         if Vs < 0.36e-3 * c.ftd * b * h0:
-            chk.failed.append(f"fsv Asv h0/s = {Vs:.0f} kN < 0.36 ftd b h0 = {0.36e-3 * c.ftd * b * h0:.0f} kN "
-                              "(GB 50010 6.3.14)")
+            chk.warnings.append(f"fsv Asv h0/s = {Vs:.0f} kN < 0.36 ftd b h0 = {0.36e-3 * c.ftd * b * h0:.0f} kN "
+                                "(GB 50010 6.3.14)")
     elif Nd > 0:
         chk.notes.append("axial compression not counted (5.2.9 has no such term; safe side)")
     if gamma0 * abs(Vd) > vmax:
@@ -445,7 +448,7 @@ def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, al
     d_long = _d_long(sec, 0.0)
     rule = "JTG 3363-2019 6.2.2" if pile else "9.6.1"
     if dia < max(8.0, d_long / 4):
-        chk.failed.append(f"hoop diameter {dia:g} mm < max(8 mm, d/4 = {d_long / 4:.1f} mm) ({rule})")
+        chk.warnings.append(f"hoop diameter {dia:g} mm < max(8 mm, d/4 = {d_long / 4:.1f} mm) ({rule})")
     d15 = 15 * d_long if d_long else math.inf
     if pile:
         smax, why = min(d15, 300.0), "15 d, 300 mm"
@@ -454,8 +457,8 @@ def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, al
     else:
         smax, why = min(d15, 0.8 * sec.h, 400.0), "15 d, 0.8 D, 400 mm"
     if sv > smax:
-        chk.failed.append(f"hoop spacing {sv:g} mm > {smax:.0f} mm ({why}; {rule})")
-    chk.failed += sec.material_rules()
+        chk.warnings.append(f"hoop spacing {sv:g} mm > {smax:.0f} mm ({why}; {rule})")
+    chk.warnings += sec.material_rules()
     return chk
 
 
@@ -582,13 +585,13 @@ def tension(sec: RCSection, Nd: float, Md: float = 0.0, *, gamma0: float = 1.0) 
             r = s.bars[:, 0].sum() / 2 / A
             chk.details["rho_one_side"] = r
             if r < rho_min:
-                chk.failed.append(f"{what}: half the bars {r:.3%} of the gross area < {rho_min:.3%} (9.1.12)")
+                chk.warnings.append(f"{what}: half the bars {r:.3%} of the gross area < {rho_min:.3%} (9.1.12)")
             return
         for side, m in (("tension face", bot), ("far face", top)):
             r = s.bars[m, 0].sum() / A
             chk.details[f"rho_{side.split()[0]}"] = r
             if r < rho_min:
-                chk.failed.append(f"{what}: {side} reinforcement {r:.3%} of the gross area < {rho_min:.3%} (9.1.12)")
+                chk.warnings.append(f"{what}: {side} reinforcement {r:.3%} of the gross area < {rho_min:.3%} (9.1.12)")
 
     if e0 == 0:
         chk.resistance = Nud / 1e3
@@ -637,7 +640,7 @@ def tension(sec: RCSection, Nd: float, Md: float = 0.0, *, gamma0: float = 1.0) 
                 rho_min = max(0.45 * c.ftd / st.fsd, 0.002)  # large eccentricity: fsd not capped
                 chk.details.update(rho=rho, rho_min=rho_min)
                 if rho < rho_min:
-                    chk.failed.append(f"tension reinforcement ratio {rho:.4%} < minimum {rho_min:.4%} (9.1.12)")
+                    chk.warnings.append(f"tension reinforcement ratio {rho:.4%} < minimum {rho_min:.4%} (9.1.12)")
                 if top.any():
                     single = s.replace(bars=s.bars[~top], bar_d=s.bar_d[~top])
                     try:
@@ -647,9 +650,9 @@ def tension(sec: RCSection, Nd: float, Md: float = 0.0, *, gamma0: float = 1.0) 
                     rc1 = s.bars[top, 0].sum() / A
                     chk.details.update(N_without_compression_bars=N_wo / 1e3, rho_compression=rc1)
                     if gamma0 * Nd * 1e3 > N_wo and rc1 < 0.002:
-                        chk.failed.append(f"compression bars needed by the calculation: {rc1:.3%} of the gross area "
-                                          "< 0.2 % (9.1.12)")
-    chk.failed += s.material_rules()
+                        chk.warnings.append(f"compression bars needed by the calculation: {rc1:.3%} of the gross area "
+                                            "< 0.2 % (9.1.12)")
+    chk.warnings += s.material_rules()
     return chk
 
 
@@ -733,6 +736,9 @@ def biaxial(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: float, Md
     for f_ in cx.failed + cy.failed:
         if f_ not in chk.failed:
             chk.failed.append(f_)
+    for w in cx.warnings + cy.warnings:
+        if w not in chk.warnings:
+            chk.warnings.append(w)
     return chk
 
 
@@ -763,7 +769,11 @@ def biaxial_tension(sec_x: RCSection, sec_y: RCSection | None, Nd: float, Mdx: f
     chk = Check("biaxial eccentric tension", gamma0 * Nd, Nu / 1e3, "kN", "JTG 3362-2018 5.4.3",
                 {"Nud": Nud / 1e3, "Mux": Mux / 1e6, "Muy": Muy / 1e6, "e0x": e0x, "e0y": e0y})
     for s, M in ((sec_x, Mdx), (sec_y, Mdy)):
-        for f_ in tension(s, Nd, M, gamma0=gamma0).failed:
+        t = tension(s, Nd, M, gamma0=gamma0)
+        for f_ in t.failed:
             if f_ not in chk.failed:
                 chk.failed.append(f_)
+        for w in t.warnings:
+            if w not in chk.warnings:
+                chk.warnings.append(w)
     return chk

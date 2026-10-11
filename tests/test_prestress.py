@@ -102,19 +102,19 @@ def test_cracking_moment_6_5_2():
     got, d = jtg.cracking_moment(s)
     assert got == pytest.approx(Mcr / 1e6, rel=1e-9)
     r = jtg.flexure(s, 100.0, pc_class="full")
-    assert r.details["Mcr"] == pytest.approx(got) and (r.resistance >= got) == (not any("9.1.13" in f for f in r.failed))
+    assert r.details["Mcr"] == pytest.approx(got) and (r.resistance >= got) == (not any("9.1.13" in f for f in r.warnings))
 
 
 def test_partial_prestress_minimum_bars_9_1_13():
     s = jtg.tee(200, 1600, 1600, 150, concrete="C50", bottom=[(2, 12, 50)], tendons=[(2780, 1470, 1150, 90)])
-    assert any("0.003" in f for f in jtg.flexure(s, 100.0, pc_class="A").failed)
-    assert not any("0.003" in f for f in jtg.flexure(s, 100.0, pc_class="full").failed)
+    assert any("0.003" in f for f in jtg.flexure(s, 100.0, pc_class="A").warnings)
+    assert not any("0.003" in f for f in jtg.flexure(s, 100.0, pc_class="full").warnings)
     assert any("pc_class" in n for n in jtg.flexure(s, 100.0).notes)
 
 
 def test_prestressed_concrete_class_3_1_2():
     s = jtg.rect(500, 1000, concrete="C35", tendons=[(1400, 900, 1100, 70)])
-    assert any("C40" in f for f in jtg.flexure(s, 10.0, pc_class="full").failed)
+    assert any("C40" in f for f in jtg.flexure(s, 10.0, pc_class="full").warnings)
 
 
 # ── shear ───────────────────────────────────────────────────────────────────

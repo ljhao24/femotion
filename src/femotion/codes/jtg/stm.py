@@ -282,12 +282,11 @@ class StrutTie:
                 out.append(self._node_check(a, An, S, gamma0, f"node {a} bearing face"))
         if mesh is not None:
             rx, rz, s = mesh
-            chk = Check("surface mesh (B.3.5)", 0.003, min(rx, rz), "", "JTG 3362-2018 B.3.5",
-                        {"ratio_x": rx, "ratio_z": rz, "spacing": s}, limit_check=True, symbol="0.3 %")
+            chk = Check.report("surface mesh (B.3.5)", "JTG 3362-2018 B.3.5", {"ratio_x": rx, "ratio_z": rz, "spacing": s})
             if min(rx, rz) < 0.003:
-                chk.failed.append(f"mesh ratio {min(rx, rz):.3%} < 0.3 % (B.3.5)")
+                chk.warnings.append(f"mesh ratio {min(rx, rz):.3%} < 0.3 % (B.3.5)")
             if s > 300:
-                chk.failed.append(f"mesh spacing {s:g} mm > 300 mm (B.3.5)")
+                chk.warnings.append(f"mesh spacing {s:g} mm > 300 mm (B.3.5)")
             out.append(chk)
         return out
 

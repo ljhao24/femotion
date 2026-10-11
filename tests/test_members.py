@@ -117,10 +117,10 @@ def test_spiral_column_conditions():
     assert big.resistance == pytest.approx(1.5 * N531) and big.details["N_5_3_2"] > 1.5 * N531
     thin = jtg.circle(600, 8, 22, 50, concrete="C30")
     r = jtg.axial_spiral(thin, 3000, 3000, spiral=(12, 30))
-    assert any("40 mm" in f for f in r.failed)  # pitch < 40 mm (9.6.2)
+    assert any("40 mm" in f for f in r.warnings)  # pitch < 40 mm (9.6.2)
     heavy = jtg.circle(600, 6, 36, 60, concrete="C30")
     r = jtg.axial_spiral(heavy, 3000, 3000, spiral=(8, 40))
-    assert r.clause.startswith("JTG 3362-2018 5.3.2") and any("d/4" in f for f in r.failed)  # φ8 < 36/4
+    assert r.clause.startswith("JTG 3362-2018 5.3.2") and any("d/4" in f for f in r.warnings)  # φ8 < 36/4
     with pytest.raises(ValueError):
         jtg.axial_spiral(jtg.rect(500, 500, bottom=[(3, 20, 40)], top=[(3, 20, 40)]), 1000, 3000, spiral=(10, 50))
     hollow = jtg.circle(1500, 30, 25, 60, concrete="C40", hollow=900)  # the core would include the hole (+22 %)
@@ -406,7 +406,7 @@ def test_tension_hrb500_capped_at_330():
     assert rl.resistance == pytest.approx((415 * As - 400 * Asc - 18.4 * 400 * x) / 1e3, rel=1e-6)
     assert rl.details["rho_min"] == pytest.approx(max(0.45 * 1.65 / 415, 0.002))
     sm = jtg.rect(400, 800, concrete="C40", steel="HRB500", bars=[(680, 50), (680, 750)])  # 0.2125 % each side
-    assert any("9.1.12" in f for f in jtg.tension(sm, 100).failed)  # < 45 ftd / 330 = 0.225 % (not 0.2 % with 415)
+    assert any("9.1.12" in f for f in jtg.tension(sm, 100).warnings)  # < 45 ftd / 330 = 0.225 % (not 0.2 % with 415)
 
 
 def test_axial_tension_5_4_1():
@@ -415,7 +415,7 @@ def test_axial_tension_5_4_1():
     r = jtg.tension(s, 500)
     assert r.resistance == pytest.approx(330 * (8 * A(22) + 2 * A(16)) / 1e3) and r.ok
     thin = jtg.rect(400, 800, concrete="C30", top=[(2, 16, 50)], bottom=[(4, 22, 50)])
-    assert any("far face" in f for f in jtg.tension(thin, 100).failed)  # 2Φ16 = 0.126 % < 0.2 %
+    assert any("far face" in f for f in jtg.tension(thin, 100).warnings)  # 2Φ16 = 0.126 % < 0.2 %
     pc = jtg.rect(400, 800, concrete="C50", bottom=[(4, 16, 50)], top=[(4, 16, 50)],
                   tendons=[(1112, 400, 1000, 70)], tendon="strand1860")
     assert jtg.tension(pc, 500).resistance == pytest.approx((330 * 8 * A(16) + 1260 * 1112) / 1e3)
@@ -472,8 +472,8 @@ def test_eccentric_tension_minimum_reinforcement():
     s = jtg.rect(400, 800, concrete="C30", top=[(2, 16, 45)], bottom=[(5, 25, 60)])
     r = jtg.tension(s, 400, 2000)
     assert r.details["rho"] == pytest.approx(5 * A(25) / (400 * 740))
-    assert any("compression bars needed" in f for f in r.failed) and r.details["N_without_compression_bars"] < 400
-    assert not any("compression bars" in f for f in jtg.tension(s, 100, 200).failed)
+    assert any("compression bars needed" in f for f in r.warnings) and r.details["N_without_compression_bars"] < 400
+    assert not any("compression bars" in f for f in jtg.tension(s, 100, 200).warnings)
 
 
 def test_circle_tension_5_4_4():
@@ -540,13 +540,13 @@ def test_circle_shear_limits_and_detailing():
     hollow circles are not covered; jtg.shear refuses inputs that do not apply to circles"""
     c = jtg.circle(1500, 28, 28, 75, concrete="C35")
     assert any("5.2.11" in f for f in jtg.shear_circle(c, 6000, (4, 16, 100)).failed)
-    assert any("0.8 D, 400 mm" in f for f in jtg.shear_circle(c, 1000, (2, 12, 450)).failed)
-    assert any("JTG 3363" in f for f in jtg.shear_circle(c, 1000, (2, 12, 350), pile=True).failed)
-    assert not jtg.shear_circle(c, 1000, (2, 12, 300), pile=True).failed
-    assert any("8 mm" in f for f in jtg.shear_circle(c, 1000, (2, 6, 100)).failed)
-    assert any("d/4" in f for f in jtg.shear_circle(jtg.circle(1500, 24, 36, 80), 1000, (2, 8, 100)).failed)  # 8 < 9
+    assert any("0.8 D, 400 mm" in f for f in jtg.shear_circle(c, 1000, (2, 12, 450)).warnings)
+    assert any("JTG 3363" in f for f in jtg.shear_circle(c, 1000, (2, 12, 350), pile=True).warnings)
+    assert not jtg.shear_circle(c, 1000, (2, 12, 300), pile=True).warnings
+    assert any("8 mm" in f for f in jtg.shear_circle(c, 1000, (2, 6, 100)).warnings)
+    assert any("d/4" in f for f in jtg.shear_circle(jtg.circle(1500, 24, 36, 80), 1000, (2, 8, 100)).warnings)  # 8 < 9
     dense = jtg.circle(600, 16, 32, 50)  # 4.6 % longitudinal steel
-    assert any("3 %" in f for f in jtg.shear_circle(dense, 300, (2, 10, 250)).failed)
+    assert any("3 %" in f for f in jtg.shear_circle(dense, 300, (2, 10, 250)).warnings)
     assert not any("spacing" in f for f in jtg.shear_circle(dense, 300, (2, 10, 200)).failed)
     with pytest.raises(NotImplementedError):
         jtg.shear(jtg.circle(2000, 30, 25, 60, hollow=1400), 1000, (2, 12, 100))
@@ -568,7 +568,7 @@ def test_circle_shear_axial_force():
     assert r.resistance == pytest.approx(V0 - 0.2 * 1.1 * 1500) and r.resistance > Vs
     r2 = jtg.shear_circle(p, 300, (2, 10, 150), pile=True, Nd=-4000, gamma0=1.1)
     assert r2.resistance == pytest.approx(Vs)
-    assert any("0.36 ftd b h0" in f for f in r2.failed)  # 331.7 < 0.36 × 1.39 × 1056 × 960 = 507.3 kN
-    assert not any("0.36" in f for f in jtg.shear_circle(p, 300, (2, 14, 100), pile=True, Nd=-4000).failed)
+    assert any("0.36 ftd b h0" in f for f in r2.warnings)  # 331.7 < 0.36 × 1.39 × 1056 × 960 = 507.3 kN
+    assert not any("0.36" in f for f in jtg.shear_circle(p, 300, (2, 14, 100), pile=True, Nd=-4000).warnings)
     rc_ = jtg.shear_circle(p, 500, (2, 10, 150), pile=True, Nd=3000)
     assert rc_.resistance == pytest.approx(V0) and any("compression" in n for n in rc_.notes)
