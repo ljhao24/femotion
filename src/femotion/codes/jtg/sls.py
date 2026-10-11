@@ -34,6 +34,7 @@ import numpy as np
 from scipy.optimize import brentq
 
 from .actions import DYNAMIC_FACTOR, PSI
+from .detailing import environment
 from .materials import Rebar, rebar as _rebar, strength_at
 from .rc import Check, RCSection, Rect, cracking_moment
 from .temperature import _cracked_thermal
@@ -372,12 +373,11 @@ def _ptendon(sec: RCSection):
 
 
 def crack_width_limit(env: str, sec: RCSection | None = None) -> float | None:
-    """limit of table 6.4.2 (mm) for an environment class "I" … "VII": reinforced concrete and class B members with
-    prestressing threaded bars, or class B members with wire or strand (sec prestressed with such tendons, internal or
-    external); None where the latter are not allowed (class V)"""
-    e = str(env).upper().replace("CLASS", "").strip()
-    if e not in CRACK_WIDTH_LIMITS:
-        raise ValueError(f"environment class {env!r}: one of {', '.join(CRACK_WIDTH_LIMITS)} (table 6.4.2)")
+    """limit of table 6.4.2 (mm) for an environment class "I" … "VII" (written as detailing.environment takes it: 1 … 7,
+    "Ⅲ", "Ⅲ类", "class III"): reinforced concrete and class B members with prestressing threaded bars, or class B
+    members with wire or strand (sec prestressed with such tendons, internal or external); None where the latter are not
+    allowed (class V)"""
+    e = environment(env)
     col = 1 if sec is not None and sec.prestressed and _ptendon(sec).kind in ("strand", "wire") else 0
     return CRACK_WIDTH_LIMITS[e][col]
 

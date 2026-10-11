@@ -620,3 +620,12 @@ def test_transient_rc_review_fixes():
     assert g.details["dynamic_factor_shear"] == 0.85  # |−200 + 0.85 × 120| > |−200 + 1.2 × 120|
     assert g.details["sigma_tp"] == pytest.approx(jtg.transient_rc(rc, 185.0, -98.0, fcu=30).details["sigma_tp"])
     assert g.details["sigma_s"] == pytest.approx(jtg.transient_rc(rc, 220.0, fcu=30).details["sigma_s"])
+
+
+def test_crack_width_limit_takes_the_environment_spellings():
+    """table 6.4.2 takes the environment class written as table 4.5.2 is (detailing.environment): "III", 3, "Ⅲ类",
+    "class III" are the same class (detailing review L9)"""
+    for e in ("III", 3, "Ⅲ", "Ⅲ类", "class III", "iii"):
+        assert jtg.crack_width_limit(e) == jtg.crack_width_limit("III") == 0.15
+    with pytest.raises(ValueError):
+        jtg.crack_width_limit("VIII")
