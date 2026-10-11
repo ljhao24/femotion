@@ -148,16 +148,26 @@ def axial_spiral(sec: RCSection, Nd: float, l0: float | None = None, *, spiral, 
     chk.clause = "JTG 3362-2018 5.3.2, 9.6.2"
     chk.failed += base.failed
     chk.warnings += base.warnings  # 9.1.12 and 3.1.2 apply as well
-    if As < 0.005 * Acor:
-        chk.warnings.append(f"longitudinal bars {As / Acor:.3%} of Acor < 0.5 % (9.6.2)")
-    if Acor < 2 / 3 * sec.area:
-        chk.warnings.append(f"core area {Acor / sec.area:.1%} of the section < 2/3 (9.6.2)")
-    if s < 40:
-        chk.warnings.append(f"pitch {s:g} mm < 40 mm (9.6.2)")
-    d_long = _d_long(sec, 0.0)
-    if ds < max(8.0, d_long / 4):
-        chk.warnings.append(f"spiral diameter {ds:g} mm < max(8 mm, d/4 = {d_long / 4:.1f} mm) (9.6.2)")
+    chk.warnings += spiral_rules(As, Acor, sec.area, ds, s, dcor, _d_long(sec, 0.0))
     return chk
+
+
+def spiral_rules(As: float, Acor: float, A: float, ds: float, s: float, dcor: float, d_long: float) -> list[str]:
+    """9.6.2 items 1, 2, 4 (the detailing of spiral columns), the unmet ones: longitudinal bars As ≥ 0.5 % of the core
+    Acor, Acor ≥ 2/3 of the section A; pitch s ≤ dcor/5 and ≤ 80 mm, ≥ 40 mm; spiral diameter ds ≥ 8 mm and ≥ 1/4 of the
+    longitudinal bars (d_long, the largest; 0 when unknown). Item 3 (the bars' embedment): pier_detailing."""
+    out = []
+    if As < 0.005 * Acor:
+        out.append(f"longitudinal bars {As / Acor:.3%} of Acor < 0.5 % (9.6.2)")
+    if Acor < 2 / 3 * A:
+        out.append(f"core area {Acor / A:.1%} of the section < 2/3 (9.6.2)")
+    if s > min(80.0, dcor / 5):
+        out.append(f"pitch {s:g} mm > min(80 mm, dcor/5 = {dcor / 5:.0f} mm) (9.6.2)")
+    if s < 40:
+        out.append(f"pitch {s:g} mm < 40 mm (9.6.2)")
+    if ds < max(8.0, d_long / 4):
+        out.append(f"spiral diameter {ds:g} mm < max(8 mm, d/4 = {d_long / 4:.1f} mm) (9.6.2)")
+    return out
 
 
 # ── 5.3.7: bars spread evenly over the web ──────────────────────────────────
@@ -400,7 +410,8 @@ def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, al
     clause 6.3.15 sends tension members to): Vcs − 0.2 γ0 |Nd|, but not below the stirrups alone fsv Asv h0 / s, which
     must be at least 0.36 ftd b h0. Compression is not counted (5.2.9 has none; safe side).
     Detailing of the hoops: columns (pile=False) 9.6.1: diameter ≥ 8 mm and ≥ d/4, spacing ≤ 15 d, 0.8 D and 400 mm,
-    with more than 3 % longitudinal steel ≤ 10 d and 200 mm; bored piles (pile=True, 9.6.1 excludes piles): JTG
+    with more than 3 % longitudinal steel ≤ 10 d and 200 mm (d: the largest longitudinal bar for the diameter, the
+    smallest for the spacing, as GB 50010-2010 9.3.2 reads it; program convention); bored piles (pile=True, 9.6.1 excludes piles): JTG
     3363-2019 6.2.2 item 3 4): diameter ≥ 8 mm and ≥ d/4, spacing ≤ 15 d and 300 mm. The beam rules of 9.3.12 are not
     applied. Hollow circles: no code basis, not implemented."""
     if sec.kind == "annulus":
@@ -449,11 +460,12 @@ def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, al
     rule = "JTG 3363-2019 6.2.2" if pile else "9.6.1"
     if dia < max(8.0, d_long / 4):
         chk.warnings.append(f"hoop diameter {dia:g} mm < max(8 mm, d/4 = {d_long / 4:.1f} mm) ({rule})")
-    d15 = 15 * d_long if d_long else math.inf
+    d_min = float(np.nanmin(sec.bar_d)) if np.isfinite(sec.bar_d).any() else 0.0  # spacing: the thinnest bar
+    d15 = 15 * d_min if d_min else math.inf
     if pile:
         smax, why = min(d15, 300.0), "15 d, 300 mm"
     elif sec.bars[:, 0].sum() > 0.03 * sec.area:
-        smax, why = min(10 * d_long if d_long else math.inf, 200.0), "longitudinal steel > 3 %: 10 d, 200 mm"
+        smax, why = min(10 * d_min if d_min else math.inf, 200.0), "longitudinal steel > 3 %: 10 d, 200 mm"
     else:
         smax, why = min(d15, 0.8 * sec.h, 400.0), "15 d, 0.8 D, 400 mm"
     if sv > smax:

@@ -8,7 +8,8 @@ Units: mm, mm², MPa; forces kN, moments kN·m; angles in degrees unless noted. 
     from femotion.codes.jtg import regions as rg
     Pd = rg.anchor_force(9 * 139 * 1395 / 1e3)                         # 1.2 × the jacking force (8.2.2)
     Tb, db = rg.bursting_force(Pd, a=270, h=2000, e=300, alpha=8)      # 8.2.2
-    rg.tie_check(Tb, As=10 * 113, gamma0=1.1, name="bursting")         # 8.2.1
+    Tb, db, groups = rg.bursting_force_anchors([Pd] * 3, y=[500, 900, 1500], a=270, h=2000, yc=900)  # dense or not
+    rg.tie_check(Tb, As=10 * 113, gamma0=1.1, name="bursting")         # 8.2.1 (As within the zone: tendon_detailing)
     rg.cap_cantilever_tie(Fd=3200, x=600, bc=1200, h0=1500, As=20 * 491, h=1600)   # 8.4.6
     rg.pile_cap_stm(N1d=6000, N2d=5000, x1=1250, x2=1250, h0=1880, b=1200, s=100, d=28, As=40 * 616, bs=4000,
                     concrete="C30")                                     # 8.5.4
@@ -66,6 +67,53 @@ def bursting_force(Pd: float, a: float, h: float, e: float = 0.0, alpha: float =
     sa = math.sin(math.radians(alpha))
     Tb = 0.25 * Pd * (1 + g) ** 2 * ((1 - g) - a / h) + 0.5 * Pd * abs(sa)
     return max(Tb, 0.0), 0.5 * (h - 2 * e) + e * sa
+
+
+def dense_anchors(y, a) -> list[list[int]]:
+    """groups of dense anchors on an end face (8.2.2 note 1): neighbouring plates whose centres are closer than twice the
+    plate width are dense; a chain of such neighbours is one group (figure 8.2.2b). y: anchor centres along the depth
+    (mm); a: plate widths, one value or one per anchor (two different neighbours: the wider plate, program convention).
+    Returns lists of anchor indices in order of y; a separate anchor is a group of its own. (The commentary: AASHTO LRFD
+    groups anchors closer than 1.5 a; the code widens it to 2 a.)"""
+    y = np.asarray(y, float).reshape(-1)
+    a = np.broadcast_to(np.asarray(a, float), y.shape)
+    order = [int(i) for i in np.argsort(y, kind="stable")]
+    groups = [[order[0]]] if order else []
+    for i, j in zip(order[:-1], order[1:]):
+        if y[j] - y[i] < 2 * max(a[i], a[j]):
+            groups[-1].append(j)
+        else:
+            groups.append([j])
+    return groups
+
+
+def bursting_force_anchors(Pd, y, a, h: float, *, yc: float, angle=0.0) -> tuple[float, float, list[dict]]:
+    """bursting force of the anchors on one end face (8.2.2): dense anchors (dense_anchors) as one force, their resultant,
+    with a = the distance between the outer edges of the two outermost plates (item 2, note 2); separate anchors each on
+    their own; the largest governs (item 3). Pd: design anchorage forces (kN, one per anchor, anchor_force); y: anchor
+    centres from the top of the end section (mm); a: plate widths; h: depth of the end section; yc: depth of the
+    centroid of the member's section (T girders and boxes: of the whole girder, commentary to 8.2.2); angle: each
+    tendon's inclination at the anchor, degrees, positive where the force line (from the anchor into the member) runs
+    down. A group's resultant: the vector sum of its forces, acting at the force-weighted depth of their horizontal
+    components; its inclination turned into the sign of 8.2.2 (positive towards the centroid; a resultant at the
+    centroid leaves it: negative). Returns (Tb,d, db of that group, groups: dicts of anchors, P, y, a, e, alpha, Tb,
+    db)."""
+    y = np.asarray(y, float).reshape(-1)
+    P = np.broadcast_to(np.asarray(Pd, float), y.shape)
+    aa = np.broadcast_to(np.asarray(a, float), y.shape)
+    th = np.radians(np.broadcast_to(np.asarray(angle, float), y.shape))
+    out = []
+    for g in dense_anchors(y, aa):
+        H, V = float((P[g] * np.cos(th[g])).sum()), float((P[g] * np.sin(th[g])).sum())
+        yg = float((P[g] * np.cos(th[g]) * y[g]).sum() / H)
+        ag = float((y[g] + aa[g] / 2).max() - (y[g] - aa[g] / 2).min()) if len(g) > 1 else float(aa[g[0]])
+        incl = math.degrees(math.atan2(V, H))  # downward +
+        alpha = incl if yg < yc - 1e-9 else -incl if yg > yc + 1e-9 else -abs(incl)
+        e = abs(yg - yc)
+        Tb, db = bursting_force(math.hypot(H, V), ag, h, e, alpha)
+        out.append({"anchors": g, "P": math.hypot(H, V), "y": yg, "a": ag, "e": e, "alpha": alpha, "Tb": Tb, "db": db})
+    k = int(np.argmax([o["Tb"] for o in out]))
+    return out[k]["Tb"], out[k]["db"], out
 
 
 def spalling_force(Pd) -> float:
