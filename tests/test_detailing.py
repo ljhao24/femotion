@@ -246,8 +246,8 @@ def test_side_bars_of_webs_9_3_7():
     r = jtg.section_detailing(full, stirrup_d=10)
     rho = 4 * 2 * math.pi * 16 / (b * h)
     assert r.details["side bars of the webs, As/(b h)"]["value"] == pytest.approx(rho) and rho > 0.001
-    zg = full.zg  # ≈ 333: every gap reaches below it, into the tension zone (≤ min(b, 200) = 180)
-    assert zg < 400 and _warns(r, "tension zone")  # 250 > 180
+    na = r.details["9.3.7 neutral axis"]  # the cracked axis, ≈ 190: every gap lies in the tension zone (≤ 180)
+    assert na == pytest.approx(dt.cracked_axis(full)) and na < 200 and _warns(r, "tension zone")  # 250 > 180
     good = tee([340, 520, 700, 880, 1010])  # 1010: outside the bottom edge band (1140 − 120), a side bar
     r = jtg.section_detailing(good, stirrup_d=10)
     assert not _warns(r, "9.3.7"), r.warnings
@@ -260,9 +260,13 @@ def test_side_bars_of_webs_9_3_7():
     big = jtg.tee(b, h, 1600, 160, concrete="C40", bottom=[(2, 28, 60)], top=[(8, 12, 40)],
                   bars=[(2 * math.pi * 36, z, 12) for z in (340, 520, 700, 880, 1060)])
     assert any("6–8 mm" in n for n in jtg.section_detailing(big, stirrup_d=10).notes)
-    # hogging: the compression zone below the centroid, 300 mm there
-    assert _warns(jtg.section_detailing(tee([340, 700, 1060]), stirrup_d=10, hogging=True), "compression zone")
-    assert not _warns(jtg.section_detailing(tee([340, 640, 940]), stirrup_d=10, hogging=True), "9.3.7")
+    # hogging: the cracked axis lies near the bottom, the whole web is in tension (180 mm)
+    assert _warns(jtg.section_detailing(tee([340, 700, 1060]), stirrup_d=10, hogging=True), "tension zone")
+    # a given neutral axis at 1000 mm: gaps wholly above it are in the compression zone (300 mm)
+    r = jtg.section_detailing(tee([340, 700, 1060]), stirrup_d=10, neutral_axis=1000)
+    assert _warns(r, "compression zone 360 mm > 300") and _warns(r, "tension zone 360 mm > 180")
+    r = jtg.section_detailing(tee([340, 640, 940, 1080]), stirrup_d=10, neutral_axis=950)
+    assert not _warns(r, "compression zone") and not _warns(r, "tension zone")
     assert not jtg.section_detailing(jtg.rect(400, 800, concrete="C30", bottom=[(3, 20, 50)], top=[(3, 20, 50)]),
                                      stirrup_d=8).details.get("side bars of the webs, As/(b h)")  # rectangles: none
 
@@ -359,6 +363,11 @@ def test_table_9_1_9_and_notes():
     assert jtg.lap_length(28, "HPB300", "C30") == 35 * 28  # plain bars: no note 1 adjustment
     assert jtg.lap_length(25, "HRB400", "C30", disturbed=True) == 50 * 25
     assert jtg.lap_length(25, "HRB400", "C30", epoxy=True) == pytest.approx(1.5 * 45 * 25)
+    # epoxy-coated bars below 25 mm: not the permitted −5 d of note 1; the longer of the two readings of notes 1 and 4
+    # ((45 − 5) × 1.5 = 60 d, or 1.5 × 45 − 5 = 62.5 d): 1.5 × 45 = 67.5 d; above 25 mm (45 + 5) × 1.5 = 75 d ≥ 72.5 d
+    assert jtg.lap_length(20, "HRB400", "C40", epoxy=True) == pytest.approx(67.5 * 20) and 67.5 > max(60, 62.5)
+    assert jtg.lap_length(28, "HRB400", "C40", epoxy=True) == pytest.approx(75 * 28) and 75 > 72.5
+    assert jtg.lap_length(20, "HRB400", "C40", epoxy=True, compression=True) == pytest.approx(0.7 * 40 * 20)
     assert jtg.lap_length(8, "HPB300", "C30") == 300 and jtg.lap_length(8, "HPB300", "C30", compression=True) == 200
     assert jtg.lap_length(25, "HRB400", "C30", compression=True) == pytest.approx(0.7 * 45 * 25)
     assert jtg.lap_length(25, "HRB400", "C30", compression=True, epoxy=True) == pytest.approx(0.7 * 45 * 25)
@@ -442,7 +451,9 @@ def test_splice_detailing():
     assert not w.warnings
     assert not dt.splice_detailing("weld", 20, share=0.9, compression=True).warnings
     m = dt.splice_detailing("mechanical", 20, steel="HPB300", cover=19, clear=24, cmin=30)
-    assert len(m.warnings) == 3 and _warns(m, "30 mm")
+    assert len(m.warnings) == 4 and _warns(m, "19 mm < 20 mm") and _warns(m, "30 mm (9.1.10, should)")
+    m = dt.splice_detailing("mechanical", 20, cover=25, cmin=30)
+    assert len(m.warnings) == 1 and "should" in m.warnings[0]
     assert not dt.splice_detailing("mechanical", 28, cover=20, clear=25).warnings
 
 
@@ -453,7 +464,7 @@ def test_stirrups_9_3_12():
     100 (tension), ≤ 10 d and 200 (compression); ≤ 100 within h of a support; first stirrup one cover from the end;
     ≤ 50 mm from a junction; compression bars ≤ max(150, 15 ds) from a stirrup corner"""
     assert jtg.rebar("HPB300").rho_sv_min == pytest.approx(0.35 / 250)
-    assert jtg.rebar("HRB400").rho_sv_min == pytest.approx(round(0.35 / 330, 4))
+    assert abs(jtg.rebar("HRB400").rho_sv_min - 0.35 / 330) < 5e-5  # 0.106 % printed as 0.11 %
     sec = jtg.tee(200, 1000, 1600, 160, concrete="C40", bottom=[(2, 32, 60), (2, 32, 120)], top=[(6, 16, 40)])
     assert not jtg.stirrup_detailing(sec, (2, 8, 200)).warnings  # 8 = 32/4; ρ = 0.251 %
     sec36 = sec.replace(bar_d=np.where(sec.bar_d == 32, 36.0, sec.bar_d))
@@ -649,3 +660,138 @@ def test_girder_dimensions_9_3_2():
     assert _warns(dt.beam_dimensions(2000, web_change=(200, 2399)), "transition")
     assert not dt.beam_dimensions(2000, longitudinal_haunch=(6000, 1000)).warnings
     assert _warns(dt.beam_dimensions(2000, longitudinal_haunch=(6000, 1001)), "slope")
+
+
+
+# ── review fixes ────────────────────────────────────────────────────────────
+def test_web_zone_from_the_pieces_not_a_grid():
+    """H1: the web is found from the pieces' boundaries, so a flange face on any depth (here every 50 mm of h with
+    common flange thicknesses, where a grid of h/2000 used to land on the face and give a zero width) still gives the
+    web from hf to h; the side bars are counted and their spacing checked. Boxes alike, from t_top to h − t_bottom."""
+    for h in range(500, 3001, 50):
+        for hf in (100, 120, 150, 160, 180, 200, 220, 250, 260, 300):
+            if hf >= h / 2:
+                continue
+            band = min(0.1 * h, 150)  # keep the side rows clear of the edge bands of the top and bottom bars
+            rows = list(np.arange(max(hf + 50, 40 + band + 20), h - 80 - band, 250))
+            sec = jtg.tee(200, h, 1600, hf, concrete="C40", bottom=[(2, 25, 60)], top=[(8, 12, 40)],
+                          bars=[(2 * math.pi * 16, z, 8) for z in rows])
+            assert dt._web_zone(sec) == (hf, h) and dt._narrowest(sec) == 200
+            r = jtg.section_detailing(sec, stirrup_d=10)
+            assert r.details["side bars of the webs, As/(b h)"]["value"] == pytest.approx(
+                len(rows) * 2 * math.pi * 16 / (200 * h))
+            if not rows:
+                continue
+            pts = [hf] + rows + [h - 60]  # web top, side rows, bottom bars
+            na = r.details["9.3.7 neutral axis"]
+            gaps = [c - a for a, c in zip(pts[:-1], pts[1:]) if c > na]
+            assert r.details["spacing of the side bars, tension zone"]["value"] == pytest.approx(max(gaps))
+    for h in (1400, 2000, 2500):
+        for tt, tb in ((200, 220), (250, 200), (280, 250)):
+            b = jtg.box(5000, h, tt, tb, 900, b_top=11000, concrete="C50", bottom=[(60, 16, 60)], top=[(80, 16, 50)])
+            assert dt._web_zone(b) == (tt, h - tb) and dt._narrowest(b) == 900
+    # the reviewer's case: h = 1000, hf = 160, side bars at 500 and 840: 340 mm gaps
+    sec = jtg.tee(200, 1000, 1600, 160, concrete="C40", bottom=[(2, 25, 60)], top=[(8, 12, 40)],
+                  bars=[(2 * math.pi * 16, z, 8) for z in (500, 840)])
+    assert _warns(jtg.section_detailing(sec, stirrup_d=10), "tension zone 340 mm > 200")
+    # a flange face at 260 mm of 1000 (where RCSection.web on its own grid can read 0): stirrups still find b = 200
+    s260 = jtg.tee(200, 1000, 1600, 260, concrete="C40", bottom=[(2, 25, 60)])
+    r = jtg.stirrup_detailing(s260, (2, 10, 200))
+    assert r.details["stirrup ratio ρsv"]["value"] == pytest.approx(2 * math.pi * 25 / (200 * 200))
+    # a bar row exactly on the flange face takes the narrower width there, not 0
+    face = jtg.tee(200, 1000, 1600, 160, concrete="C40", bottom=[(2, 25, 60)], top=[(2, 16, 160)])
+    r = jtg.section_detailing(face, stirrup_d=10, side_cover=30)
+    assert r.details["clear spacing of the top bars at depth 160"]["value"] == pytest.approx(200 - 2 * 40 - 32)
+
+
+def test_tension_zone_of_reinforced_concrete_webs_is_the_cracked_one():
+    """H2: 9.3.7 is about cracking of the web's tension zone (commentary p229), so for reinforced concrete the zone runs
+    from the cracked section's neutral axis, far above the gross centroid. cracked_axis against a closed form (singly
+    reinforced rectangle: x0 = h0 (−αρ + √((αρ)² + 2αρ))) and against jtg.cracked_section (another implementation,
+    7.2.4); the reviewer's T girder: axis 199 mm, gross centroid 393 mm, the 230 mm gap from the web top is in tension."""
+    b_, h_, d_ = 300, 700, 25
+    rect = jtg.rect(b_, h_, concrete="C30", bottom=[(4, d_, 50)])
+    h0, aE = h_ - 50, rect.steel.Es / rect.concrete.Ec
+    ar = aE * 4 * math.pi * d_ * d_ / 4 / (b_ * h0)
+    assert dt.cracked_axis(rect) == pytest.approx(h0 * (-ar + math.sqrt(ar * ar + 2 * ar)), rel=1e-9)
+    t = jtg.tee(200, 1300, 1600, 150, concrete="C40", bottom=[(6, 32, 60)], top=[(8, 12, 40)],
+                bars=[(2 * math.pi * 16, z, 8) for z in (380, 560, 740, 920, 1100)])
+    assert dt.cracked_axis(t) == pytest.approx(jtg.cracked_section(t)["x0"], rel=1e-9)
+    assert dt.cracked_axis(t, hogging=True) == pytest.approx(t.h - jtg.cracked_section(t, hogging=True)["x0"], rel=1e-9)
+    t0 = jtg.tee(200, 1300, 1600, 150, concrete="C40", bottom=[(6, 32, 60)], top=[(8, 12, 40)])  # no side bars
+    assert dt.cracked_axis(t0) == pytest.approx(199.1, abs=0.1) and t0.zg == pytest.approx(393.1, abs=0.1)
+    r = jtg.section_detailing(t, stirrup_d=10)
+    assert _warns(r, "tension zone 230 mm > 200")
+    assert not _warns(jtg.section_detailing(t, stirrup_d=10, neutral_axis=t.zg), "9.3.7")  # the old reading let it pass
+    # prestressed sections keep the gross centroid (an approximation, noted)
+    pc = jtg.tee(200, 1300, 1600, 150, concrete="C50", bottom=[(4, 16, 50)], tendons=[(2000, 1150, 1100, 90)],
+                 bars=[(2 * math.pi * 16, z, 8) for z in (380, 560, 740, 920, 1100)])
+    r = jtg.section_detailing(pc, stirrup_d=10)
+    assert r.details["9.3.7 neutral axis"] == pytest.approx(pc.zg) and any("approximation" in n for n in r.notes)
+
+
+def test_side_faces_and_ducts_m1():
+    """M1: the side cover against table 9.1.1 and item 1 when given; the ducts' side cover against D/2 when given,
+    else a note that only the top and bottom faces were checked"""
+    sec = jtg.tee(300, 1000, 1600, 160, concrete="C40", bottom=[(2, 32, 70)], top=[(8, 12, 40)])
+    r = jtg.section_detailing(sec, env="III", stirrup_d=10, outer_d=(10, 0), side_cover=10)
+    assert _warns(r, "cover of the outermost steel at the sides 10 mm < 35 mm") and _warns(r, "side cover of the bottom")
+    assert not _warns(jtg.section_detailing(sec, env="III", stirrup_d=10, side_cover=35), "sides")
+    assert any("side faces not checked" in n for n in jtg.section_detailing(sec, env="III", stirrup_d=10).notes)
+    s = jtg.rect(1000, 300, concrete="C35", bottom=[(5, 32, 48)])  # slab, no stirrups: side cover ≥ d (item 1)
+    assert _warns(jtg.section_detailing(s, side_cover=31), "side cover of the bottom bars 31 mm < 32")
+    assert not _warns(jtg.section_detailing(s, side_cover=32), "side cover")
+    pt = jtg.rect(400, 1200, concrete="C50", bottom=[(2, 20, 50)], tendons=[(2000, 1000, 1200, 90)])
+    assert any("top and bottom faces only" in n for n in jtg.section_detailing(pt).notes)
+    assert _warns(jtg.section_detailing(pt, tendon_side_cover=44.9), "side cover of the ducts")
+    assert not _warns(jtg.section_detailing(pt, tendon_side_cover=45), "side cover of the ducts")
+    pre = jtg.rect(400, 600, concrete="C50", bottom=[(2, 12, 40)], tendons=[(140, 560, 1300)], pretensioned=True)
+    assert _warns(jtg.section_detailing(pre, tendon_d=15.2, tendon_side_cover=15), "side cover of the pretensioned")
+
+
+def test_circle_and_box_sections():
+    """circular piers: cover only (items 1, 3), the rest by 9.6.1; boxes: two webs by default for 9.3.7"""
+    c = jtg.circle(1500, 28, 28, 60, concrete="C35")  # bar surface 46 mm from the face
+    r = jtg.section_detailing(c, env="I", member="pier", stirrup_d=10)
+    assert r.details["cover of the longitudinal bars"]["value"] == pytest.approx(46)
+    assert not r.warnings and any("9.6.1" in n for n in r.notes)
+    assert _warns(jtg.section_detailing(c, env="III", member="pier", stirrup_d=10), "36 mm < 45 mm")
+    b = jtg.box(5000, 2000, 250, 220, 900, b_top=11000, concrete="C50", bottom=[(60, 16, 60)], top=[(80, 16, 50)],
+                bars=[(4 * math.pi * 16, z, 8) for z in np.arange(400, 1800, 200)])
+    r = jtg.section_detailing(b, stirrup_d=12)
+    assert any("2 webs assumed" in n for n in r.notes) and not _warns(r, "spacing of the side bars")
+    assert r.details["side bars of the webs, As/(b h)"]["value"] == pytest.approx(7 * 4 * math.pi * 16 / (900 * 2000))
+
+
+def test_review_low_items():
+    """L2 (ls < la noted), L3 (first stirrup's cover), L4 (a layer beyond the edge band noted), L5 (bundles on the
+    tension face), L6 (thin webs), L8 (upper bounds noted), L9 ("Ⅱ类"), L10 (prestressed stirrups → 9.4.1), welded
+    splice bars of another grade, "should" marked"""
+    r = dt.splice_detailing("lap", 24, steel="HRB500", concrete="C30", disturbed=True)
+    assert any("shorter than the anchorage" in n and "1350" in n for n in r.notes)  # ls 1200 < la 45·24·1.25
+    assert not any("shorter" in n for n in dt.splice_detailing("lap", 24, concrete="C30").notes)
+    sec = jtg.tee(200, 1000, 1600, 160, concrete="C40", bottom=[(2, 25, 60)])
+    assert _warns(jtg.stirrup_detailing(sec, (2, 10, 200), end_distance=5, end_cover=30, cmin=20), "first stirrup")
+    assert not jtg.stirrup_detailing(sec, (2, 10, 200), end_distance=30, end_cover=30, cmin=20).warnings
+    low = jtg.rect(300, 500, concrete="C30", bottom=[(3, 25, 47.5), (3, 25, 47.5 + 52.5)])  # band 50 mm, 27.5 clear
+    r = jtg.section_detailing(low, stirrup_d=10)
+    assert not _warns(r, "layers") and any("main_rows" in n and "27.5" in n for n in r.notes)
+    assert _warns(jtg.section_detailing(low, stirrup_d=10, main_rows=2), "27.5 mm < 30")
+    bun = jtg.tee(300, 1200, 1600, 160, concrete="C40", bottom=[(4, 25, 60)], top=[(8, 16, 30)])
+    r = jtg.section_detailing(bun, bundle=2)  # bottom pairs (de 35.4); the top bars single: cover 22 ≥ 16
+    assert r.details["bundle"] == {"bottom": 2, "top": 1} and not _warns(r, "cover of the top bars")
+    assert _warns(jtg.section_detailing(bun, bundle=(2, 2)), "cover of the top bars 22 mm < 22.6")
+    t = jtg.tee(200, 1200, 1600, 160, concrete="C40", bottom=[(2, 28, 60)], top=[(8, 12, 40)],
+                bars=[(2 * math.pi * 16, z, 8) for z in (340, 520, 700, 880)])  # 0.168 % of b h
+    assert not _warns(jtg.section_detailing(t, stirrup_d=10), "As/(b h)")
+    assert _warns(jtg.section_detailing(t, stirrup_d=10, thin_web=True), "As/(b h) 0.00168 < 0.002 (9.3.7, should)")
+    assert any("1.0–1.5 m" in n for n in dt.skew_slab_detailing(30, obtuse=(12, 120, 1600)).notes)
+    assert any("deeper" in n for n in dt.hinged_slab_detailing(600, groove=450).notes)
+    assert not dt.hinged_slab_detailing(600, groove=440).notes[:-1]
+    assert dt.environment("Ⅱ类") == dt.environment("II类") == dt.environment("Ⅱ") == "II"
+    pc = jtg.tee(200, 1300, 1600, 150, concrete="C50", bottom=[(4, 16, 50)], tendons=[(2000, 1150, 1100, 90)])
+    assert any("9.4.1" in n for n in jtg.stirrup_detailing(pc, (2, 12, 150)).notes)
+    assert _warns(dt.splice_detailing("weld", 20, splice_steel="HPB300"), "same strength grade")
+    assert not dt.splice_detailing("weld", 20, splice_steel="HRBF400").warnings
+    r = dt.bottom_slab_detailing(250, longitudinal=[(8, 200)] * 2, transverse=[(12, 100)] * 2)
+    assert "should" in _warns(r, "diameter")[0] and "should" not in _warns(r, "slab section")[0]

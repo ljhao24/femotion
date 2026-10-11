@@ -25,9 +25,10 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from scipy.optimize import brentq
 
 from .materials import Concrete, Rebar, concrete as _concrete, rebar as _rebar
-from .rc import Check, RCSection
+from .rc import Check, Circle, RCSection, Rect
 from .slab import haunch_depth, slab_detailing
 
 _TOL = 1e-9
@@ -85,10 +86,9 @@ _NUM = {str(k + 1): r for k, r in enumerate(ENVIRONMENTS)}
 
 
 def environment(env) -> str:
-    """the environment class of table 4.5.2 as "I" … "VII" (also accepts 1 … 7, "Ⅲ", "class III")"""
-    e = str(env).strip()
-    e = _ROMAN.get(e, e).upper().replace("CLASS", "").replace("类", "").strip()
-    e = _NUM.get(e, e)
+    """the environment class of table 4.5.2 as "I" … "VII" (also accepts 1 … 7, "Ⅲ", "Ⅲ类", "class III")"""
+    e = str(env).upper().replace("CLASS", "").replace("类", "").strip()
+    e = _NUM.get(_ROMAN.get(e, e), _ROMAN.get(e, e))
     if e not in ENVIRONMENTS:
         raise ValueError(f"environment class {env!r}: one of {', '.join(ENVIRONMENTS)} (table 4.5.2)")
     return e
@@ -212,23 +212,66 @@ def clear_spacing_min(d: float, layers: int = 1) -> float:
     return max(30.0, d) if layers <= 3 else max(40.0, 1.25 * d)
 
 
+def _intervals(sec: RCSection):
+    """[(top, bottom, width)] between consecutive boundaries of the section's pieces, the width taken inside each
+    interval (constant there for rectangles), never at a boundary, where the pieces' open intervals give 0"""
+    zs = {0.0, float(sec.h)}
+    for p in sec.pieces:
+        if isinstance(p, Rect):
+            zs |= {float(p.top), float(p.bottom)}
+        elif isinstance(p, Circle):
+            zs |= {p.zc - p.D / 2, p.zc + p.D / 2}
+    zs = sorted(z for z in zs if 0.0 <= z <= sec.h)
+    return [(a, b, sec.width((a + b) / 2)) for a, b in zip(zs[:-1], zs[1:]) if b - a > 1e-9]
+
+
+def _narrowest(sec: RCSection) -> float:
+    """web width b: the narrowest width of the section (sum of the webs of a box), from the pieces' boundaries"""
+    return min(w for _, _, w in _intervals(sec) if w > 0)
+
+
+def _width_at(sec: RCSection, z: float) -> float:
+    """width at depth z; on a boundary between pieces the narrower side (a bar row exactly at a flange's face)"""
+    ws = [w for a, b, w in _intervals(sec) if a - 1e-9 <= z <= b + 1e-9 and w > 0]
+    return min(ws) if ws else 0.0
+
+
 def _web_zone(sec: RCSection):
-    """(top, bottom) depths of the web: where the width is within 1 % of the narrowest"""
-    zs = np.linspace(0.0, sec.h, 2001)[1:-1]
-    w = np.array([sec.width(z) for z in zs])
-    k = np.nonzero(w <= 1.01 * w.min())[0]
-    return float(zs[k[0]]), float(zs[k[-1]])
+    """(top, bottom) depths of the web: the intervals whose width is within 1 % of the narrowest, from the first to
+    the last of them"""
+    iv = _intervals(sec)
+    b = _narrowest(sec)
+    k = [i for i, (_, _, w) in enumerate(iv) if 0 < w <= 1.01 * b]
+    return iv[k[0]][0], iv[k[-1]][1]
 
 
-def _need(chk: Check, name: str, value: float, limit: float, kind: str, clause: str, unit: str = "mm"):
+def cracked_axis(sec: RCSection, hogging: bool = False) -> float:
+    """depth (mm, from the top face) of the neutral axis of a reinforced-concrete section cracked in pure bending:
+    concrete in compression on one side, every bar αES As (the transformed section of 6.4, 6.5, 7.2.4); for reinforced
+    concrete it does not depend on the moment. hogging: the top face in tension. Used for the tension zone of 9.3.7."""
+    s = sec.flipped() if hogging else sec
+    aE = s.steel.Es / s.concrete.Ec
+    a, d = s.bars[:, 0], s.bars[:, 1]
+
+    def f(x):
+        A, Q = s.part(x)
+        return x * A - Q + aE * float((a * (x - d)).sum())
+
+    x = brentq(f, 1e-9 * s.h, s.h)
+    return s.h - x if hogging else x
+
+
+def _need(chk: Check, name: str, value: float, limit: float, kind: str, clause: str, unit: str = "mm",
+          should: bool = False):
     """value against limit ("min": value ≥ limit, "max": value ≤ limit); the record goes to details, a miss to
-    warnings"""
+    warnings; should=True marks a "should" (宜) rule in the warning"""
     chk.details[name] = {"value": value, "limit": limit}
     tol = _TOL * max(abs(limit), 1.0)
     ok = value >= limit - tol if kind == "min" else value <= limit + tol
     if not ok:
         u = f" {unit}" if unit else ""
-        chk.warnings.append(f"{name} {_f(value)}{u} {'<' if kind == 'min' else '>'} {_f(limit)}{u} ({clause})")
+        sh = ", should" if should else ""
+        chk.warnings.append(f"{name} {_f(value)}{u} {'<' if kind == 'min' else '>'} {_f(limit)}{u} ({clause}{sh})")
     return ok
 
 
@@ -240,9 +283,11 @@ def _f(v: float) -> str:
 
 def section_detailing(sec: RCSection, *, env=None, member: str = "superstructure", life: int = 100,
                       precast: bool = False, bedding: bool = False, stirrup_d: float | None = None,
-                      outer_d=None, side_cover: float | None = None, bundle: int = 1, hogging: bool = False,
+                      outer_d=None, side_cover: float | None = None, bundle=1, hogging: bool = False,
                       welded_frame: bool = False, webs: int | None = None, near_support: bool = False,
-                      tendon_d: float | None = None, cover_mesh=None, surface_mesh=None, main_rows=None) -> Check:
+                      thin_web: bool = False, neutral_axis: float | None = None, tendon_d: float | None = None,
+                      tendon_side_cover: float | None = None, cover_mesh=None, surface_mesh=None,
+                      main_rows=None) -> Check:
     """detailing of a section's longitudinal steel: cover (9.1.1 items 1–3, 9.1.2), bundles (9.1.3), clear spacing of
     the main bars and their layers (9.3.3), welded frames (9.3.11 item 4), the web's side bars (9.3.7), and with env the
     concrete class of 4.5.3 and 3.1.2.
@@ -250,17 +295,23 @@ def section_detailing(sec: RCSection, *, env=None, member: str = "superstructure
     The rows are the section's bar points, each at its own depth (a row given as one lumped point counts as one layer);
     the main bars are the edge rows of RCSection.edge_masks on the bottom and top faces (within min(0.1 h, 150 mm) of the
     outermost row), the others side (web) bars; main_rows = (bottom, top) or bottom alone: the number of rows from each
-    face that are main bars, when they spread further (e.g. four layers).
+    face that are main bars, when they spread further (e.g. four layers; a note points out a row just beyond the band
+    that looks like one).
     stirrup_d: stirrups around the main bars (they set the horizontal room); outer_d: diameter of the steel outside the
     main bars at the (bottom, top) faces, default stirrup_d on both (0 without stirrups: the main bars are outermost);
-    side_cover: cover of the outermost steel on the sides, default the bottom one. bundle: bars per bundle (all main
-    bars); hogging: the top face is in tension (9.1.3 mesh, tension zone of 9.3.7). welded_frame: the main bars are
-    welded frames (9.3.11: ≤ 6 layers, d ≤ 32 mm; layers in contact, so no clear spacing between them). webs: number of
-    webs for the side bars of 9.3.7 (default 1 for T and I sections, 2 for boxes, none for other shapes); near_support:
-    the section lies in a high-shear zone or a prestressed anchorage zone (side bars at 100–150 mm). tendon_d: nominal
-    diameter of pretensioned tendons (item 2). cover_mesh: (d, spacing, cover) of a mesh in a cover over 50 mm
-    (9.1.2); surface_mesh: (d along, spacing along, d across, spacing across, overhang beyond the bundles) of the
-    surface mesh over bars or bundles above 36 mm in the tension zone (9.1.3)."""
+    side_cover: cover of the outermost steel on the sides, checked against table 9.1.1 and item 1 when given (the
+    horizontal room takes the bottom one otherwise). bundle: bars per bundle of the tension face's main bars, or
+    (bottom, top). hogging: the top face is in tension (9.1.3 mesh, tension zone of 9.3.7). welded_frame: the main bars
+    are welded frames (9.3.11: ≤ 6 layers, d ≤ 32 mm; layers in contact, so no clear spacing between them). webs: number
+    of webs for the side bars of 9.3.7 (default 1 for T and I sections, 2 for boxes, none for other shapes);
+    near_support: a high-shear zone or a prestressed anchorage zone (side bars at 100–150 mm); thin_web: a thin web
+    (the commentary's upper value 0.002 b h, also taken with welded frames); neutral_axis: depth from the top face of
+    the boundary of the tension zone for 9.3.7, default the cracked section's axis for reinforced concrete
+    (cracked_axis) and the gross centroid for prestressed sections. tendon_d: nominal diameter of pretensioned tendons;
+    tendon_side_cover: cover of the ducts (post-tensioned) or tendons (pretensioned) on the sides (item 2; else top
+    and bottom only). cover_mesh: (d, spacing, cover) of a mesh in a cover over 50 mm (9.1.2); surface_mesh: (d along,
+    spacing along, d across, spacing across, overhang beyond the bundles) of the surface mesh over bars or bundles above
+    36 mm in the tension zone (9.1.3)."""
     chk = Check.report("section detailing (9.1.1–9.1.3, 9.3.3, 9.3.7, 9.3.11)", "JTG 3362-2018 9.1, 9.3")
     if env is not None:
         d = durability(sec, env, member=member, life=life)
@@ -276,8 +327,9 @@ def section_detailing(sec: RCSection, *, env=None, member: str = "superstructure
         chk.notes.append("bars without a diameter (points given without one): skipped in the cover and spacing rules")
     ds = 0.0 if stirrup_d is None else float(stirrup_d)
     ob, ot = (ds, ds) if outer_d is None else ((outer_d, outer_d) if np.isscalar(outer_d) else tuple(outer_d))
-    if bundle > 1:
-        chk.details["bundle"] = {"bars": bundle}
+    nbun = ((1, bundle) if hogging else (bundle, 1)) if np.isscalar(bundle) else tuple(bundle)
+    if max(nbun) > 1:
+        chk.details["bundle"] = {"bottom": nbun[0], "top": nbun[1]}
 
     # circular sections: cover only (column spacing: 9.6.1)
     if sec.kind in ("circle", "annulus"):
@@ -292,55 +344,65 @@ def section_detailing(sec: RCSection, *, env=None, member: str = "superstructure
         return chk
 
     bot, top = _main_masks(sec, main_rows)
-    groups = {"bottom": bot, "top": top}
+    nb_rows = (main_rows, None) if np.isscalar(main_rows) or main_rows is None else tuple(main_rows)
     tension = "top" if hogging else "bottom"
     c_out_bottom = None
-    for face, mask in groups.items():
+    spaced = False
+    for k, (face, mask) in enumerate((("bottom", bot), ("top", top))):
+        n_b = nbun[k]
         rows = [r for r in _rows(sec, mask) if not math.isnan(r[2])]
         if not rows:
             continue
         d_max = max(r[2] for r in rows)
-        dd = bundle_diameter(bundle, d_max) if bundle > 1 else d_max
+        dd = bundle_diameter(n_b, d_max)
         out = rows[-1] if face == "bottom" else rows[0]  # the row nearest the face
         c = (sec.h - out[0] if face == "bottom" else out[0]) - out[2] / 2
-        _need(chk, f"cover of the {face} bars", c, bundle_diameter(bundle, out[2]), "min", "9.1.1 item 1")
+        _need(chk, f"cover of the {face} bars", c, bundle_diameter(n_b, out[2]), "min", "9.1.1 item 1")
         oc = c - (ob if face == "bottom" else ot)
         if face == "bottom":
             c_out_bottom = oc
         if cmin is not None:
             _need(chk, f"cover of the outermost steel at the {face}", oc, cmin, "min", "table 9.1.1")
+        if side_cover is not None:  # the main bars sit inside the stirrups on the sides
+            _need(chk, f"side cover of the {face} bars", side_cover + ds, dd, "min", "9.1.1 item 1")
         _cover_mesh(chk, c, cover_mesh, face)
         # bundles and big bars (9.1.3)
-        _bundle_rules(bundle, d_max, chk)
+        _bundle_rules(n_b, d_max, chk)
         if face == tension and dd > 36:
             _surface_mesh(chk, dd, surface_mesh)
         # layers and clear spacing (9.3.3, 9.3.11)
         layers = len(rows)
         if welded_frame:
-            _need(chk, f"layers of the welded frame ({face})", layers, 6, "max", "9.3.11 item 4", unit="")
-            _need(chk, f"bars of the welded frame ({face})", d_max, 32, "max", "9.3.11 item 4")
-        need = clear_spacing_min(dd, layers)
+            _need(chk, f"layers of the welded frame ({face})", layers, 6, "max", "9.3.11 item 4", unit="", should=True)
+            _need(chk, f"bars of the welded frame ({face})", d_max, 32, "max", "9.3.11 item 4", should=True)
         side = side_cover if side_cover is not None else (c_out_bottom if c_out_bottom is not None else oc)
         for z, n, dmax, _ in rows:
-            nb = n / bundle
-            if nb < 1.5:
+            nu = n / n_b
+            if nu < 1.5:
                 continue
-            w = sec.width(z)
-            du = bundle_diameter(bundle, dmax) if bundle > 1 else dmax
-            s = (w - 2 * (side + ds) - nb * du) / (nb - 1)
+            du = bundle_diameter(n_b, dmax)
+            s = (_width_at(sec, z) - 2 * (side + ds) - nu * du) / (nu - 1)
             _need(chk, f"clear spacing of the {face} bars at depth {_f(z)}", s, clear_spacing_min(du, layers), "min",
                   "9.3.3")
+            spaced = True
         if not welded_frame:
             for (z1, _, d1, _), (z2, _, d2, _) in zip(rows[:-1], rows[1:]):
-                dm = max(d1, d2)
-                du = bundle_diameter(bundle, dm) if bundle > 1 else dm
-                gap = z2 - z1 - (du if bundle > 1 else (d1 + d2) / 2)
+                du = bundle_diameter(n_b, max(d1, d2))
+                gap = z2 - z1 - (du if n_b > 1 else (d1 + d2) / 2)
                 _need(chk, f"clear distance of the {face} layers at depths {_f(z1)}–{_f(z2)}", gap,
                       clear_spacing_min(du, layers), "min", "9.3.3")
         chk.details[f"layers ({face})"] = layers
-        chk.details[f"spacing limit ({face})"] = need
-    if side_cover is None and stirrup_d is not None:
-        chk.notes.append("side cover taken equal to the bottom cover of the outermost steel (side_cover=… to set it)")
+        chk.details[f"spacing limit ({face})"] = clear_spacing_min(dd, layers)
+        if nb_rows[k] is None:
+            _next_layer_note(chk, sec, mask, rows, face, n_b)
+    if side_cover is None:
+        chk.notes.append("side faces not checked (side_cover=…); the horizontal room takes the bottom cover of the "
+                         "outermost steel")
+    elif cmin is not None:
+        _need(chk, "cover of the outermost steel at the sides", side_cover, cmin, "min", "table 9.1.1")
+    if spaced:
+        chk.notes.append("9.3.3 horizontal clear spacing: bars spread evenly between the stirrups across the width at "
+                         "their depth, the largest the layout allows (program convention)")
 
     # ducts and pretensioned tendons (9.1.1 item 2)
     if sec.has_internal:
@@ -350,19 +412,27 @@ def section_detailing(sec: RCSection, *, env=None, member: str = "superstructure
             if tendon_d is None:
                 chk.notes.append("pretensioned tendons: give tendon_d for the cover ≥ the tendon diameter (9.1.1 item 2)")
             else:
-                _need(chk, "cover of the pretensioned tendons", float((near - tendon_d / 2).min()), tendon_d, "min",
-                      "9.1.1 item 2")
+                _need(chk, "cover of the pretensioned tendons (top, bottom)", float((near - tendon_d / 2).min()),
+                      tendon_d, "min", "9.1.1 item 2")
+                if tendon_side_cover is not None:
+                    _need(chk, "side cover of the pretensioned tendons", tendon_side_cover, tendon_d, "min",
+                          "9.1.1 item 2")
         elif (duct > 0).any():
             D = np.sqrt(4 * duct / math.pi)
             k = int(np.argmin(near - D))
-            _need(chk, "cover of the ducts", float(near[k] - D[k] / 2), float(D[k] / 2), "min", "9.1.1 item 2")
+            _need(chk, "cover of the ducts (top, bottom)", float(near[k] - D[k] / 2), float(D[k] / 2), "min",
+                  "9.1.1 item 2")
+            if tendon_side_cover is not None:
+                _need(chk, "side cover of the ducts", tendon_side_cover, float(D.max() / 2), "min", "9.1.1 item 2")
+        if tendon_side_cover is None:
+            chk.notes.append("tendons: covers to the top and bottom faces only (tendon_side_cover=… for the sides)")
 
     # side bars of webs (9.3.7)
     nw = webs if webs is not None else {"tee": 1, "box": 2}.get(sec.kind)
     if nw:
         if webs is None and sec.kind == "box":
             chk.notes.append("box: 2 webs assumed for the side bars of 9.3.7 (webs=…)")
-        _web_bars(chk, sec, bot, top, nw, hogging, welded_frame, near_support)
+        _web_bars(chk, sec, bot, top, nw, hogging, welded_frame or thin_web, near_support, neutral_axis)
     chk.warnings = list(dict.fromkeys(chk.warnings))
     return chk
 
@@ -383,6 +453,25 @@ def _main_masks(sec: RCSection, main_rows):
     return bot, top
 
 
+def _next_layer_note(chk: Check, sec: RCSection, mask, rows, face: str, n_b: int):
+    """a note when the next row beyond the main bars, on the same side of the centroid, looks like another layer of
+    them (at least half their diameter, clear distance under twice the 9.3.3 limit): main_rows=… would count it"""
+    z, zg, dia = sec.bars[:, 1], sec.zg, sec.bar_d
+    side = (z > zg) if face == "bottom" else (z <= zg)
+    cand = side & ~mask & ~np.isnan(dia)
+    if not cand.any():
+        return
+    inner = rows[0] if face == "bottom" else rows[-1]
+    k = np.nonzero(cand)[0]
+    k = k[np.argmax(z[k])] if face == "bottom" else k[np.argmin(z[k])]
+    d_main = max(r[2] for r in rows)
+    gap = abs(inner[0] - z[k]) - (inner[2] + dia[k]) / 2
+    if dia[k] >= 0.5 * d_main and gap < 2 * clear_spacing_min(bundle_diameter(n_b, d_main), len(rows)):
+        chk.notes.append(f"the row at depth {_f(float(z[k]))} ({dia[k]:g} mm, {_f(float(gap))} mm clear of the {face} "
+                         f"main bars) lies beyond the edge band and is taken as a side bar; if it is another layer of "
+                         "main bars, main_rows=… counts it (9.3.3)")
+
+
 def _cover_mesh(chk: Check, c: float, mesh, face: str = ""):
     """9.1.2: cover of the longitudinal main bars over 50 mm calls for measures, e.g. a mesh (d ≥ 6, s ≤ 100, its own
     cover ≥ 25 mm)"""
@@ -391,19 +480,19 @@ def _cover_mesh(chk: Check, c: float, mesh, face: str = ""):
     where = f" at the {face}" if face else ""
     if mesh is None:
         chk.warnings.append(f"cover of the main bars{where} {_f(c)} mm > 50 mm: measures against cracking and spalling "
-                            "of the cover, e.g. a mesh in it (9.1.2)")
+                            "of the cover, e.g. a mesh in it (9.1.2, should)")
         return
     d, s, cm = mesh
     _need(chk, "bars of the cover mesh", d, 6, "min", "9.1.2")
     _need(chk, "spacing of the cover mesh", s, 100, "max", "9.1.2")
-    _need(chk, "cover of the cover mesh", cm, 25, "min", "9.1.2")
+    _need(chk, "cover of the cover mesh", cm, 25, "min", "9.1.2", should=True)
 
 
 def _surface_mesh(chk: Check, d: float, mesh):
     """9.1.3: a surface mesh over bars or bundles above 36 mm in the tension zone"""
     if mesh is None:
-        chk.warnings.append(f"bars or bundles of {_f(d)} mm > 36 mm in the tension zone: a surface mesh is needed "
-                            "(9.1.3, surface_mesh=…)")
+        chk.warnings.append(f"bars or bundles of {_f(d)} mm > 36 mm in the tension zone: a surface mesh "
+                            "(9.1.3, should; surface_mesh=…)")
         return
     da, sa, dc, sc, over = mesh
     _need(chk, "surface mesh: bars along the bundles", da, 10, "min", "9.1.3")
@@ -413,12 +502,13 @@ def _surface_mesh(chk: Check, d: float, mesh):
     _need(chk, "surface mesh: overhang beyond the bundles", over, 5 * d, "min", "9.1.3")
 
 
-def _web_bars(chk: Check, sec: RCSection, bot, top, webs: int, hogging: bool, welded_frame: bool, near_support: bool):
-    """9.3.7: side bars of 6–8 mm on both faces of each web, (0.001–0.002) b h per web (the upper value for thin webs
-    with welded frames, commentary), spacing ≤ the web width and 200 mm in the tension zone, ≤ 300 mm in the
-    compression zone, 100–150 mm near supports and in anchorage zones"""
+def _web_bars(chk: Check, sec: RCSection, bot, top, webs: int, hogging: bool, thin: bool, near_support: bool,
+              neutral_axis: float | None):
+    """9.3.7: side bars of 6–8 mm on both faces of each web, (0.001–0.002) b h per web (the upper value for thin webs,
+    commentary), spacing ≤ the web width and 200 mm in the tension zone, ≤ 300 mm in the compression zone, 100–150 mm
+    near supports and in anchorage zones"""
     side = ~(bot | top)
-    b, h = sec.web(), sec.h
+    b, h = _narrowest(sec), sec.h
     bw = b / webs
     z1, z2 = _web_zone(sec)
     tz = sec.bars[top, 1]
@@ -428,19 +518,24 @@ def _web_bars(chk: Check, sec: RCSection, bot, top, webs: int, hogging: bool, we
     rows = [r for r in _rows(sec, side) if lo < r[0] < hi]
     area = sum(r[3] for r in rows)
     rho = area / (b * h)
-    lim = 0.002 if welded_frame else 0.001
-    _need(chk, "side bars of the webs, As/(b h)", rho, lim, "min", "9.3.7", unit="")
+    _need(chk, "side bars of the webs, As/(b h)", rho, 0.002 if thin else 0.001, "min", "9.3.7", unit="", should=True)
     for z, n, d, _ in rows:
         if not math.isnan(d):
             if d < 6:
                 chk.warnings.append(f"side bars at depth {_f(z)}: {d:g} mm < 6 mm (9.3.7)")
             elif d > 8:
                 chk.notes.append(f"side bars at depth {_f(z)}: {d:g} mm, above the 6–8 mm 9.3.7 names")
-    zg = sec.zg
+    if neutral_axis is not None:
+        na, how = float(neutral_axis), "given"
+    elif sec.prestressed:
+        na, how = sec.zg, "the gross centroid (prestressed section, an approximation)"
+    else:
+        na, how = cracked_axis(sec, hogging), "the cracked section's axis (reinforced concrete)"
+    chk.details["9.3.7 neutral axis"] = na
     pts = [lo] + [r[0] for r in rows] + [hi]
     worst = {}
     for a, c in zip(pts[:-1], pts[1:]):
-        in_tension = (a < zg) if hogging else (c > zg)  # any part of the gap in the tension zone
+        in_tension = (a < na) if hogging else (c > na)  # any part of the gap in the tension zone
         lim = min(bw, 200.0) if in_tension else 300.0
         if near_support:
             lim = min(lim, 150.0)
@@ -448,9 +543,9 @@ def _web_bars(chk: Check, sec: RCSection, bot, top, webs: int, hogging: bool, we
         if c - a - lim > worst.get(key, (-math.inf,))[0]:
             worst[key] = (c - a - lim, c - a, lim)
     for key, (_, s, lim) in worst.items():
-        _need(chk, f"spacing of the side bars, {key}", s, lim, "max", "9.3.7")
-    chk.notes.append("9.3.7 zones: tension below the gross centroid (above it with hogging=True), a gap reaching into "
-                     "it takes the tension limit (program convention)")
+        _need(chk, f"spacing of the side bars, {key}", s, lim, "max", "9.3.7", should=near_support and lim == 150.0)
+    chk.notes.append(f"9.3.7 tension zone {'above' if hogging else 'below'} depth {_f(na)}, {how}; a gap reaching into "
+                     "it takes the tension limit")
 
 
 # ── 9.1.4 anchorage ─────────────────────────────────────────────────────────
@@ -548,12 +643,14 @@ LAP = {"HPB300": (40, 35), "HRB400": (None, 45), "HRB500": (None, 50)}
 def lap_length(d: float, steel="HRB400", concrete="C30", *, compression: bool = False, epoxy: bool = False,
                disturbed: bool = False, share: float = 0.0) -> float:
     """minimum lap length ls (mm) of a tied lap splice, 9.1.9 and table 9.1.9. Tension: the table value; ribbed bars
-    +5 d above 25 mm and −5 d below 25 mm (note 1, the reduction is permitted and taken); +5 d where the concrete is
-    liable to be disturbed while it hardens (note 2); ×1.5 for epoxy-coated bars (note 4, after notes 1 and 2, program
-    convention); ×1.4 with more than 25 % and up to 50 % of the bars lapped within 1.3 ls, ×1.6 above 50 % (item 2);
-    at least 300 mm (note 3). Compression: 0.7 times the tension lap from the table and notes 1, 2 (program convention:
-    note 4 concerns tension bars), ×1.4 with more than 50 % lapped, at least 200 mm. share: the lapped fraction of the
-    bars' area within the zone (0–1)."""
+    +5 d above 25 mm and −5 d below 25 mm (note 1, the reduction is permitted and taken, except for epoxy-coated bars);
+    +5 d where the concrete is liable to be disturbed while it hardens (note 2); ×1.5 for epoxy-coated bars (note 4,
+    after notes 1 and 2; program convention: the longer of the two readings of notes 1 and 4); ×1.4 with more than
+    25 % and up to 50 % of the bars lapped within 1.3 ls, ×1.6 above 50 % (item 2); at least 300 mm (note 3).
+    Compression: 0.7 times the tension lap from the table and notes 1, 2 (program convention: note 4 concerns tension
+    bars), ×1.4 with more than 50 % lapped, at least 200 mm. share: the lapped fraction of the bars' area within the
+    zone (0–1). The lap can come out shorter than the anchorage length with disturbed concrete (notes 2 of table 9.1.9
+    and 4 of table 9.1.4 differ); splice_detailing points that out."""
     s, g = _steel(steel), _grade(concrete)
     if not 0 <= share <= 1:
         raise ValueError("share: the lapped fraction of the bars' area, 0 … 1 (9.1.9 item 2)")
@@ -562,7 +659,7 @@ def lap_length(d: float, steel="HRB400", concrete="C30", *, compression: bool = 
         raise ValueError(f"table 9.1.9 has no C{g} column for {s} (3.1.2: at least C30)")
     base = k * d
     if s != "HPB300":
-        base += 5 * d if d > 25 else (-5 * d if d < 25 else 0.0)
+        base += 5 * d if d > 25 else (-5 * d if d < 25 and not (epoxy and not compression) else 0.0)
     if disturbed:
         base += 5 * d
     if compression:
@@ -589,8 +686,8 @@ def splice_detailing(kind: str, d: float, *, steel="HRB400", concrete="C30", com
                      member: str = "flexural", compression_member: bool = False, length: float | None = None,
                      share: float | None = None, joint_spacing: float | None = None, clear: float | None = None,
                      hooks: bool | None = None, epoxy: bool = False, disturbed: bool = False, bundle: int = 1,
-                     single_sided: bool = False, splice_area: float | None = None, precast: bool = False,
-                     cover: float | None = None, cmin: float | None = None) -> Check:
+                     single_sided: bool = False, splice_area: float | None = None, splice_steel=None,
+                     precast: bool = False, cover: float | None = None, cmin: float | None = None) -> Check:
     """splices of reinforcing bars (9.1.7–9.1.10): kind "lap" (tied lap), "weld" (welded) or "mechanical" (couplers);
     d bar diameter (mm). Each rule is checked when its input is given.
     lap: not for the main bars of members in axial or small-eccentricity tension (member="tension"); bar diameter
@@ -598,12 +695,13 @@ def splice_detailing(kind: str, d: float, *, steel="HRB400", concrete="C30", com
     (share: lapped fraction within 1.3 ls; tension ≤ 25 %, compression ≤ 50 % preferably, beyond that the longer lap);
     joint_spacing (centre to centre of two laps of one bar) > 1.3 ls; clear distance at the lap ≥ d and 25 mm; HPB300
     laps in tension with hooks (9.1.9). bundle: bars per bundle (the stagger and the through bar of item 4 in details).
+    A note gives the anchorage length when the lap comes out shorter (table 9.1.9 note 2 against table 9.1.4 note 4).
     weld: weld length ≥ 5 d double-sided, 10 d single-sided (single_sided=True, only where double-sided welding is
-    impossible); splice bars of the same grade with splice_area ≥ the bar's area; joint_spacing > the zone l =
+    impossible); splice bars (splice_steel) of the same grade with splice_area ≥ the bar's area; joint_spacing > l =
     max(35 d, 500); share of welded bars in the zone ≤ 50 % in tension (none in compression or between precast members,
     precast=True); clear distance at strap or lap welds ≥ d and 25 mm (9.1.8).
-    mechanical: ribbed HRB400, HRB500, HRBF400, RRB400 only; cover of the couplers ≥ cmin (table 9.1.1, preferably)
-    and ≥ 20 mm; clear distance between couplers, or coupler and bar, ≥ 25 mm (9.1.10)."""
+    mechanical: ribbed HRB400, HRB500, HRBF400, RRB400 only; cover of the couplers ≥ 20 mm and ≥ cmin (table 9.1.1,
+    should); clear distance between couplers, or coupler and bar, ≥ 25 mm (9.1.10). Warnings of "should" rules say so."""
     k = kind.lower()
     s = _steel(steel)
     a = math.pi * d * d / 4
@@ -613,7 +711,7 @@ def splice_detailing(kind: str, d: float, *, steel="HRB400", concrete="C30", com
             chk.warnings.append("lap splices are not used for the main bars of members in axial or small-eccentricity "
                                 "tension (9.1.7)")
         dmax = 32.0 if (compression and compression_member) else 28.0
-        _need(chk, "bar diameter of a lap splice", d, dmax, "max", "9.1.7")
+        _need(chk, "bar diameter of a lap splice", d, dmax, "max", "9.1.7", should=True)
         sh = 0.0 if share is None else share
         ls = lap_length(d, s, concrete, compression=compression, epoxy=epoxy, disturbed=disturbed, share=sh)
         if share is not None:
@@ -622,6 +720,11 @@ def splice_detailing(kind: str, d: float, *, steel="HRB400", concrete="C30", com
                 chk.notes.append(f"{share:.0%} of the bars lapped within 1.3 ls, over the {lim:.0%} of 9.1.9 item 2: "
                                  "the longer lap is required")
         chk.details["ls_min"] = ls
+        la = anchorage_length(d, s, concrete, compression=compression, hook=s == "HPB300" and not compression,
+                              epoxy=epoxy, disturbed=disturbed)
+        if ls < la - _TOL:
+            chk.notes.append(f"the lap {_f(ls)} mm is shorter than the anchorage length la = {_f(la)} mm (table 9.1.9 "
+                             "note 2 against table 9.1.4 note 4): taking la is the designer's call")
         if length is not None:
             _need(chk, "lap length", length, ls, "min", "9.1.9")
         ls_ref = ls if length is None else max(length, ls)
@@ -651,6 +754,8 @@ def splice_detailing(kind: str, d: float, *, steel="HRB400", concrete="C30", com
             _need(chk, "weld length", length, (10 if single_sided else 5) * d, "min", "9.1.8 item 1")
         if splice_area is not None:
             _need(chk, "area of the splice bars", splice_area, a, "min", "9.1.8 item 1", unit="mm²")
+        if splice_steel is not None and _steel(splice_steel) != s:
+            chk.warnings.append(f"splice bars of {_steel(splice_steel)} on {s}: the same strength grade (9.1.8 item 1)")
         lz = weld_zone(d)
         chk.details["zone_l"] = lz
         if joint_spacing is not None:
@@ -659,7 +764,7 @@ def splice_detailing(kind: str, d: float, *, steel="HRB400", concrete="C30", com
                 chk.warnings.append(f"two joints of one bar {_f(joint_spacing)} mm apart, within l = {_f(lz)} mm "
                                     "(9.1.8 item 2)")
         if share is not None and not compression and not precast:
-            _need(chk, "share of welded bars in the zone", share, 0.5, "max", "9.1.8 item 2", unit="")
+            _need(chk, "share of welded bars in the zone", share, 0.5, "max", "9.1.8 item 2", unit="", should=True)
         if clear is not None:
             _need(chk, "clear distance at the welded joint", clear, max(d, 25.0), "min", "9.1.8 item 3")
         return chk
@@ -669,7 +774,9 @@ def splice_detailing(kind: str, d: float, *, steel="HRB400", concrete="C30", com
             chk.warnings.append("mechanical splices are for ribbed bars (HRB400, HRB500, HRBF400, RRB400), not HPB300 "
                                 "(9.1.10)")
         if cover is not None:
-            _need(chk, "cover of the couplers", cover, max(20.0, cmin or 0.0), "min", "9.1.10")
+            _need(chk, "cover of the couplers", cover, 20.0, "min", "9.1.10")
+            if cmin is not None:
+                _need(chk, "cover of the couplers against table 9.1.1", cover, cmin, "min", "9.1.10", should=True)
         if clear is not None:
             _need(chk, "clear distance at the couplers", clear, 25.0, "min", "9.1.10")
         chk.notes.append("couplers per JGJ 107-2016, JG/T 163-2013 and SL 677-2014 (9.1.10, 9.1.11)")
@@ -681,8 +788,8 @@ def splice_detailing(kind: str, d: float, *, steel="HRB400", concrete="C30", com
 def stirrup_detailing(sec: RCSection, stirrups, *, stirrup_steel=None, main_d: float | None = None,
                       compression_d: float | None = None, corner_distance: float | None = None, lap=None,
                       support_spacing: float | None = None, end_distance: float | None = None,
-                      end_cover: float | None = None, junction_distance: float | None = None, hook=None,
-                      seismic: bool = False) -> Check:
+                      end_cover: float | None = None, cmin: float | None = None,
+                      junction_distance: float | None = None, hook=None, seismic: bool = False) -> Check:
     """stirrups of a beam (9.3.12) and their hooks (9.1.6). stirrups: (legs, diameter, spacing) as for jtg.shear;
     stirrup_steel: when it differs from the longitudinal bars. main_d: diameter of the main bars (default the largest of
     the section's edge rows). Item 1: diameter ≥ 8 mm and ≥ main_d / 4, ρsv ≥ 0.14 % (HPB300) or 0.11 % (HRB400; HRB500
@@ -691,18 +798,23 @@ def stirrup_detailing(sec: RCSection, stirrups, *, stirrup_steel=None, main_d: f
     row from a stirrup corner ≤ max(150 mm, 15 ds), else additional ties. Item 3: spacing ≤ h/2 and 400 mm, ≤ 15
     compression_d; lap = (kind, lapped bar diameter, stirrup spacing along the lap) with kind "tension" (≤ 5 d and
     100 mm) or "compression" (≤ 10 d and 200 mm); support_spacing: spacing within one beam depth from the support
-    centre (≤ 100 mm). Item 4: end_distance of the first stirrup from the end face, one cover (end_cover) at most;
-    junction_distance: the stirrup nearest a beam-beam or beam-column junction ≤ 50 mm from it. hook = (inner bend
-    diameter, straight extension[, angle]): 9.1.6 (stirrup_hook_min; larger than main_d)."""
+    centre (≤ 100 mm, should). Item 4: end_distance of the first stirrup from the end face, one cover (end_cover) at
+    most, and with cmin (jtg.cover_min) at least table 9.1.1, as it is that stirrup's cover; junction_distance: the
+    stirrup nearest a beam-beam or beam-column junction ≤ 50 mm from it (should). hook = (inner bend diameter, straight
+    extension[, angle]): 9.1.6 (stirrup_hook_min; larger than main_d). Item 1 is written for reinforced-concrete beams:
+    on a prestressed section a note points to 9.4.1 (web stirrups of prestressed girders)."""
     legs, ds, s = stirrups
     st = sec.steel if stirrup_steel is None else (stirrup_steel if isinstance(stirrup_steel, Rebar)
                                                   else _rebar(stirrup_steel))
     chk = Check.report("stirrups (9.3.12, 9.1.6)", "JTG 3362-2018 9.3.12, 9.1.6")
+    if sec.prestressed:
+        chk.notes.append("prestressed girder: the web stirrups also by 9.4.1 (≥ 10 mm in T and I webs, ≥ 12 mm in box "
+                         "webs, ≤ 200 mm, closed within one depth of the support at ≤ 120 mm)")
     if main_d is None:
         bot, top = sec.edge_masks()
         dd = sec.bar_d[bot | top]
         main_d = float(np.nanmax(dd)) if len(dd) and not np.isnan(dd).all() else None
-    b, h = sec.web(), sec.h
+    b, h = _narrowest(sec), sec.h
     _need(chk, "stirrup diameter", ds, 8.0, "min", "9.3.12 item 1")
     if main_d is None:
         chk.notes.append("main bar diameter unknown (main_d=…): ds ≥ d/4 not checked")
@@ -728,14 +840,18 @@ def stirrup_detailing(sec: RCSection, stirrups, *, stirrup_steel=None, main_d: f
         lim = min(5 * dl, 100.0) if kind == "tension" else min(10 * dl, 200.0)
         _need(chk, f"stirrup spacing along a {kind} lap", sl, lim, "max", "9.3.12 item 3")
     if support_spacing is not None:
-        _need(chk, "stirrup spacing within h of the support", support_spacing, 100.0, "max", "9.3.12 item 3")
+        _need(chk, "stirrup spacing within h of the support", support_spacing, 100.0, "max", "9.3.12 item 3",
+              should=True)
     if end_distance is not None:
         if end_cover is None:
             chk.notes.append("end_cover not given: the first stirrup's position not checked (9.3.12 item 4)")
         else:
             _need(chk, "first stirrup from the end face", end_distance, end_cover, "max", "9.3.12 item 4")
+        if cmin is not None:
+            _need(chk, "cover of the first stirrup at the end face", end_distance, cmin, "min", "9.3.12 item 4, "
+                  "table 9.1.1")
     if junction_distance is not None:
-        _need(chk, "stirrup from the junction face", junction_distance, 50.0, "max", "9.3.12 item 4")
+        _need(chk, "stirrup from the junction face", junction_distance, 50.0, "max", "9.3.12 item 4", should=True)
     if hook is not None:
         D, straight = hook[:2]
         Dmin, lmin = stirrup_hook_min(ds, st, seismic=seismic)
@@ -802,7 +918,7 @@ def cutoff_detailing(d: float, h0: float, *, steel="HRB400", concrete="C30", bey
     chk = Check.report(f"cut-off of a {d:g} mm bar (9.3.8)", "JTG 3362-2018 9.3.8",
                        {"beyond_full_min": full, "beyond_needed_min": needed})
     if in_tension_zone and not compression:
-        chk.warnings.append("tension bars cut off in the tension zone (9.3.8: preferably not)")
+        chk.warnings.append("tension bars cut off in the tension zone (9.3.8, should not)")
     if beyond_full is not None and full is not None:
         _need(chk, "extension beyond the fully used section", beyond_full, full, "min", "9.3.8")
     if beyond_needed is not None:
@@ -839,7 +955,7 @@ def bent_bar_detailing(d: float, h0: float, *, angle: float | None = None, start
     previous one's bottom bend: not checked by numbers."""
     chk = Check.report(f"bent-up bar of {d:g} mm (9.3.10)", "JTG 3362-2018 9.3.10")
     if angle is not None and abs(angle - 45) > 1e-6:
-        chk.warnings.append(f"bent-up angle {_f(angle)}°: 9.3.10 prefers 45°")
+        chk.warnings.append(f"bent-up angle {_f(angle)}° rather than 45° (9.3.10, should)")
     if start is not None:
         _need(chk, "bend start beyond the fully used section", start, h0 / 2, "min", "9.3.10")
     if anchorage is not None:
@@ -856,19 +972,20 @@ def bent_bar_detailing(d: float, h0: float, *, angle: float | None = None, start
 
 def welded_frame_detailing(layers: int, d: float, *, weld: float | None = None, short_weld: float | None = None,
                            single_sided: bool = False) -> Check:
-    """welded frames of reinforced-concrete beams (9.3.11): at most 6 layers, bars ≤ 32 mm (item 4); the welds of the
-    inclined to the longitudinal bars 5 d long (double-sided, preferably), the short welds between longitudinal bars
+    """welded frames of reinforced-concrete beams (9.3.11, all "should"): at most 6 layers, bars ≤ 32 mm (item 4); the
+    welds of the inclined to the longitudinal bars 5 d long (double-sided), the short welds between longitudinal bars
     2.5 d; single-sided welds twice as long (item 3)"""
     chk = Check.report("welded frame (9.3.11)", "JTG 3362-2018 9.3.11")
-    _need(chk, "layers of the frame", layers, 6, "max", "9.3.11 item 4", unit="")
-    _need(chk, "bar diameter of the frame", d, 32, "max", "9.3.11 item 4")
+    _need(chk, "layers of the frame", layers, 6, "max", "9.3.11 item 4", unit="", should=True)
+    _need(chk, "bar diameter of the frame", d, 32, "max", "9.3.11 item 4", should=True)
     k = 2.0 if single_sided else 1.0
     if single_sided:
         chk.notes.append("single-sided welds only where needed (9.3.11 item 3): lengths doubled")
     if weld is not None:
-        _need(chk, "weld of the inclined bars", weld, 5 * k * d, "min", "9.3.11 item 3")
+        _need(chk, "weld of the inclined bars", weld, 5 * k * d, "min", "9.3.11 item 3", should=True)
     if short_weld is not None:
-        _need(chk, "short weld between longitudinal bars", short_weld, 2.5 * k * d, "min", "9.3.11 item 3")
+        _need(chk, "short weld between longitudinal bars", short_weld, 2.5 * k * d, "min", "9.3.11 item 3",
+              should=True)
     return chk
 
 
@@ -915,8 +1032,9 @@ def _per_metre(layers) -> float:
 def bottom_slab_detailing(t: float, *, longitudinal, transverse, prestressed: bool = False) -> Check:
     """detailing bars of a box girder's bottom slab (9.3.5), per metre: longitudinal and transverse are lists of
     (diameter, spacing) layers (top and bottom). In each direction both layers together ≥ 0.4 % of the slab's section
-    (0.3 % for prestressed bridges; program convention: the two layers summed per direction, as the commentary's
-    "in both directions"); bars ≥ 10 mm, spacing ≤ 300 mm (preferably)."""
+    (0.3 % for prestressed bridges; program convention: the two layers summed per direction, since the commentary takes
+    the ratio from AASHTO 8.17.2.3, whose longitudinal minimum of the bottom slab may sit in a single layer; reading it
+    per layer would double the steel); both layers present; bars ≥ 10 mm, spacing ≤ 300 mm (should)."""
     chk = Check.report("box bottom slab (9.3.5)", "JTG 3362-2018 9.3.5")
     lim = 0.003 if prestressed else 0.004
     for name, layers in (("longitudinal", longitudinal), ("transverse", transverse)):
@@ -925,8 +1043,8 @@ def bottom_slab_detailing(t: float, *, longitudinal, transverse, prestressed: bo
             chk.warnings.append(f"{name} bars: top and bottom layers both needed (9.3.5)")
         _need(chk, f"{name} bars / slab section", _per_metre(layers) / (t * 1000.0), lim, "min", "9.3.5", unit="")
         for k, (d, s) in enumerate(layers):
-            _need(chk, f"{name} layer {k + 1} diameter", d, 10.0, "min", "9.3.5")
-            _need(chk, f"{name} layer {k + 1} spacing", s, 300.0, "max", "9.3.5")
+            _need(chk, f"{name} layer {k + 1} diameter", d, 10.0, "min", "9.3.5", should=True)
+            _need(chk, f"{name} layer {k + 1} spacing", s, 300.0, "max", "9.3.5", should=True)
     return chk
 
 
@@ -952,10 +1070,10 @@ def beam_dimensions(h: float, *, flange: float | None = None, haunch=None, tip: 
                   "9.3.2 item 3")
     if web_change is not None:
         db, lt = web_change
-        _need(chk, "web transition length", lt, 12 * db, "min", "9.3.2 item 3")
+        _need(chk, "web transition length", lt, 12 * db, "min", "9.3.2 item 3", should=True)
     if longitudinal_haunch is not None:
         ln, dh = longitudinal_haunch
-        _need(chk, "longitudinal haunch slope", dh / ln, 1 / 6, "max", "9.3.2 item 4", unit="")
+        _need(chk, "longitudinal haunch slope", dh / ln, 1 / 6, "max", "9.3.2 item 4", unit="", should=True)
     chk.notes.append("webs under torsion: their mean width also by the note to 5.5.5 (9.3.2 item 3)")
     return chk
 
@@ -994,7 +1112,7 @@ def diaphragm_detailing(kind: str, *, end: bool = True, intermediate: bool | Non
         if cantilever is not None and cantilever >= 50000.0 and mid_cantilever is not None and not mid_cantilever:
             chk.warnings.append(f"box cantilever {_f(cantilever / 1000)} m ≥ 50 m without a diaphragm in the middle of "
                                 "the cantilever (9.3.1 item 3)")
-        chk.notes.append("diaphragms of box girders preferably with inspection openings (9.3.1 item 3)")
+        chk.notes.append("diaphragms of box girders with inspection openings where conditions allow (9.3.1 item 3)")
     else:
         raise ValueError("kind: 'T', 'composite box' or 'box'")
     return chk
@@ -1008,7 +1126,7 @@ def composite_beam_detailing(*, topping: float | None = None, roughness: float |
     age_difference (months) between the precast concrete and the joining cast-in-place concrete ≤ 3"""
     chk = Check.report("composite beam (9.3.15–9.3.17)", "JTG 3362-2018 9.3.15, 9.3.16, 9.3.17")
     if topping is not None:
-        _need(chk, "cast-in-place layer at the joint", topping, 150.0, "min", "9.3.16")
+        _need(chk, "cast-in-place layer at the joint", topping, 150.0, "min", "9.3.16", should=True)
     if roughness is not None:
         _need(chk, "roughness of the precast top", roughness, 6.0, "min", "9.3.16")
     if stirrups is not None:
@@ -1054,18 +1172,20 @@ def skew_slab_detailing(phi: float, *, monolithic: bool = True, main: str | None
     if monolithic and phi > 15:
         if main == "axis":
             chk.warnings.append(f"monolithic skew slab of {_f(phi)}° > 15° with the main bars along the bridge axis: "
-                                "normal to the support axis preferred (9.2.6 item 1)")
+                                "normal to the support axis (9.2.6 item 1, should)")
         if edge_band is not None:
             _need(chk, "main bars in the free-edge band", edge_band, 3, "min", "9.2.6 item 1", unit="")
         elif main is not None:
             chk.notes.append("free edges need a band of ≥ 3 main bars, top and bottom (9.2.6 item 1)")
     if obtuse is not None:
         d, s, ext = obtuse
-        _need(chk, "obtuse-corner bars", d, 12.0, "min", "9.2.6 item 1")
+        _need(chk, "obtuse-corner bars", d, 12.0, "min", "9.2.6 item 1", should=True)
         _need(chk, "obtuse-corner bar spacing", s, 150.0, "max", "9.2.6 item 1")
         if s < 100 - _TOL:
             chk.notes.append(f"obtuse-corner bars at {_f(s)} mm, closer than the 100–150 mm of 9.2.6")
         _need(chk, "obtuse-corner reinforcement extent", ext, 1000.0, "min", "9.2.6 item 1")
+        if ext > 1500 + _TOL:
+            chk.notes.append(f"obtuse-corner reinforcement over {_f(ext)} mm, beyond the 1.0–1.5 m of 9.2.6")
     return chk
 
 
@@ -1085,13 +1205,16 @@ def composite_slab_detailing(*, roughness: float | None = None, connectors=None)
 
 
 def hinged_slab_detailing(h: float, *, groove: float | None = None, topping: float | None = None) -> Check:
-    """precast slabs joined by hinges (9.2.8): groove depth preferably 2/3 of the precast slab height h; a
-    cast-in-place reinforced topping over the hinged slabs ≥ 80 mm (preferably); the hinge's top opening wide enough
-    for a poker vibrator and bars from the slabs into the hinge (not checked by numbers)"""
+    """precast slabs joined by hinges (9.2.8): groove depth 2/3 of the precast slab height h (should; shallower warns,
+    over 10 % deeper is noted); a cast-in-place reinforced topping over the hinged slabs ≥ 80 mm (should); the hinge's
+    top opening wide enough for a poker vibrator and bars from the slabs into the hinge (not checked by numbers)"""
     chk = Check.report("hinged slabs (9.2.8)", "JTG 3362-2018 9.2.8")
     if groove is not None:
-        _need(chk, "hinge groove depth", groove, 2 * h / 3, "min", "9.2.8")
+        _need(chk, "hinge groove depth", groove, 2 * h / 3, "min", "9.2.8", should=True)
+        if groove > 1.1 * 2 * h / 3:
+            chk.notes.append(f"hinge groove {_f(groove)} mm, over 10 % deeper than the 2/3 h = {_f(2 * h / 3)} mm "
+                             "9.2.8 names")
     if topping is not None:
-        _need(chk, "topping over hinged slabs", topping, 80.0, "min", "9.2.8")
+        _need(chk, "topping over hinged slabs", topping, 80.0, "min", "9.2.8", should=True)
     chk.notes.append("hinge opening for a poker vibrator; bars from the precast slabs into the hinge (9.2.8)")
     return chk
