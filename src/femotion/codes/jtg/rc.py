@@ -664,22 +664,97 @@ def cracking_moment(sec: RCSection, hogging: bool = False) -> tuple[float, dict]
 
 
 # ── flexure ─────────────────────────────────────────────────────────────────
+def _block_depth(s: RCSection, xb: float) -> float:
+    """x from ΣN = 0 (forces); a vanishing tension steel leaves no root above 1e-6 h: x → 1e-6 h"""
+    lo, hi = 1e-6 * s.h, 20 * s.h
+    N = lambda x: s.forces(x, xb)[0]  # noqa: E731
+    return lo if N(lo) >= 0 else brentq(N, lo, hi, xtol=1e-10 * s.h)
+
+
+def _moment_resistance(s: RCSection, xb: float):
+    """(x mm, Mu N·mm, note or None, details) of a section in sagging: x from ΣN = 0, Mu about the gross centroid;
+    x < 2a' by 5.2.4 / 5.2.6 (moments about the compression steel), compared with the singly reinforced section when
+    there are no compression tendons (docs/codes/JTG_3362-2018.md §3.6 item 4)"""
+    x = _block_depth(s, xb)
+    ring = s.kind in ("circle", "annulus")  # bars all round: no separate compression reinforcement
+    aref, compressed_p = (None, False) if ring else s.comp_ref()
+    if aref is None or x >= 2 * aref:
+        return x, s.forces(x, xb)[1], None, {}
+    # 5.2.4: compression steel counted, moments about it, concrete ignored. 5.2.4 applies "when the compression
+    # bars are counted"; without compression tendons the section may also be taken as singly reinforced (with its
+    # own x ≤ ξb h0): the larger governs.
+    M_about = s.design_tension_moment(aref, compressed_p)
+    M_single = 0.0
+    _, pt = s.tendon_masks()
+    if not pt.any():
+        _, top = s.edge_masks()
+        single = s.replace(bars=s.bars[~top], bar_d=s.bar_d[~top])
+        x1 = _block_depth(single, xb)
+        if x1 <= xb * single.h0():  # an over-reinforced single section is not a valid alternative (5.2.2-3)
+            M_single = single.forces(x1, xb)[1]
+    how = "moments about the compression steel" if M_about >= M_single else "compression bars ignored (singly reinforced)"
+    note = f"x = {x:.0f} < 2a' = {2 * aref:.0f} mm: {how} governs ({'5.2.6' if s.has_external else '5.2.4'})"
+    return x, max(M_about, M_single), note, {"a_ref": aref, "M_about_compression_steel": M_about / 1e6,
+                                             "M_singly_reinforced": M_single / 1e6}
+
+
+def _tension_steel_scaled(s: RCSection, k: float) -> RCSection:
+    """the section with its tension-face edge rows (As, Ap: edge_masks, tendon_masks) scaled by k"""
+    bot, _ = s.edge_masks()
+    pb, _ = s.tendon_masks()
+    bars, td = s.bars.copy(), s.tendons.copy()
+    bars[bot, 0] *= k
+    td[pb, 0] *= k
+    return s.replace(bars=bars, tendons=td)
+
+
+def _balanced_share(s: RCSection, xb: float, demand: float):
+    """5.2.7 (commentary p175): only the tension steel the ultimate limit state needs is counted for x. With the tension
+    edge rows As, Ap scaled by k (positions, hence h0, unchanged without external tendons): k_b where x = ξb h0 (the
+    most tension steel that keeps 5.2.2-3), Mu,b there; k_uls where Mu = γ0 Md (demand, N·mm), the steel the ultimate
+    limit state needs. None when even k → 0 leaves x > ξb h0 (external tendons or compression alone)"""
+    def g(k):
+        sk = _tension_steel_scaled(s, k)
+        return _block_depth(sk, xb) - xb * sk.h0()
+
+    k0 = 1e-6
+    if g(k0) >= 0:
+        return None
+    kb = brentq(g, k0, 1.0, xtol=1e-12)
+    sb = _tension_steel_scaled(s, kb)
+    xb_, Mb, _, _ = _moment_resistance(sb, xb)
+    out = {"k_balanced": float(kb), "x_balanced": float(xb_), "Mu_balanced": float(Mb) / 1e6, "k_uls": None,
+           "x_uls": None}
+    if 0 < demand <= Mb:
+        f = lambda k: _moment_resistance(_tension_steel_scaled(s, k), xb)[1] - demand  # noqa: E731
+        ku = k0 if f(k0) >= 0 else brentq(f, k0, kb, xtol=1e-12)  # f(kb) = Mu,b − γ0 Md ≥ 0
+        out.update(k_uls=float(ku), x_uls=float(_moment_resistance(_tension_steel_scaled(s, ku), xb)[0]))
+    return out
+
+
 def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | None = None,
-            xi_b_bonded_only: bool = False) -> Check:
+            xi_b_bonded_only: bool = False, uls_steel_only: bool = False) -> Check:
     """normal-section flexural resistance of a member without axial force (5.2.2 rectangle, 5.2.3 T / I / box, 5.2.4
     x < 2a') plus the condition x ≤ ξb h0 and the minimum reinforcement: 9.1.12 for reinforced concrete; 9.1.13 for
     prestressed concrete (Mud / Mcr ≥ 1.0, and As ≥ 0.003 b h0 for partially prestressed members: pc_class "A" or "B";
     "full" for fully prestressed). External tendons (5.2.5, 5.2.6): a tension σpe,ex Aex at their depth, h0 to the
     resultant of As, Ap and the external tendons below the centroid (figure 5.2.5); ξb by table 5.2.1 note 1 with the
     external strand among the tension-zone steel, or with xi_b_bonded_only=True from the bonded steel only (note 2);
-    details["xi_b_alternative"] gives the other reading's ξb, x and verdict."""
+    details["xi_b_alternative"] gives the other reading's ξb, x and verdict.
+    x > ξb h0 (5.2.2-3 not met) fails: the tension steel is too much or the member too shallow (commentary p175). 5.2.7:
+    when the tension steel beyond what the ultimate limit state needs was added for serviceability (crack width,
+    deflection) or by detailing, x may be found with only the steel the ultimate limit state needs: uls_steel_only=True.
+    The program scales the tension edge rows As, Ap down to the share k_uls that just gives Mu = γ0 Md; the check passes
+    when that steel keeps x ≤ ξb h0, i.e. γ0 Md ≤ Mu,b, the resistance with the tension steel cut to the balanced share
+    (x = ξb h0), which is then the reported resistance. details["clause_5_2_7"]: k_balanced, x_balanced, Mu_balanced,
+    k_uls, x_uls (given in every over-reinforced case)."""
     s = sec if Md >= 0 else sec.flipped()
     c, st = s.concrete, s.steel
     h0 = s.h0()
     t, comp = s.groups()
     lo, hi = 1e-6 * s.h, 20 * s.h
     xb = s.xi_b(external=not xi_b_bonded_only)
-    x = brentq(lambda x: s.forces(x, xb)[0], lo, hi, xtol=1e-9 * s.h)
+    x, Mu, note, extra = _moment_resistance(s, xb)
     chk = Check("flexure" + (" (hogging)" if Md < 0 else ""), gamma0 * Md, 0.0, "kN·m",
                 "JTG 3362-2018 5.2.5 / 5.2.6" if s.has_external else "JTG 3362-2018 5.2.2 / 5.2.3",
                 {"x": x, "h0": h0, "xi": x / h0, "xi_b": xb})
@@ -692,30 +767,31 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
             chk.details["xi_b_alternative"] = {
                 "reading": "table 5.2.1 note 1 (external strand included)" if xi_b_bonded_only else
                 "bonded steel only (note 2)", "xi_b": xb2, "x": x2, "over_reinforced": x2 > xb2 * h0}
-    if x > xb * h0:
-        chk.failed.append(f"over-reinforced: x = {x:.0f} > ξb h0 = {xb * h0:.0f} mm")
-    ring = s.kind in ("circle", "annulus")  # bars all round: no separate compression reinforcement
-    aref, compressed_p = (None, False) if ring else s.comp_ref()
-    if aref is not None and x < 2 * aref:
-        # 5.2.4: compression steel counted, moments about it, concrete ignored. 5.2.4 applies "when the compression
-        # bars are counted"; without compression tendons the section may also be taken as singly reinforced (with its
-        # own x ≤ ξb h0): the larger governs.
-        M_about = s.design_tension_moment(aref, compressed_p)
-        M_single = 0.0
-        _, pt = s.tendon_masks()
-        if not pt.any():
-            bot, top = s.edge_masks()
-            single = s.replace(bars=s.bars[~top], bar_d=s.bar_d[~top])
-            x1 = brentq(lambda x: single.forces(x, xb)[0], lo, hi, xtol=1e-9 * s.h)
-            if x1 <= xb * single.h0():  # an over-reinforced single section is not a valid alternative (5.2.2-3)
-                M_single = single.forces(x1, xb)[1]
-        Mu = max(M_about, M_single)
-        how = "moments about the compression steel" if M_about >= M_single else "compression bars ignored (singly reinforced)"
-        chk.notes.append(f"x = {x:.0f} < 2a' = {2 * aref:.0f} mm: {how} governs ({'5.2.6' if s.has_external else '5.2.4'})")
-        chk.details.update(a_ref=aref, M_about_compression_steel=M_about / 1e6, M_singly_reinforced=M_single / 1e6)
-    else:
-        Mu = s.forces(x, xb)[1]
+    ring = s.kind in ("circle", "annulus")
+    if note:
+        chk.notes.append(note)
+        chk.details.update(extra)
     chk.resistance = Mu / 1e6
+    if x > xb * h0:
+        bal = None if ring else _balanced_share(s, xb, gamma0 * abs(Md) * 1e6)
+        if bal is not None:
+            chk.details["clause_5_2_7"] = bal
+        msg = f"over-reinforced: x = {x:.0f} > ξb h0 = {xb * h0:.0f} mm"
+        if uls_steel_only and bal is not None:
+            chk.resistance = bal["Mu_balanced"]
+            if bal["k_uls"] is None:
+                chk.failed.append(msg + f"; with only the steel the ultimate limit state needs (5.2.7) still over-"
+                                  f"reinforced: γ0Md > Mu,b = {bal['Mu_balanced']:.1f} kN·m")
+            else:
+                chk.notes.append(f"5.2.7: only the tension steel the ultimate limit state needs counted for x: "
+                                 f"{bal['k_uls']:.3f} of As, Ap gives x = {bal['x_uls']:.0f} mm ≤ ξb h0; resistance "
+                                 f"Mu,b = {bal['Mu_balanced']:.1f} kN·m (tension steel cut to x = ξb h0)")
+        else:
+            chk.failed.append(msg)
+            if bal is not None and not ring:
+                chk.notes.append(f"5.2.7: if the tension steel beyond the ultimate-limit-state need was added for "
+                                 f"serviceability or by detailing, pass uls_steel_only=True (Mu,b = "
+                                 f"{bal['Mu_balanced']:.1f} kN·m with the tension steel cut to x = ξb h0)")
     if not ring:
         b = s.web()
         chk.details["b"] = b
@@ -746,7 +822,7 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
 def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogging: bool = False, alpha1: float = 1.0,
           alpha3: float | None = None, bent=(), slab: bool = False, stirrup_steel: str | Rebar | None = None,
           pc_class: str | None = None, bent_tendons=(), vertical=None, alpha2: float | None = None,
-          bent_external=()) -> Check:
+          bent_external=(), rho_sv: float | None = None) -> Check:
     """inclined-section shear resistance of a beam (5.2.9), with the upper limit on the section (5.2.11), the threshold
     below which detailing stirrups suffice (5.2.12) and the stirrup rules of 9.3.12 (ratio, diameter ≥ 8 mm, spacing
     ≤ h/2 and ≤ 400 mm). Take Vd at the sections listed in 5.2.8 (e.g. h/2 from the support centre).
@@ -765,7 +841,9 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
     External tendons: bent_external rows of (area mm², angle θex °[, σpe,ex MPa]) of the external tendons inclined at
     the section, Vpb,ex = 0.75e-3 Σ σpe,ex Aex sin θex (5.2.9-5; σpe,ex defaults to the mean of the section's external
     tendons); the direction of the prestressing moment for α2 counts them at σpe,ex; h0 and P from the bonded steel
-    As, Ap only (ρ = (Ap + As)/(b h0), program convention)."""
+    As, Ap only (ρ = (Ap + As)/(b h0), program convention).
+    rho_sv: the stirrup ratio of 5.2.9-2 when it differs from that of `stirrups` (an inclined section crossing two
+    stirrup zones, jtg.shear_search); the 9.3.12 rules still take `stirrups`."""
     s = sec.flipped() if hogging else sec
     if s.kind in ("circle", "annulus"):  # 3362 has no rule: GB 50010-2010 6.3.15 (members.shear_circle)
         if (slab or pc_class is not None or bent_tendons or vertical is not None or alpha2 is not None
@@ -808,7 +886,8 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
     sst = st if stirrup_steel is None else (stirrup_steel if isinstance(stirrup_steel, Rebar) else _rebar(stirrup_steel))
     legs, dia, sv = stirrups
     Asv = legs * math.pi * dia * dia / 4
-    rho_sv = Asv / (sv * b)
+    rho_prov = Asv / (sv * b)
+    rho_sv = rho_prov if rho_sv is None else float(rho_sv)
     pb, _ = s.tendon_masks()
     Ap = s.tendons[pb, 0].sum()
     P = min(100 * (t[:, 0].sum() + Ap) / (b * h0), 2.5)
@@ -844,8 +923,8 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
         chk.failed.append(f"section too small: γ0Vd > 0.51e-3 √fcu,k b h0 = {vmax:.0f} kN (5.2.11)")
     if gamma0 * abs(Vd) <= vmin:
         chk.notes.append(f"γ0Vd ≤ {vmin:.0f} kN: detailing stirrups per 9.3.12 suffice (5.2.12)")
-    if rho_sv < sst.rho_sv_min:
-        chk.warnings.append(f"stirrup ratio {rho_sv:.4%} < minimum {sst.rho_sv_min:.2%} (9.3.12)")
+    if rho_prov < sst.rho_sv_min:
+        chk.warnings.append(f"stirrup ratio {rho_prov:.4%} < minimum {sst.rho_sv_min:.2%} (9.3.12)")
     if dia < 8:
         chk.warnings.append(f"stirrup diameter {dia} mm < 8 mm (9.3.12)")
     smax = min(s.h / 2, 400.0)

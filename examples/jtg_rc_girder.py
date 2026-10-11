@@ -1,10 +1,11 @@
 """Checks of a reinforced-concrete girder to the Chinese highway codes (illustrative values).
 
 One T girder of a two-span continuous deck (2 × 16 m, C40, HRB400) carrying Class I lane load:
-    frame model → frequencies → influence lines → self-weight and lane-load envelopes → basic combination →
-    flexure (sagging and hogging) and shear checks along the girder → serviceability: frequent and quasi-permanent
-    combinations (no impact), crack widths, stiffness of every element from its frequent moment, long-term deflection
-    and pre-camber.
+    frame model → frequencies → influence lines → self-weight and lane-load envelopes → basic
+    combination → flexure (sagging and hogging, the pier moment reduced for the bearing width, 4.3.5) and shear checks →
+    the governing inclined section along the girder (5.2.8–5.2.11) → stirrup and bent-up bar design (5.2.13) →
+    serviceability: frequent and quasi-permanent combinations (no impact), crack widths, stiffness of every element
+    from its frequent moment, long-term deflection and pre-camber.
 
     uv run python examples/jtg_rc_girder.py
 """
@@ -28,6 +29,9 @@ stirrups_span, stirrups_end, stirrups_pier = (2, 10, 200), (2, 12, 100), (4, 10,
 c = span_sec.concrete
 area, I = span_sec.area * 1e-6, span_sec.I * 1e-12
 mass = area * 2.6 + 0.55  # girder + pavement and railing share (t/m)
+# Ec I: the frequencies for the impact factor take Ec I (JTG D60-2015 4.3.2). JTG 3362 4.3.1 asks for 0.8 Ec I of a
+# reinforced concrete member in the force analysis (jtg.frame_section(span_sec, member="rc", …)); on a girder of one
+# section and one material it scales all the stiffness alike and leaves the forces unchanged.
 sec = Section(E=c.Ec * 1e3, A=area, Iy=I, Iz=10 * I, J=0.01, mass=mass)
 m = Model()
 xs = np.linspace(0, 2 * L, 2 * n + 1)
@@ -94,6 +98,54 @@ for k in range(len(secs)):
     ratios.append(worst)
 k = int(np.argmax(ratios))
 print(f"\nhighest flexure ratio along the girder: {ratios[k]:.3f} at x = {x[k]:.2f} m")
+
+# ── the pier moment reduced for the width of the bearing (4.3.5) ──
+# the design reaction that goes with the largest hogging moment: self-weight from the jump of its shear, the lane load
+# placed as for Mmin at the pier (q on the negative part of the moment influence line, P at its lowest ordinate)
+kL, kR = 2 * (n - 1) + 1, 2 * n  # the sections just left and right of the pier
+R_G = abs(G_V[kL] - G_V[kR])
+Fu = np.zeros((sv.m.ndof, len(nodes)))
+for j, nd in enumerate(nodes):
+    Fu[6 * nd + 2, j] = -1.0
+R_line = np.array([(sv.K @ sv.solve(Fu[:, j]))[6 * nodes[n] + 2] for j in range(len(nodes))])  # reaction per unit load
+s_M, eta_M = il.line(k_pier, "My")
+q_lane, P_lane = jtg.lane_load(L)
+neg = np.interp(xs, s_M, eta_M) < 0
+R_Q = (q_lane * float(np.trapezoid(np.where(neg, R_line, 0.0), xs)) + P_lane * R_line[int(np.argmin(eta_M))]) \
+    * live(mu2).factor()
+R_d = 1.2 * R_G + 1.4 * R_Q
+y_c = (pier_sec.h - pier_sec.zg) / 1e3  # soffit to the centroid axis (m)
+a = jtg.spread_length(0.45, y_c)  # 450 mm long bearing, 45° spread up to the centroid
+Me, d = jtg.support_moment_reduction(Mmin[k_pier], R_d, a)
+Mmin_r = jtg.peak_shaving(x, Mmin, L, R_d, a)
+print(f"\npier moment (4.3.5): R = 1.2 × {R_G:.0f} + 1.4 × {R_Q:.0f} = {R_d:.0f} kN, a = {a:.2f} m, "
+      f"M' = R a / 8 = {d['M_prime']:.1f} kN·m: "
+      f"{Mmin[k_pier]:.1f} → {Me:.1f} kN·m{' (0.9 M governs)' if d['capped'] else ''}")
+print(f"  {jtg.flexure(pier_sec, Mmin_r[k_pier], gamma0)}")
+
+# ── the governing inclined section along the girder (5.2.8–5.2.11) ──
+Vd = np.maximum(np.abs(Vmax), np.abs(Vmin))
+Md = np.where(np.abs(Mmin_r) > np.abs(Mmax), Mmin_r, Mmax)  # the moment of the governing sign as the accompanying one
+sections = [(0.0, 0.7 * L, span_sec), (0.7 * L, 1.3 * L, pier_sec), (1.3 * L, 2 * L, span_sec)]
+stirrups = [(0.0, 3.0, stirrups_end), (3.0, 0.7 * L, stirrups_span), (0.7 * L, 1.3 * L, stirrups_pier),
+            (1.3 * L, 2 * L - 3.0, stirrups_span), (2 * L - 3.0, 2 * L, stirrups_end)]
+supports = [(0.0, "end"), (L, "interior", 0.4), (2 * L, "end")]  # a 400 mm diaphragm over the pier
+search = jtg.shear_search(x, Vd, Md, sections, stirrups, supports=supports, gamma0=gamma0)
+print("\ninclined sections (5.2.8 positions, then the governing one of the search):")
+print("\n".join("  " + line for line in str(search).splitlines()))
+
+# ── design of the stirrups and bent-up bars next to the end support (5.2.13) ──
+half = x <= 0.5 * L + 1e-9  # the half of the end span next to the end support
+x1, V1, M1 = x[half], Vd[half], Md[half]
+Vd_h2 = float(np.interp(span_sec.h / 2e3, x1, V1))
+st = jtg.stirrup_design(span_sec, Vd_h2, legs=2, dia=10, xi=0.6, gamma0=gamma0)
+z = span_sec.h - 110 - 50  # between the bottom and top bar levels (mm)
+bb = jtg.bent_bar_design(x1, V1, support=0.0, h=span_sec.h, z=z, xi=0.6, gamma0=gamma0)
+print(f"\nnext to the end support, V'd = {Vd_h2:.1f} kN at h/2: {st}")
+print(bb)
+design = jtg.shear_search(x1, V1, M1, span_sec, (2, 10, st.spacing), supports=[(0.0, "end")], bent=bb.bent(),
+                          gamma0=gamma0)
+print(f"  inclined sections with these stirrups and bars, governing: {design.governing}")
 
 # ── serviceability (JTG 3362-2018 chapter 6): frequent and quasi-permanent combinations, vehicle load without impact ──
 Q0 = live(0.0).effects(il, "My")

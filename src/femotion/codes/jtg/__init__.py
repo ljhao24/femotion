@@ -4,11 +4,15 @@
                  basic, frequent, quasi-permanent and characteristic combinations
     temperature  JTG D60-2015 4.3.12 (expansion coefficients, effective temperatures, vertical gradient) and JTG 3362-2018
                  4.3.10 / appendix D (temperature stresses; secondary moments with femotion.frame.thermal)
+    analysis     JTG 3362-2018 4.3.1, 4.3.5, 4.3.6: stiffness of members for frame models, reduction of the negative
+                 moment over an interior support (peak shaving), when a varying second moment must be modelled
     materials    JTG 3362-2018: concrete C25–C80, reinforcing and prestressing steel, ξb, σcon limits
     flange       JTG 3362-2018 4.3.3, 4.3.4: effective flange widths of T, I and box girders
     rc           JTG 3362-2018: ultimate-limit-state resistance of reinforced and prestressed concrete sections (flexure,
                  shear, axial and eccentric compression) on rectangles, T / I / box girders, solid and hollow circles;
                  cracking moment and minimum reinforcement of prestressed members
+    inclined     JTG 3362-2018 5.2.8–5.2.13: inclined sections along a beam (5.2.10 projection, search for the governing
+                 one, 5.2.11 over its range), design of stirrups and bent-up bars (5.2.13, 9.3.10)
     torsion      JTG 3362-2018 5.5, 9.3.13: torsion and shear with torsion of rectangles, boxes, T and I sections
     bearing      JTG 3362-2018 5.7: local compression under anchorages and bearings
     members      JTG 3362-2018 5.3.2 spiral columns, 5.3.7 bars over the web, 5.3.11 biaxial compression, 5.4 tension
@@ -54,6 +58,8 @@ from .actions import (DYNAMIC_FACTOR, GAMMA_0, PSI, RAILING_LOADS, SIDEWALK_SLAB
                       lane_load, longitudinal_reduction, quasi_permanent_combination, simple_beam_frequency,
                       transverse_reduction)
 from . import prestress, regions  # noqa: F401
+from .analysis import (STIFFNESS_FACTOR, frame_section, peak_shaving, spread_length, stiffness_factor,  # noqa: F401
+                       support_moment_reduction, variable_inertia_needed)
 from . import creep, slab, transverse  # noqa: F401
 from .bearing import bearing_base_area, fcd_at, local_bearing, mesh_ratio, spiral_ratio  # noqa: F401
 from .composite import (COMPOSITE_CAMBER_LONG_TERM, Composite, composite, composite_crack_resistance,  # noqa: F401
@@ -62,6 +68,8 @@ from .composite import (COMPOSITE_CAMBER_LONG_TERM, Composite, composite, compos
                         composite_shear, composite_stiffness, interface_shear, interface_shear_slab,
                         shrinkage_difference_profile)
 from .external import deviation_radius_min, external_detailing  # noqa: F401
+from .inclined import (STIRRUP_DIAMETERS, BentBarDesign, InclinedSection, ShearSearch, StirrupDesign,  # noqa: F401
+                       bent_bar_design, shear_search, stirrup_design)
 from .flange import (box_flange_coefficient, box_flange_width, box_theoretical_span, tee_flange_width,  # noqa: F401
                      tee_flange_width_outer)
 from .materials import Concrete, Rebar, Tendon, concrete, rebar, strength_at, tendon, xi_b  # noqa: F401
@@ -73,7 +81,7 @@ from .sls import (CAMBER_LONG_TERM, CRACK_WIDTH_LIMITS, crack_resistance, crack_
                   cracked_section, deflection_check, deflection_limit, inclined_crack_resistance, long_term_factor,
                   precamber_pc, precamber_rc, principal_compression, principal_stresses, service_stresses, stiffness,
                   transient_pc, transient_rc)
-from .stm import StrutTie, strut_width  # noqa: F401
+from .stm import EC2_NODE_BONUS, StrutTie, confinement_factor, strut_width  # noqa: F401
 from .temperature import (EFFECTIVE_TEMPERATURE, EXPANSION, NEGATIVE_GRADIENT, Profile, ThermalStresses,  # noqa: F401
                           effective_temperature, temperature_gradient, thermal_stresses)
-from .torsion import torsion, torsion_flange, torsion_moduli  # noqa: F401
+from .torsion import compatibility_torque, torsion, torsion_flange, torsion_moduli  # noqa: F401
