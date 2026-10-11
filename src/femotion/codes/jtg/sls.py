@@ -75,8 +75,10 @@ class Transfer:
     linearly from 0 at the start of transfer to σpe at its end (figure 6.1.8), so each tendon's σp0 and σpe are scaled by
     k = (x − start)/ltr within 0…1. start = debond + 0.25 ltr with sudden release (abrupt, table 6.1.8 note 3), else
     debond; debond: the sleeved (debonded) length of each tendon at that end (mm, one value or one per tendon; the
-    commentary to 6.1.8 leaves the ineffective length of its figure 5-1 out of the transfer zone). The bars' σl6 is
-    kept as the section gives it (6.1.8 speaks of the tendon stress only)."""
+    commentary to 6.1.8 leaves the ineffective length of its figure 5-1 out of the transfer zone). The bars' σl6 on each
+    side of the centroid (6.1.7-1: the bars' stress taken equal to the tendons' creep and shrinkage loss) is scaled by
+    the force-weighted k of the tendons on that side, so that Np0 follows the transferred force and vanishes at the end
+    face (kept whole, −σl6 As alone would precompress the edge away from the bars there)."""
     x: float
     ltr: float | tuple
     abrupt: bool = False
@@ -97,10 +99,24 @@ class Transfer:
         k = self.factors(len(sec.tendons))
         td = sec.tendons.copy()
         td[:, 2] *= k
-        return sec.replace(tendons=td, sigma_pe=None if sec.sigma_pe is None else sec.sigma_pe * k)
+        F = sec.tendons[:, 0] * sec.tendons[:, 2]
+        below = sec.tendons[:, 1] > sec.zg
+        kb = [float((F * k)[m].sum() / F[m].sum()) if m.any() and F[m].sum() else 1.0 for m in (below, ~below)]
+        l6 = (sec.sigma_l6[0] * kb[0], sec.sigma_l6[1] * kb[1])
+        return sec.replace(tendons=td, sigma_pe=None if sec.sigma_pe is None else sec.sigma_pe * k, sigma_l6=l6)
 
 
 # ── 6.3 crack resistance of prestressed members ───────────────────────────────
+def _tension_edges(edges: dict, k_: str) -> list:
+    """the edges that can govern 6.3.1 item 1: full and class A, those put in tension by the loads (σst > 0) or by the
+    prestress (σpc < 0) — an edge compressed by both cannot crack (all edges when there is none); class B (item 1-3),
+    those in tension under the frequent combination (σst > σpc), else the one nearest to it"""
+    if k_ == "B":
+        return [n for n in edges if edges[n]["sigma_st"] > edges[n]["sigma_pc"]] or \
+            [max(edges, key=lambda n: edges[n]["sigma_st"] - edges[n]["sigma_pc"])]
+    return [n for n in edges if edges[n]["sigma_st"] > 0 or edges[n]["sigma_pc"] < 0] or list(edges)
+
+
 def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, segmental: bool = False,
                      M_p2: float = 0.0, M_G: float | None = None, temperature=None, psi_t: float | None = None,
                      transfer: Transfer | None = None) -> Check:
@@ -119,6 +135,8 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
     variable action in the frequent combination), the positive or negative gradient whichever puts that edge in more
     tension, neither where both compress it; σlt does not take it (6.3.2: Ml holds self-weight and direct live loads
     only). Class B: not used (self-weight only).
+    The governing edge: the least margin among the edges the loads or the prestress put in tension (an edge both
+    compress cannot crack; all edges when neither is).
     transfer: a section of a pretensioned member within the transfer length (Transfer, 6.1.8): σpc from the reduced
     tendon stresses."""
     k_ = _pc_class(pc_class)
@@ -152,10 +170,7 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
             e["sigma_G"] = M_G * t
             e["demand"], e["limit"] = e["sigma_G"], e["sigma_pc"]
         edges[name] = e
-    cand = list(edges)
-    if k_ == "B":
-        cand = [n for n in edges if edges[n]["sigma_st"] > edges[n]["sigma_pc"]] or \
-            [max(edges, key=lambda n: edges[n]["sigma_st"] - edges[n]["sigma_pc"])]
+    cand = _tension_edges(edges, k_)
     gov = max(cand, key=lambda n: edges[n]["demand"] - edges[n]["limit"])
     g = edges[gov]
     d = {k: g[k] for k in ("sigma_st", "sigma_lt", "sigma_pc", "W0")} | {"edge": gov, **edges}
@@ -1022,8 +1037,11 @@ def transient_rc(sec: RCSection, Mk: float = 0.0, Vk: float | None = None, *, fc
     1.2 where unfavourable, 0.85 where favourable; both are tried and each limit takes the worse); dynamic overrides the
     factors (a number, or several to try; 1.0 or False switches it off); M_crane, V_crane a crane (vehicle) travelling on the
     erected member, × crane_factor = 1.15 (7.2.1; the check may be omitted where the crane's design effect is below the
-    persistent ultimate one, the program checks anyway). Ec: the concrete modulus at that stage (αES; default the
-    28-day value)."""
+    persistent ultimate one, the program checks anyway; the weight of a member hanging from the crane is part of
+    M_crane, × 1.2 there if the user takes 7.2.2 to apply to it). Ec: the concrete modulus at that stage (αES; default
+    the 28-day value). details: σtcc and its case (dynamic_factor), σtsi of the case governing the bars
+    (dynamic_factor_steel), σttp of the case governing the shear (dynamic_factor_shear); all cases in cases. |M| below
+    1 N·mm counts as sagging (no turning of the section on rounding at a support)."""
     if sec.prestressed:
         raise ValueError("7.2.4–7.2.6 are for reinforced concrete; prestressed members: transient_pc (7.2.8)")
     fck_t, ftk_t = strength_at(fcu)
@@ -1033,7 +1051,7 @@ def transient_rc(sec: RCSection, Mk: float = 0.0, Vk: float | None = None, *, fc
     rows = []
     for k in ks:
         M = Mk + k * M_G + crane_factor * M_crane
-        s, sg = _orient(s0, M)
+        s, sg = _orient(s0, 0.0 if abs(M) < 1e-6 else M)  # |M| below 1 N·mm (rounding at a support): sagging side
         Mn = sg * M * 1e6
         r = _cracked(s, M=Mn)
         x0, Icr = r["x"], r["I_na"]
@@ -1058,12 +1076,13 @@ def transient_rc(sec: RCSection, Mk: float = 0.0, Vk: float | None = None, *, fc
                 _transient_clause("JTG 3362-2018 7.2.4", ks, bool(M_crane or V_crane)), d, limit_check=True,
                 symbol="σtcc")
     gs = max(rows, key=lambda r: r["sigma_s"].max(initial=0.0))
+    d.update(sigma_s=gs["sigma_s"], dynamic_factor_steel=gs["factor"])
     if gs["sigma_s"].max(initial=0.0) > 0.75 * sec.steel.fsk:
         chk.failed.append(f"bar stress {gs['sigma_s'].max():.0f} > 0.75 fsk = {0.75 * sec.steel.fsk:.0f} MPa (7.2.4-2)")
     if has_V:
         gv = max(rows, key=lambda r: r["sigma_tp"])
         tau, b = gv["sigma_tp"], gv["b"]
-        d.update(z0=gv["z0"], sigma_tp=tau, V=gv["V"])
+        d.update(z0=gv["z0"], sigma_tp=tau, V=gv["V"], dynamic_factor_shear=gv["factor"])
         if tau > ftk_t:
             chk.failed.append(f"σttp = {tau:.2f} > f'tk = {ftk_t:.2f} MPa (7.2.5)")
         elif tau <= 0.25 * ftk_t:
@@ -1092,7 +1111,7 @@ def _above(x, f, level):
     return np.array(xs), np.array(fs)
 
 
-def transient_shear(x, tau, *, fcu: float, b: float, stirrups=None, steel="HRB400", stirrup_steel=None,
+def transient_shear(x, tau, *, fcu: float, b: float, steel, stirrups=None, stirrup_steel=None,
                     Asb: float | None = None) -> Check:
     """the shear stress diagram of a reinforced concrete flexural member in a construction stage (7.2.5, 7.2.6, figure
     7.2.6): x (mm, increasing) and tau (MPa) at stations along the member, e.g. σttp of transient_rc from the support to
@@ -1101,8 +1120,8 @@ def transient_shear(x, tau, *, fcu: float, b: float, stirrups=None, steel="HRB40
     over the length a where it is larger the stirrups and bent bars carry all of it: the stirrups τv = n Asv1 [σs] / (b sv)
     (7.2.6-2), stirrups = (legs, diameter, spacing; none: τv = 0), the bent bars the rest of the diagram over a,
     Ω = ∫a max(τ − τv, 0) dx, with Asb ≥ b Ω / (√2 [σs]) (7.2.6-3, bars at 45°); [σs] = 0.75 fsk (7.2.4) of the stirrup
-    steel (stirrup_steel, default steel) and of the bent bars (steel). Asb: the bent bars provided over a (mm²), checked
-    when given."""
+    steel (stirrup_steel, default steel) and of the bent bars (steel, required: e.g. the section's, sec.steel, as
+    transient_rc takes it). Asb: the bent bars provided over a (mm²), checked when given."""
     x, tau = np.asarray(x, float), np.abs(np.asarray(tau, float))
     if x.ndim != 1 or len(x) < 2 or len(x) != len(tau) or (np.diff(x) <= 0).any():
         raise ValueError("x: at least two increasing stations, one τ each")
@@ -1155,7 +1174,8 @@ def transient_pc(sec: RCSection, M: float = 0.0, *, fcu: float, M_G: float = 0.0
     M_G the member's own weight, × the dynamic factor when lifting (transport or erection, 7.2.2 with D60 4.1.10: 1.2
     where unfavourable, 0.85 where favourable; both are tried, the compression and the tension checks each take the
     worse); dynamic overrides the factors (a number, or several to try; 1.0 or False switches it off); M_crane a crane (vehicle)
-    travelling on the erected member, × crane_factor = 1.15 (7.2.1).
+    travelling on the erected member, × crane_factor = 1.15 (7.2.1; a member hanging from the crane is part of M_crane,
+    × 1.2 there if the user takes 7.2.2 to apply to it).
     7.2.3 (warnings): when the prestress is applied the cube strength is at least 0.8 of the design class, the modulus at
     least 0.8 of the 28-day value; fcu of a later stage is at least that of the transfer, so the check holds for every
     stage. Ec: the concrete modulus at that stage (αES, αEP; default the 28-day value)."""
@@ -1197,18 +1217,22 @@ def transient_pc(sec: RCSection, M: float = 0.0, *, fcu: float, M_G: float = 0.0
         rho = (As_ + Ap_) / s.area
         d.update(rho_pretension_zone=rho, rho_needed=need)
         if rho < need:
-            chk.warnings.append(f"(A's + A'p)/A = {rho:.3%} < {need:.3%} in the pretensioned zone (7.2.8)")
+            chk.warnings.append(f"(A's + A'p)/A = {rho:.3%} < {need:.3%} in the pretensioned zone (7.2.8; required by the "
+                                "code, minimum reinforcement reported as a warning)")
         if mb.any():
             if s.steel.name == "HPB300":
-                chk.warnings.append("bars in the pretensioned zone: ribbed bars recommended (7.2.8)")
+                chk.warnings.append("bars in the pretensioned zone: ribbed bars recommended (7.2.8, 'should')")
             dia = s.bar_d[mb]
             if np.isnan(dia).any():
                 chk.notes.append("bar diameters in the pretensioned zone not given: 14 mm limit not checked (7.2.8)")
             if np.nanmax(dia, initial=0.0) > 14.0:
-                chk.warnings.append(f"bars in the pretensioned zone up to φ{np.nanmax(dia):g}: at most 14 mm (7.2.8)")
+                chk.warnings.append(f"bars in the pretensioned zone up to φ{np.nanmax(dia):g}: at most 14 mm recommended "
+                                    "(7.2.8, 'should')")
     c28 = sec.concrete
     if fcu < 0.8 * c28.fcuk:
-        chk.warnings.append(f"f'cu = {fcu:g} MPa < 0.8 × C{c28.grade} = {0.8 * c28.fcuk:g} MPa when prestressing (7.2.3)")
+        chk.warnings.append(f"f'cu = {fcu:g} MPa < 0.8 × C{c28.grade} = {0.8 * c28.fcuk:g} MPa when prestressing (7.2.3; "
+                            "required by the code, a material rule reported as a warning)")
     if Ec is not None and Ec < 0.8 * c28.Ec:
-        chk.warnings.append(f"E'c = {Ec:.0f} MPa < 0.8 Ec(28 d) = {0.8 * c28.Ec:.0f} MPa when prestressing (7.2.3)")
+        chk.warnings.append(f"E'c = {Ec:.0f} MPa < 0.8 Ec(28 d) = {0.8 * c28.Ec:.0f} MPa when prestressing (7.2.3; "
+                            "required by the code, a material rule reported as a warning)")
     return chk

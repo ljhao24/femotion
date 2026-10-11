@@ -312,15 +312,21 @@ l12, (lf_a, lf_b) = ps.anchorage_loss_two_ends(s_con, s_con - l1_a[-1], 2 * L * 
 print(f"\ntendon jacked at both ends (G.0.3): lf = {lf_a / 1000:.1f} m / {lf_b / 1000:.1f} m of {2 * L:.0f} m, "
       f"{'overlapping' if lf_a + lf_b > 2 * L * 1000 else 'no overlap'}; σl1 + σl2 differs from the halves above by "
       f"{np.abs(l12 - l1 - l2).max():.1f} MPa at most (Δσd of G.0.2-2 over the whole tendon instead of each half)")
-# what-if: a straight 30 m tendon with little friction (k only) jacked at both ends: the reverse-friction lengths overlap;
-# the loss jumps at the edges of the overlap (the clause takes the larger stress inside it only)
+# what-if: a straight 30 m tendon with little friction (k only) jacked at both ends: the reverse-friction lengths overlap
+# and lf > l/2. G.0.3 takes the larger stress inside the overlap, each end's own loss outside it (program convention),
+# so the loss jumps at the edges of the overlap; the real distribution depends on the jacking order (figure G.0.2's
+# model for A then B, and both together, below)
 l_s = 30000.0
 x_s = np.linspace(0, l_s, 7)
 l1s = np.array([ps.friction_loss(s_con, mu, 0.0, k, x / 1000) for x in x_s])
 l12_s, (lf_s, _) = ps.anchorage_loss_two_ends(s_con, s_con - l1s[-1], l_s, ps.ANCHOR_SET["wedge"], strand.Ep, x_s,
                                               friction=(l1s, l1s[::-1]))
 print(f"  straight 30 m tendon: lf = {lf_s / 1000:.1f} m from each end, overlap {(l_s - lf_s) / 1000:.1f}–{lf_s / 1000:.1f} m;"
-      " σl1 + σl2 (MPa) at x = " + ", ".join(f"{x / 1000:.0f} m: {v:.0f}" for x, v in zip(x_s, l12_s)))
+      " σl1 + σl2 (MPa) at x = " + ", ".join(f"{x / 1000:.0f}" for x in x_s) + " m")
+for seq in ("code", "A-B", "simultaneous"):
+    v, _ = ps.anchorage_loss_two_ends(s_con, s_con - l1s[-1], l_s, ps.ANCHOR_SET["wedge"], strand.Ep, x_s,
+                                      friction=(l1s, l1s[::-1]), sequence=seq)
+    print(f"    {seq:>12}: " + ", ".join(f"{a:.0f}" for a in v))
 
 # construction stages: the girder after grouting with σpe = σcon − σlI − 0.5 σlII (assumed: some months after jacking),
 # f'cu = fcu,k, the transfer secondary moment kept for the prestress (illustrative)
