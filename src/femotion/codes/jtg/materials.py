@@ -9,6 +9,8 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 
+import numpy as np
+
 #                 fck    ftk    fcd    ftd    Ec (MPa)
 _CONCRETE = {
     25: (16.7, 1.78, 11.5, 1.23, 2.80e4),
@@ -85,6 +87,17 @@ def concrete(grade: int | str) -> Concrete:
     if g not in _CONCRETE:
         raise ValueError(f"concrete C{g}: JTG 3362-2018 tabulates C25 … C80 in steps of 5")
     return Concrete(g, *_CONCRETE[g])
+
+
+def strength_at(fcu: float) -> tuple[float, float]:
+    """(f'ck, f'tk) of concrete with cube strength f'cu at a construction stage (fabrication, transport, erection),
+    linear between the classes of table 3.1.3 (7.2.4, 7.2.8)"""
+    gs = sorted(_CONCRETE)
+    if not gs[0] <= fcu <= gs[-1]:
+        raise ValueError(f"f'cu = {fcu:g} MPa outside table 3.1.3 (C{gs[0]} … C{gs[-1]})")
+    fck = float(np.interp(fcu, gs, [_CONCRETE[g][0] for g in gs]))
+    ftk = float(np.interp(fcu, gs, [_CONCRETE[g][1] for g in gs]))
+    return fck, ftk
 
 
 def rebar(name: str = "HRB400") -> Rebar:

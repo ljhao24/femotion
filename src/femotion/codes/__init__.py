@@ -1,7 +1,7 @@
 """Design-code checks on top of femotion's analyses.
 
-    jtg   Chinese highway bridge codes: actions and combinations (JTG D60-2015), reinforced-concrete ultimate limit
-          state section resistance (JTG 3362-2018)
+    jtg   Chinese highway bridge codes: actions and combinations (JTG D60-2015); reinforced and prestressed concrete
+          sections to JTG 3362-2018: ultimate limit state, serviceability (cracking, crack width, deflection), stresses
 
 Codes only add the code-specific parts (loads, factors, resistance formulas). The generic parts they rely on live in
 the analysis modules, e.g. influence lines and moving-load envelopes in femotion.frame.influence.

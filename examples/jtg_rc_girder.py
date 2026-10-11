@@ -1,8 +1,10 @@
-"""Ultimate-limit-state check of a reinforced-concrete girder to the Chinese highway codes (illustrative values).
+"""Checks of a reinforced-concrete girder to the Chinese highway codes (illustrative values).
 
 One T girder of a two-span continuous deck (2 × 16 m, C40, HRB400) carrying Class I lane load:
     frame model → frequencies → influence lines → self-weight and lane-load envelopes → basic combination →
-    flexure (sagging and hogging) and shear checks along the girder.
+    flexure (sagging and hogging) and shear checks along the girder → serviceability: frequent and quasi-permanent
+    combinations (no impact), crack widths, stiffness of every element from its frequent moment, long-term deflection
+    and pre-camber.
 
     uv run python examples/jtg_rc_girder.py
 """
@@ -92,3 +94,50 @@ for k in range(len(secs)):
     ratios.append(worst)
 k = int(np.argmax(ratios))
 print(f"\nhighest flexure ratio along the girder: {ratios[k]:.3f} at x = {x[k]:.2f} m")
+
+# ── serviceability (JTG 3362-2018 chapter 6): frequent and quasi-permanent combinations, vehicle load without impact ──
+Q0 = live(0.0).effects(il, "My")
+Ms_max, Ms_min = jtg.frequent_combination(G_M, Q0)
+Ml_max, Ml_min = jtg.quasi_permanent_combination(G_M, Q0)
+print("\nserviceability")
+ks, kp = int(np.argmax(Ms_max)), int(np.argmin(Ms_min))
+for k, Ms, Ml, s_ in [(ks, Ms_max, Ml_max, span_sec), (kp, Ms_min, Ml_min, pier_sec)]:
+    print(f"  x = {x[k]:5.2f} m  Ms = {Ms[k]:6.1f}, Ml = {Ml[k]:6.1f} kN·m  {jtg.crack_width(s_, Ms[k], Ml[k], env='I')}")
+
+# stiffness of every element from its frequent moment (6.5.2: B0 below Mcr, the cracked equivalent above), then the
+# deflections by structural mechanics on a frame with EI = B (6.5.1)
+m2 = Model()
+nodes2 = [m2.node((xx, 0, 0)) for xx in xs]
+for e in range(len(beams)):
+    Me = max((Ms_max[j] if abs(Ms_max[j]) >= abs(Ms_min[j]) else Ms_min[j] for j in (2 * e, 2 * e + 1)), key=abs)
+    B = jtg.stiffness(pier_sec if near_pier(2 * e) else span_sec, Me)[0]  # N·mm²
+    m2.beam(nodes2[e], nodes2[e + 1], Section(E=c.Ec * 1e3, A=area, Iy=B * 1e-9 / (c.Ec * 1e3), Iz=10 * I, J=0.01,
+                                              mass=mass))
+m2.fix(nodes2[0], (1, 1, 1, 1, 0, 0))
+m2.fix(nodes2[n], (0, 1, 1, 1, 0, 0))
+m2.fix(nodes2[-1], (0, 1, 1, 1, 0, 0))
+sv2 = Solver(m2)
+_, Ug = uniform_load_forces(sv2, secs, None)
+fG = -Ug[2::6] * 1e3  # self-weight deflection (mm, down +)
+D = np.zeros((len(xs), len(xs)))  # D[i, j]: deflection at node i under a unit load at node j (symmetric)
+for j in range(len(xs)):
+    F = np.zeros(m2.ndof)
+    F[6 * j + 2] = -1.0
+    D[:, j] = -sv2.solve(F)[2::6] * 1e3
+q, P = jtg.lane_load(L)
+dx = np.diff(xs)
+
+
+def lane_deflection(row):
+    pos = np.maximum(row, 0.0)
+    return q * float(((pos[:-1] + pos[1:]) / 2 * dx).sum()) + P * pos.max()
+
+
+fQ = 0.7 * live(0.0).factor() * np.array([lane_deflection(D[i]) for i in range(len(xs))])  # ψf1 = 0.7, no impact
+eta = jtg.long_term_factor(c)
+i_max = int(np.argmax(fQ[: n + 1]))
+print(f"  ηθ = {eta:.2f};  live-load deflection (frequent, long term) at x = {xs[i_max]:.2f} m: "
+      f"{jtg.deflection_check(eta * fQ[i_max], L * 1e3)}")
+fG_l, fQ_l = eta * fG[i_max], eta * fQ[i_max]
+print(f"  long-term deflection: self-weight {fG_l:.1f} mm + frequent live {fQ_l:.1f} mm → pre-camber "
+      f"{jtg.precamber_rc(fG_l, fQ_l, L * 1e3):.1f} mm (6.5.5)")

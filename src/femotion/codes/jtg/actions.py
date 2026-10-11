@@ -1,7 +1,8 @@
-"""Highway traffic actions and the ultimate-limit-state combination of JTG D60-2015.
+"""Highway traffic actions and the combinations of JTG D60-2015.
 
-Units: kN, m, Hz. Clauses (docs/codes/JTG_D60-2015.md): 4.1.5 (basic combination), 4.3.1 (lane and vehicle loads, design lanes, transverse
-and longitudinal reduction), 4.3.2 (impact factor); γ0 by design safety class (4.1.5).
+Units: kN, m, Hz. Clauses (docs/codes/JTG_D60-2015.md): 4.1.5 (basic combination), 4.1.6 (frequent and
+quasi-permanent combinations), 4.1.8 (characteristic values for elastic stresses), 4.3.1 (lane and vehicle loads,
+design lanes, transverse and longitudinal reduction), 4.3.2 (impact factor); γ0 by design safety class (4.1.5).
 
     from femotion.codes import jtg
     q, P = jtg.lane_load(L0=20.0)                        # Class I: 10.5 kN/m, 300 kN
@@ -9,6 +10,7 @@ and longitudinal reduction), 4.3.2 (impact factor); γ0 by design safety class (
     live = jtg.LiveLoad(L0=20.0, lanes=2, mu=mu)         # lane load × (1 + μ) × lanes × transverse reduction
     Qmax, Qmin = live.effects(il, "My")                  # il: femotion.frame.influence.InfluenceLines
     Sd = jtg.basic_combination(G, (Qmax, Qmin))          # (max, min) design effects, without γ0
+    Ss = jtg.frequent_combination(G, LiveLoad(L0=20.0, lanes=2).effects(il, "My"))   # serviceability: no impact
 """
 from __future__ import annotations
 
@@ -140,6 +142,21 @@ class LiveLoad:
         return mx * f, mn * f
 
 
+def _is_pair(it) -> bool:
+    """(effects, (γ unfavourable, γ favourable))"""
+    return isinstance(it, tuple) and len(it) == 2 and isinstance(it[1], tuple) and len(it[1]) == 2 \
+        and np.ndim(it[1][0]) == 0
+
+
+def _items(G) -> list:
+    """the permanent actions of G: one array, one (array, factors) pair, or a list of either"""
+    if _is_pair(G) or not isinstance(G, (list, tuple)) or not len(G):
+        return [G]
+    if np.ndim(G[0]) > 0 or _is_pair(G[0]):
+        return list(G)
+    return [G]  # a plain sequence of numbers: one action
+
+
 def basic_combination(G, Q, others=(), *, gamma_G: tuple[float, float] = (1.2, 1.0), gamma_Q: float | None = None,
                       vehicle: bool = False, gamma_others=1.4, psi_c: float = 0.75):
     """basic combination (基本组合, 4.1.5-1) of the ultimate limit state, effects added linearly, without γ0 (apply γ0 in
@@ -156,10 +173,10 @@ def basic_combination(G, Q, others=(), *, gamma_G: tuple[float, float] = (1.2, 1
     of the min effects.
     gamma_Q: 1.4 for the lane load, 1.8 for the vehicle load (vehicle=True). gamma_others: one value or one per action;
     1.4 in general, 1.1 for wind. psi_c 0.75. γL (design-life adjustment) is 1.0 throughout."""
-    items = G if isinstance(G, (list, tuple)) and len(G) and (np.ndim(G[0]) > 0 or isinstance(G[0], tuple)) else [G]
     hi = lo = 0.0
+    items = _items(G)
     for it in items:
-        g, (gu, gf) = (it if isinstance(it, tuple) else (it, gamma_G))
+        g, (gu, gf) = (it if _is_pair(it) else (it, gamma_G))
         g = np.asarray(g, float)
         hi = hi + np.where(g > 0, gu, gf) * g
         lo = lo + np.where(g < 0, gu, gf) * g
@@ -171,3 +188,80 @@ def basic_combination(G, Q, others=(), *, gamma_G: tuple[float, float] = (1.2, 1
         hi = hi + psi_c * g_j * np.maximum(np.asarray(qmax, float), 0.0)
         lo = lo + psi_c * g_j * np.minimum(np.asarray(qmin, float), 0.0)
     return hi, lo
+
+
+# ── serviceability combinations (4.1.6) and characteristic values (4.1.8) ──
+# frequent and quasi-permanent value factors (ψf, ψq) by action, 4.1.5 item 2 and 4.1.6 (vehicle load without impact)
+PSI = {"vehicle": (0.7, 0.4), "crowd": (1.0, 0.4), "wind": (0.75, 0.75), "temperature gradient": (0.8, 0.8),
+       "other": (1.0, 1.0)}
+
+DYNAMIC_FACTOR = (1.2, 0.85)  # self-weight of members being lifted or transported (4.1.10): unfavourable, favourable
+
+
+def _permanent(G):
+    """sum of permanent effects at their characteristic values (items may be arrays or (array, factors) pairs as for
+    basic_combination; the factors are not used)"""
+    items = _items(G)
+    out = 0.0
+    for it in items:
+        out = out + np.asarray(it[0] if _is_pair(it) else it, float)
+    return out
+
+
+def _variable(hi, lo, Q, psi):
+    """add ψ × the unfavourable parts of (max, min) of a variable action (4.1.4 item 2)"""
+    return hi + psi * np.maximum(np.asarray(Q[0], float), 0.0), lo + psi * np.minimum(np.asarray(Q[1], float), 0.0)
+
+
+def _pair(hi, lo):
+    hi, lo = np.broadcast_arrays(np.asarray(hi, float), np.asarray(lo, float))
+    return hi.copy(), lo.copy()
+
+
+def _psi_of(kind, which):
+    if isinstance(kind, (int, float)):
+        return float(kind)
+    if kind not in PSI:
+        raise ValueError(f"action kind {kind!r}: one of {', '.join(PSI)} or a number")
+    return PSI[kind][which]
+
+
+def frequent_combination(G, Q=None, others=(), *, leading: str | float = "vehicle", kinds=()):
+    """frequent combination (作用频遇组合, 4.1.6-1): Sfd = Σ Gik + ψf1 Q1k + Σ ψqj Qjk, effects added linearly.
+    Returns (max, min). G: permanent effects at characteristic values (an array or a list, as for basic_combination;
+    partial factors are 1.0 here). Q: (max, min) of the leading variable action, normally the vehicle load without impact
+    (LiveLoad(mu=0), 6.1.1 of JTG 3362-2018), × ψf1 (0.7). others: list of (max, min) of the other variable actions, each
+    × its quasi-permanent factor ψqj; kinds: one name of PSI (or a number) per action of others, default "other" (1.0).
+    leading: name in PSI or a number for ψf1. Variable actions only count where unfavourable (4.1.4 item 2).
+    Prestress (primary and secondary effects) is a permanent action (4.2.2)."""
+    G = _permanent(G)
+    hi, lo = G, G
+    if Q is not None:
+        hi, lo = _variable(hi, lo, Q, _psi_of(leading, 0))
+    ks = list(kinds) + ["other"] * (len(others) - len(kinds))
+    for k, q in zip(ks, others):
+        hi, lo = _variable(hi, lo, q, _psi_of(k, 1))
+    return _pair(hi, lo)
+
+
+def quasi_permanent_combination(G, Q=None, others=(), *, leading: str | float = "vehicle", kinds=()):
+    """quasi-permanent combination (作用准永久组合, 4.1.6-2): Sqd = Σ Gik + Σ ψqj Qjk (j from 1). Returns (max, min).
+    Q: (max, min) of the vehicle load without impact (× ψq 0.4), others with kinds as frequent_combination."""
+    G = _permanent(G)
+    hi, lo = G, G
+    if Q is not None:
+        hi, lo = _variable(hi, lo, Q, _psi_of(leading, 1))
+    ks = list(kinds) + ["other"] * (len(others) - len(kinds))
+    for k, q in zip(ks, others):
+        hi, lo = _variable(hi, lo, q, _psi_of(k, 1))
+    return _pair(hi, lo)
+
+
+def characteristic_combination(G, Q=None, others=()):
+    """effects at characteristic values with all partial factors 1.0 (4.1.8; JTG 3362-2018 7.1.1: the vehicle load with
+    impact): Σ Gik + Q1k + Σ Qjk, variable actions where unfavourable. Returns (max, min)."""
+    G = _permanent(G)
+    hi, lo = G, G
+    for q in ([Q] if Q is not None else []) + list(others):
+        hi, lo = _variable(hi, lo, q, 1.0)
+    return _pair(hi, lo)

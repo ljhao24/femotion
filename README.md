@@ -133,7 +133,7 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | `femotion.models` | ready-made illustrative structures (a 500 m cable-stayed bridge) | — |
 | `femotion.frame.influence` | influence lines of every section from one factorisation, lane-load and axle-train envelopes, exact section forces under distributed loads | own (linear) |
 | `femotion.frame.prestress` | tendons on frame models: equivalent loads, total, primary and secondary effects | own (linear) |
-| `femotion.codes.jtg` | Chinese highway bridge codes: traffic actions and combinations (JTG D60-2015); ultimate-limit-state resistance of reinforced and prestressed concrete sections, prestress losses (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
+| `femotion.codes.jtg` | Chinese highway bridge codes: traffic actions and combinations (JTG D60-2015); ultimate-limit-state resistance of reinforced and prestressed concrete sections, prestress losses, crack resistance, crack width, deflection and stress checks (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
 
 ### Which frame solver?
 
@@ -155,11 +155,16 @@ Q = jtg.LiveLoad(L0=16, lanes=2, mu=jtg.impact_factor(f1)).effects(il, "My")
 Mmax, Mmin = jtg.basic_combination(G, Q)
 sec = jtg.tee(200, 1100, 1600, 160, concrete="C40", bottom=[(10, 28, 110)], top=[(8, 20, 50)])   # mm
 print(jtg.flexure(sec, Mmax.max()))      # flexure: γ0Sd = …, R = …, ratio … → OK
+Q0 = jtg.LiveLoad(L0=16, lanes=2).effects(il, "My")                   # serviceability: no impact
+Ms, Ml = jtg.frequent_combination(G, Q0)[0], jtg.quasi_permanent_combination(G, Q0)[0]
+k = Ms.argmax()
+print(jtg.crack_width(sec, Ms[k], Ml[k], env="I"))   # crack width: Wcr = … mm, limit 0.200 mm, ratio …
 ```
 
-Reinforced and prestressed (bonded internal tendons) concrete, ultimate limit state; no serviceability yet.
+Reinforced and prestressed (bonded internal tendons) concrete: ultimate limit state, serviceability (crack resistance
+of prestressed members, crack width, stiffness and deflection) and stresses in service and in construction stages.
 `examples/jtg_pc_girder.py` runs a post-tensioned continuous girder from tendon profile and losses to secondary moments
-and checks. Values and formulas have been checked clause by
+and the ultimate, serviceability and stress checks. Values and formulas have been checked clause by
 clause against the official texts. [docs/codes/](docs/codes/) has one file per code (in Chinese) with every clause,
 formula, table and parameter the program uses, page references and the function using each. `examples/jtg_rc_girder.py` checks a two-span continuous girder.
 

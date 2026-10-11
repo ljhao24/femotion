@@ -1,10 +1,12 @@
-"""Prestressed concrete girder to JTG D60-2015 / JTG 3362-2018, ultimate limit state (illustrative values).
+"""Prestressed concrete girder to JTG D60-2015 / JTG 3362-2018 (illustrative values).
 
 One post-tensioned I girder of a two-span continuous deck (2 × 30 m, C50, 4 tendons of 9 × φs15.2 strand 1860, jacked
-at both ends), Class I lane load:
+at both ends), Class I lane load, designed as class A:
     tendon profile → losses along the tendon (friction, anchorage set with reverse friction, elastic shortening,
     relaxation, creep and shrinkage) → σpe, σp0 → secondary moments on the frame → basic combination with the
-    secondary effect → flexure (span, pier), shear (α2 for prestressed members, bent tendons).
+    secondary effect → flexure (span, pier), shear (α2 for prestressed members, bent tendons) → serviceability
+    (normal and inclined crack resistance), stresses in service (characteristic combination with impact), stresses at
+    transfer, deflection, camber and pre-camber.
 
     uv run python examples/jtg_pc_girder.py
 
@@ -21,11 +23,12 @@ from femotion.codes import jtg
 from femotion.codes.jtg import prestress as ps
 from femotion.frame import Model, Section, Solver
 from femotion.frame.influence import InfluenceLines, chain_sections, uniform_load_forces
-from femotion.frame.prestress import Tendon, effects
+from femotion.frame.prestress import Tendon, effects, equivalent_loads
 
 L, n = 30.0, 60  # span (m), elements per span
 geo = dict(b=200, h=2000, bf=2200, hf=180, bf_bottom=800, hf_bottom=300, concrete="C50", steel="HRB400")
-bars = dict(bottom=[(8, 16, 60)], top=[(16, 16, 50)])
+bars = dict(bottom=[(10, 20, 60)], top=[(16, 16, 50)])
+bars_end = dict(bottom=[(10, 20, 60), (6, 20, 110)], top=[(16, 16, 50)])  # end blocks: the pretensioned zone at transfer (7.2.8)
 strand = jtg.tendon("strand", 1860)
 n_tendons, Ap = 4, 4 * 9 * 139.0  # mm²
 duct = math.sqrt(n_tendons) * 90.0  # one equivalent duct for the four 90 mm ducts (same area)
@@ -123,14 +126,16 @@ print(f"\nsecondary moment at the pier: {M_sec[k_pier]:.0f} kN·m (primary {M_pr
 
 
 def girder_at(i):
-    """the girder section at node i with its tendon (σp0 from 6.1.6-5, including the secondary moment, 6.1.6-4). The
-    web is thickened to 550 mm within 2 m of the supports (end blocks; the frame keeps the span section throughout)"""
+    """the girder section at node i with its tendon (σp0 from 6.1.6-5, including the secondary moment, 6.1.6-4; σpe
+    after all losses). The web is thickened to 550 mm within 2 m of the supports (end blocks; the frame keeps the span
+    section throughout)"""
     M2 = M_sec[np.argmin(np.abs(x_sec - xs[i]))] * 1e6  # N·mm, sagging +
     s_pc = ps.concrete_stress(s_pe[i] * Ap, ep_n[i], ep_n[i], An, In, M=M2)
     sp0 = ps.sigma_p0(s_con, lI[i] + lII[i], post=True, alpha_EP=aEP, sigma_pc=s_pc)
     near_support = min(abs(xs[i]), abs(xs[i] - L), abs(xs[i] - 2 * L)) <= 2.0
-    g = dict(geo, b=550) if near_support else geo
-    return jtg.tee(**g, **bars, tendons=[(Ap, dp[i], sp0, duct)], tendon=strand), sp0
+    g, b_ = (dict(geo, b=550), bars_end) if near_support else (geo, bars)
+    return jtg.tee(**g, **b_, tendons=[(Ap, dp[i], sp0, duct)], tendon=strand, sigma_pe=s_pe[i],
+                   sigma_l6=l6[i]), sp0
 
 
 print("\nchecks")
@@ -148,3 +153,82 @@ for x_v, hog, a1 in [(h_half, False, 1.0), (L - 1.0, True, 0.9)]:
     v = jtg.shear(s, max(abs(Vmax[k_]), abs(Vmin[k_])), (2, 12, 150), gamma0=gamma0, pc_class="A", hogging=hog,
                   alpha1=a1, bent_tendons=[(Ap, ang)])
     print(f"  x = {x_sec[k_]:5.1f} m  {v}  (α2 = {v.details['alpha2']}, Vpb = {v.details['Vpb']:.0f} kN)")
+
+# ── serviceability (JTG 3362-2018 chapter 6, class A) and stresses (chapter 7) ──
+# The prestress is in the section (σp0, σpe, σl6); its secondary moment and shear go in separately (M_p2, V_p2), so the
+# combinations below hold the self-weight and the live load only. Chapter 6: no impact (6.1.1); 7.1: with impact.
+Q0_M, Q0_V = live(0.0).effects(il, "My"), live(0.0).effects(il, "Vz")
+Ms_max, Ms_min = jtg.frequent_combination(G_M, Q0_M)
+Ml_max, Ml_min = jtg.quasi_permanent_combination(G_M, Q0_M)
+Vs_max, Vs_min = jtg.frequent_combination(G_V, Q0_V)
+Mk_max, Mk_min = jtg.characteristic_combination(G_M, Q_M)
+Vk_max, Vk_min = jtg.characteristic_combination(G_V, Q_V)
+print("\nserviceability and stresses (class A, precast girder)")
+for k_, Ms, Ml, Mk in [(k_span, Ms_max, Ml_max, Mk_max), (k_pier, Ms_min, Ml_min, Mk_min)]:
+    s, _ = girder_at(node_of[k_])
+    print(f"  x = {x_sec[k_]:5.1f} m  Mp2 = {M_sec[k_]:.0f} kN·m")
+    print(f"      {jtg.crack_resistance(s, Ms[k_], Ml[k_], pc_class='A', M_p2=M_sec[k_])}")
+    print(f"      {jtg.service_stresses(s, Mk[k_], pc_class='A', M_p2=M_sec[k_])}")
+# principal stresses along the girder (6.3.1 item 2, 7.1.6): every section from h/2 off the supports, each shear extreme
+# with the moment extreme of the same combination (envelopes: the pairs are not concurrent loadings)
+worst_t = worst_c = None
+for k_ in range(len(secs)):
+    if min(abs(x_sec[k_]), abs(x_sec[k_] - L), abs(x_sec[k_] - 2 * L)) < h_half:
+        continue
+    s, _ = girder_at(node_of[k_])
+    for Vs, Ms, Vk, Mk in [(Vs_max[k_], Ms_max[k_], Vk_max[k_], Mk_max[k_]), (Vs_min[k_], Ms_min[k_], Vk_min[k_], Mk_min[k_])]:
+        # the inclined tendon relieves the shear where its own (primary) shear opposes the load shear (6.3.3-5)
+        ang = math.degrees(math.atan(abs(slope[node_of[k_]]))) * (1 if V_pri[k_] * Vs < 0 else -1)
+        kw = dict(M_p2=M_sec[k_], V_p2=V_sec[k_], bent_tendons=[(Ap, ang)])
+        t = jtg.inclined_crack_resistance(s, Ms, Vs, pc_class="A", **kw)
+        p_ = jtg.principal_compression(s, Mk, Vk, stirrups=(2, 12, 150), **kw)
+        if worst_t is None or t.ratio > worst_t[1].ratio:
+            worst_t = (x_sec[k_], t)
+        if worst_c is None or p_.ratio > worst_c[1].ratio:
+            worst_c = (x_sec[k_], p_)
+for xx, r in (worst_t, worst_c):
+    print(f"  x = {xx:5.1f} m  {r}  (at {r.details['at']['z']:.0f} mm from the top)")
+
+# at transfer: σpe = σcon − σlI, the girder's own weight only (no deck finishes yet), net section before grouting,
+# f'cu = 0.9 fcu,k; the secondary moment of the transfer force
+w_girder = np.zeros((len(beams), 3))
+w_girder[:, 2] = -area * 2.6 * 9.81  # kN/m
+G_M_t = uniform_load_forces(sv, secs, "My", w=w_girder)
+P_t = (s_con - lI[:-1] / 2 - lI[1:] / 2) * Ap / 1e3
+M_sec_t = effects(sv, Tendon(beams, e, P_t), secs, "My")[2]
+for k_ in (k_span, k_pier):
+    i = node_of[k_]
+    s, _ = girder_at(i)
+    s_t = s.replace(sigma_pe=s_con - lI[i], sigma_l6=0.0)
+    print(f"  transfer x = {x_sec[k_]:5.1f} m  {jtg.transient_pc(s_t, G_M_t[k_], fcu=0.9 * c.fcuk, M_p2=M_sec_t[k_])}")
+
+# deflection (6.5): class A, B0 = 0.95 Ec I0 throughout (span section); camber from the prestress after all losses on
+# Ec I0 × 2.0 (6.5.4)
+A0, z0, I0 = jtg.tee(**geo, **bars, tendons=[(Ap, dp[n // 2], 1000.0, duct)], tendon=strand).props("transformed")
+
+
+def frame(EI_factor):
+    mm = Model()
+    nn = [mm.node((xx, 0, 0)) for xx in xs]
+    bb = [mm.beam(a, b, Section(E=c.Ec * 1e3, A=area, Iy=EI_factor * I0 * 1e-12, Iz=10 * I, J=0.05,
+                                mass=area * 2.6 + 1.2)) for a, b in zip(nn[:-1], nn[1:])]
+    mm.fix(nn[0], (1, 1, 1, 1, 0, 0))
+    mm.fix(nn[n], (0, 1, 1, 1, 0, 0))
+    mm.fix(nn[-1], (0, 1, 1, 1, 0, 0))
+    return Solver(mm), bb
+
+
+sv_B, _ = frame(0.95)
+sv_E, beams_E = frame(1.0)
+eta = jtg.long_term_factor(c)
+i_m = int(np.argmin(np.abs(xs - 0.4 * L)))
+fG = -uniform_load_forces(sv_B, secs, None)[1][2::6][i_m] * 1e3
+infl = np.array([-sv_B.solve(np.eye(sv_B.m.ndof)[6 * j + 2] * -1.0)[2::6][i_m] for j in range(len(xs))]) * 1e3
+q, Pk = jtg.lane_load(L)
+pos = np.maximum(infl, 0.0)
+fQ = 0.7 * live(0.0).factor() * (q * float(((pos[:-1] + pos[1:]) / 2 * np.diff(xs)).sum()) + Pk * pos.max())
+f_pe = sv_E.solve(equivalent_loads(sv_E, Tendon(beams_E, e, P)))[2::6][i_m] * 1e3  # upward +
+print(f"  deflection at x = {xs[i_m]:.1f} m (ηθ = {eta:.3f}): {jtg.deflection_check(eta * fQ, L * 1e3)}")
+f_s, f_c = eta * (fG + fQ), jtg.CAMBER_LONG_TERM * f_pe
+print(f"  long-term: frequent combination {f_s:.1f} mm down, prestress camber {f_c:.1f} mm up → pre-camber "
+      f"{jtg.precamber_pc(f_s, f_c):.1f} mm (6.5.5)")

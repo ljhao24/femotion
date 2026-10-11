@@ -54,6 +54,11 @@ class Rect:
     def second_moment_top(self):
         return self.sign * self.b * (self.bottom ** 3 - self.top ** 3) / 3
 
+    def part2(self, x):
+        """second moment about the top fibre of the part above depth x"""
+        z2 = min(max(x, self.top), self.bottom)
+        return self.sign * self.b * (z2 ** 3 - self.top ** 3) / 3
+
     def width(self, z):
         return self.sign * self.b if self.top < z < self.bottom else 0.0
 
@@ -80,6 +85,18 @@ class Circle:
     def second_moment_top(self):
         r = self.D / 2
         return self.sign * (math.pi * r ** 4 / 4 + math.pi * r * r * self.zc ** 2)
+
+    def part2(self, x):
+        """second moment about the top fibre of the part above depth x (Gauss–Legendre in the angle, exact to 1e-12)"""
+        r = self.D / 2
+        t = min(max(x - (self.zc - r), 0.0), 2 * r)
+        if t <= 0:
+            return 0.0
+        a = math.acos((r - t) / r)  # half angle of the segment, from the top of the circle
+        g, w = np.polynomial.legendre.leggauss(48)
+        th = a * (g + 1) / 2  # z = zc − r cos θ, width 2 r sin θ, dz = r sin θ dθ
+        z = self.zc - r * np.cos(th)
+        return self.sign * float((a / 2) * (w * z * z * 2 * r * np.sin(th) * r * np.sin(th)).sum())
 
     def width(self, z):
         r = self.D / 2
@@ -110,7 +127,9 @@ class RCSection:
     tendons: np.ndarray | None = None  # (n, 4): area mm², depth mm, σp0 MPa, duct area mm² (bonded internal tendons)
     tendon: Tendon | None = None
     pretensioned: bool = False
-    sigma_l6: float | tuple = 0.0  # σl6 at the bars below / above the centroid (6.1.7, for Np0 of the cracking moment)
+    sigma_l6: float | tuple = 0.0  # σl6 at the bars below / above the centroid (6.1.7, for Np0 and Np)
+    bar_d: np.ndarray | None = None  # (n,): bar diameter of each bar point (mm), NaN when unknown (crack width, 6.4.3)
+    sigma_pe: np.ndarray | float | None = None  # effective prestress σpe of each tendon (MPa, 6.1.6-3, -6), for 6.3, 7.1
 
     def __post_init__(self):
         self.bars = np.asarray(self.bars, float).reshape(-1, 2)
@@ -119,6 +138,12 @@ class RCSection:
             self.sigma_l6 = (float(self.sigma_l6), float(self.sigma_l6))
         if len(self.tendons) and self.tendon is None:
             raise ValueError("tendons need a prestressing steel (tendon=…)")
+        self.bar_d = (np.full(len(self.bars), np.nan) if self.bar_d is None
+                      else np.asarray(self.bar_d, float).reshape(-1))
+        if len(self.bar_d) != len(self.bars):
+            raise ValueError("bar_d: one diameter per bar point")
+        if self.sigma_pe is not None:
+            self.sigma_pe = np.broadcast_to(np.asarray(self.sigma_pe, float), (len(self.tendons),)).copy()
 
     @property
     def prestressed(self) -> bool:
@@ -182,25 +207,83 @@ class RCSection:
         return self.replace(pieces=[p.flipped(self.h) for p in self.pieces], bars=bars, tendons=td,
                             sigma_l6=self.sigma_l6[::-1])
 
-    def props(self, kind: str = "transformed"):
-        """(A, depth of the centroid, I) of the net section An (concrete less the ducts, bars as αEs·As) or the
-        transformed section A0 = An + αEp·Ap (6.1.5, 6.1.6). Pretensioned tendons occupy their own area."""
+    def _steel_points(self, kind: str):
+        """(area added to the concrete, depth) of the steel in the net or transformed section"""
         c = self.concrete
-        A, Q = self.part(self.h)
-        Itop = sum(p.second_moment_top() for p in self.pieces)
         pts = [((self.steel.Es / c.Ec - 1) * a, d) for a, d in self.bars]
         for a, d, _, duct in self.tendons:
             pts.append((-(a if self.pretensioned else duct), d))
             if kind == "transformed":
                 pts.append((self.tendon.Ep / c.Ec * a, d))
-        for a, d in pts:
+        return pts
+
+    def props(self, kind: str = "transformed"):
+        """(A, depth of the centroid, I) of the net section An (concrete less the ducts, bars as αEs·As) or the
+        transformed section A0 = An + αEp·Ap (6.1.5, 6.1.6). Pretensioned tendons occupy their own area."""
+        A, Q = self.part(self.h)
+        Itop = sum(p.second_moment_top() for p in self.pieces)
+        for a, d in self._steel_points(kind):
             A += a
             Q += a * d
             Itop += a * d * d
         z = Q / A
         return A, z, Itop - A * z * z
 
-    # edge rows (program convention, docs/codes/JTG_3362-2018.md §8)
+    def first_moment(self, z: float, kind: str = "transformed") -> float:
+        """first moment (mm³) about the centroid of the net or transformed section of its part above depth z: S0, Sn of
+        6.3.3 at a fibre z; at the centroid S0 of 6.5.2-8 (the parts above and below the centroid have equal moments)"""
+        _, zc, _ = self.props(kind)
+        a, q = self.part(z)
+        S = a * zc - q
+        for at, d in self._steel_points(kind):
+            if d < z:
+                S += at * (zc - d)
+        return S
+
+    def part2(self, x):
+        """second moment about the top fibre of the concrete above depth x"""
+        return sum(p.part2(x) for p in self.pieces)
+
+    # prestress (6.1.6, 6.1.7)
+    def _sigma_pe(self):
+        if self.sigma_pe is None:
+            raise ValueError("this check needs the effective prestress of each tendon: pass sigma_pe=… (σcon − σl, "
+                             "6.1.6-3 / -6) to the section")
+        return self.sigma_pe
+
+    def _l6(self):
+        """σl6 at every bar: the bars on each side of the gross centroid take that side's σl6 when there are tendons on
+        that side, else 0 (6.1.7: σl6 at As with Ap; σ'l6 = 0 when A'p = 0). The same whether or not the section is
+        turned over."""
+        zg = self.zg
+        below = self.bars[:, 1] > zg
+        l6_b = self.sigma_l6[0] if (self.tendons[:, 1] > zg).any() else 0.0
+        l6_t = self.sigma_l6[1] if (self.tendons[:, 1] <= zg).any() else 0.0
+        return np.where(below, l6_b, l6_t)
+
+    def prestress_resultant(self, stress: str = "p0"):
+        """(force N, depth of its line of action mm) of the prestressing and reinforcing steel: Np0 = Σ σp0 Ap − Σ σl6 As
+        (6.1.7-1, -2) with stress="p0"; Np = Σ σpe Ap − Σ σl6 As (6.1.7-3, -4) with stress="pe" """
+        td = self.tendons
+        sp = td[:, 2] if stress == "p0" else self._sigma_pe()
+        F = np.r_[sp * td[:, 0], -self._l6() * self.bars[:, 0]]
+        d = np.r_[td[:, 1], self.bars[:, 1]]
+        N = F.sum()
+        return N, float((F * d).sum() / N)
+
+    def prestress_stress(self, z, M_p2: float = 0.0):
+        """normal concrete stress (MPa, compression +) at depth z from the prestress after the losses carried by the
+        section (6.1.6): pretensioned members Np0 on the transformed section (6.1.6-1); post-tensioned members Np on the
+        net section with the secondary moment Mp2 (kN·m, sagging +) (6.1.6-4). 0 for reinforced concrete."""
+        z = np.asarray(z, float)
+        if not self.prestressed:
+            return 0.0 * z
+        N, zN = self.prestress_resultant("p0" if self.pretensioned else "pe")
+        A, zc, I = self.props("transformed" if self.pretensioned else "net")
+        y = z - zc
+        return N / A + N * (zN - zc) * y / I - M_p2 * 1e6 * y / I
+
+    # edge rows (program convention, docs/codes/JTG_3362-2018.md §10)
     def edge_masks(self):
         """(As, A's) as boolean masks over the bars: the rows next to the bottom (tension) face and the top (compressed)
         face, i.e. bars within min(0.1 h, 150 mm) of the outermost bar on that side of the gross centroid. Bars between
@@ -316,11 +399,18 @@ class RCSection:
 
 
 def _bars(rows):
-    """rows of (count, diameter mm, depth mm) → (area, depth) points (each row lumped at its depth)"""
+    """rows of (count, diameter mm, depth mm) → (area, depth, diameter) points (each row lumped at its depth)"""
     out = []
     for n, d, z in rows or ():
-        out.append((n * math.pi * d * d / 4, z))
+        out.append((n * math.pi * d * d / 4, z, d))
     return out
+
+
+def _all_bars(h, bottom, top, bars):
+    """bottom rows (depth from the bottom face), top rows, extra points (area, depth from the top[, diameter])"""
+    pts = [(a, h - z, d) for a, z, d in _bars(bottom)] + _bars(top)
+    pts += [(b[0], b[1], b[2] if len(b) > 2 else np.nan) for b in bars or ()]
+    return np.array(pts, float).reshape(-1, 3)
 
 
 def _mats(concrete, steel):
@@ -344,47 +434,49 @@ def _tendons(rows, tendon, pretensioned):
     return np.array(out), t
 
 
-def _make(c, s, pieces, h, bars, kind, tendons, tendon, pretensioned, sigma_l6, **kw):
+def _make(c, s, pieces, h, bars, kind, tendons, tendon, pretensioned, sigma_l6, sigma_pe, **kw):
     td, t = _tendons(tendons, tendon, pretensioned)
-    return RCSection(c, s, pieces, bars, h, kind=kind, tendons=td, tendon=t, pretensioned=pretensioned,
-                     sigma_l6=sigma_l6, **kw)
+    return RCSection(c, s, pieces, bars[:, :2], h, kind=kind, tendons=td, tendon=t, pretensioned=pretensioned,
+                     sigma_l6=sigma_l6, bar_d=bars[:, 2], sigma_pe=sigma_pe, **kw)
 
 
 def rect(b, h, *, concrete="C30", steel="HRB400", bottom=(), top=(), bars=(), tendons=(), tendon="strand1860",
-         pretensioned=False, sigma_l6=0.0):
+         pretensioned=False, sigma_l6=0.0, sigma_pe=None):
     """rectangle b × h; bottom / top: rows of (count, diameter, depth of the bar centre from that face); bars: extra
-    (area, depth from the top). tendons: rows of (Ap mm², depth from the top mm, σp0 MPa, duct diameter mm) of bonded
-    internal tendons, tendon: their steel (jtg.tendon or "strand1860", "wire1570", "bar930"); pretensioned: no ducts.
-    sigma_l6: creep and shrinkage loss σl6 at the bars, one value or (bars below, bars above the centroid), for Np0
-    of the cracking moment (6.1.7; σ'l6 counts only with tendons in that zone; 0 is on the safe side). Pretensioned
-    members near their ends: reduce fpd inside the anchorage zone (5.1.6, prestress.fpd_in_anchorage)."""
+    (area, depth from the top[, bar diameter]). tendons: rows of (Ap mm², depth from the top mm, σp0 MPa, duct diameter
+    mm) of bonded internal tendons, tendon: their steel (jtg.tendon or "strand1860", "wire1570", "bar930"); pretensioned:
+    no ducts. sigma_l6: creep and shrinkage loss σl6 at the bars, one value or (bars below, bars above the centroid),
+    for Np0 and Np (6.1.7; σ'l6 counts only with tendons in that zone; 0 is on the safe side for the cracking moment).
+    sigma_pe: effective prestress σpe of each tendon (one value or one per row), needed by the serviceability and
+    stress checks (femotion.codes.jtg.sls). Pretensioned members near their ends: reduce fpd inside the anchorage zone
+    (5.1.6, prestress.fpd_in_anchorage)."""
     c, s = _mats(concrete, steel)
-    bb = [(a, h - z) for a, z in _bars(bottom)] + _bars(top) + list(bars)
-    return _make(c, s, [Rect(b, 0, h)], h, bb, "rect", tendons, tendon, pretensioned, sigma_l6)
+    bb = _all_bars(h, bottom, top, bars)
+    return _make(c, s, [Rect(b, 0, h)], h, bb, "rect", tendons, tendon, pretensioned, sigma_l6, sigma_pe)
 
 
 def tee(b, h, bf, hf, *, concrete="C30", steel="HRB400", bottom=(), top=(), bars=(), bf_bottom=0.0, hf_bottom=0.0,
-        tendons=(), tendon="strand1860", pretensioned=False, sigma_l6=0.0):
+        tendons=(), tendon="strand1860", pretensioned=False, sigma_l6=0.0, sigma_pe=None):
     """T section: web b, depth h, top flange bf × hf (the effective width, per JTG 3362-2018 4.3.3); with bf_bottom and
     hf_bottom an I section. Bars and tendons as for rect."""
     c, s = _mats(concrete, steel)
     p = [Rect(bf, 0, hf), Rect(b, hf, h - hf_bottom)]
     if hf_bottom:
         p.append(Rect(bf_bottom, h - hf_bottom, h))
-    bb = [(a, h - z) for a, z in _bars(bottom)] + _bars(top) + list(bars)
-    return _make(c, s, p, h, bb, "tee", tendons, tendon, pretensioned, sigma_l6)
+    bb = _all_bars(h, bottom, top, bars)
+    return _make(c, s, p, h, bb, "tee", tendons, tendon, pretensioned, sigma_l6, sigma_pe)
 
 
 def box(B, h, t_top, t_bottom, webs, *, b_top=None, concrete="C40", steel="HRB400", bottom=(), top=(), bars=(),
-        tendons=(), tendon="strand1860", pretensioned=False, sigma_l6=0.0):
+        tendons=(), tendon="strand1860", pretensioned=False, sigma_l6=0.0, sigma_pe=None):
     """single-cell or multi-cell box: bottom width B, top flange width b_top (default B, i.e. no cantilevers), slab
     thicknesses t_top and t_bottom, total web thickness webs (sum of all webs, as the code takes b for a box).
     Bars and tendons as for rect."""
     c, s = _mats(concrete, steel)
     bt = B if b_top is None else b_top
     p = [Rect(bt, 0, t_top), Rect(webs, t_top, h - t_bottom), Rect(B, h - t_bottom, h)]
-    bb = [(a, h - z) for a, z in _bars(bottom)] + _bars(top) + list(bars)
-    return _make(c, s, p, h, bb, "box", tendons, tendon, pretensioned, sigma_l6)
+    bb = _all_bars(h, bottom, top, bars)
+    return _make(c, s, p, h, bb, "box", tendons, tendon, pretensioned, sigma_l6, sigma_pe)
 
 
 def circle(D, n, d, cover, *, concrete="C30", steel="HRB400", hollow: float = 0.0):
@@ -396,7 +488,7 @@ def circle(D, n, d, cover, *, concrete="C30", steel="HRB400", hollow: float = 0.
     a = math.pi * d * d / 4
     bars = [(a, r - rs * math.cos(t)) for t in th]
     p = [Circle(D, r)] + ([Circle(hollow, r, -1)] if hollow else [])
-    return RCSection(c, s, p, bars, D, ring=rs, kind="circle" if not hollow else "annulus")
+    return RCSection(c, s, p, bars, D, ring=rs, kind="circle" if not hollow else "annulus", bar_d=np.full(n, float(d)))
 
 
 # ── results ─────────────────────────────────────────────────────────────────
@@ -410,50 +502,50 @@ class Check:
     details: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
     failed: list = field(default_factory=list)  # conditions not met (besides demand ≤ resistance)
+    # serviceability and stress checks: a signed quantity against a limit (demand ≤ limit), e.g. σst ≤ 0.85 σpc
+    limit_check: bool = False
+    symbol: str = "γ0Sd"
 
     @property
     def ratio(self):
+        if self.limit_check:
+            if self.resistance > 0:
+                return self.demand / self.resistance
+            return 0.0 if self.demand <= self.resistance else math.inf
         return abs(self.demand) / self.resistance if self.resistance > 0 else math.inf
 
     @property
     def ok(self):
+        if self.limit_check:
+            return self.demand <= self.resistance + 1e-9 * max(abs(self.resistance), 1.0) and not self.failed
         return self.ratio <= 1.0 and not self.failed
 
     def __str__(self):
         v = "OK" if self.ok else "NOT OK"
         extra = ("; " + "; ".join(self.failed)) if self.failed else ""
+        if self.limit_check:
+            p = 3 if self.unit == "mm" else 2
+            r = (f"ratio {self.ratio:.3f}" if self.resistance > 0
+                 else f"margin {self.resistance - self.demand:.{p}f} {self.unit}")
+            return (f"{self.name}: {self.symbol} = {self.demand:.{p}f} {self.unit}, limit {self.resistance:.{p}f} "
+                    f"{self.unit}, {r} → {v}{extra}")
         return f"{self.name}: γ0Sd = {self.demand:.1f} {self.unit}, R = {self.resistance:.1f} {self.unit}, ratio {self.ratio:.3f} → {v}{extra}"
 
 
 # ── cracking moment ─────────────────────────────────────────────────────────
 def cracking_moment(sec: RCSection, hogging: bool = False) -> tuple[float, dict]:
-    """cracking moment Mcr = (σpc + γ ftk) W0, γ = 2 S0 / W0 (6.5.2-7, -8), for the minimum-reinforcement rule 9.1.13.
-    σpc: precompression at the tension edge from Np0 = Σ σp0 Ap − σl6 As (6.1.7-1) by 6.1.6-1, on the transformed
-    section for pretensioned members and on the net section for post-tensioned ones; W0, S0 on the transformed section.
-    Returns (Mcr kN·m, details)."""
+    """cracking moment Mcr = (σpc + γ ftk) W0, γ = 2 S0 / W0 (6.5.2-7, -8), for the minimum-reinforcement rule 9.1.13
+    and the stiffness of class B members. σpc: precompression at the tension edge from Np0 = Σ σp0 Ap − σl6 As (6.1.7-1)
+    by 6.1.6-1, on the transformed section for pretensioned members and on the net section for post-tensioned ones;
+    W0, S0 on the transformed section. Returns (Mcr kN·m, details)."""
     s = sec.flipped() if hogging else sec
     c = s.concrete
     A0, z0, I0 = s.props("transformed")
     A, zc, I = (A0, z0, I0) if s.pretensioned else s.props("net")
-    td = s.tendons
-    # 6.1.7-1: σl6 at the tension-zone bars, σ'l6 at the compression-zone bars only when there are tendons there (note 1)
-    zg = s.zg
-    l6 = np.where(s.bars[:, 1] > zg, s.sigma_l6[0], s.sigma_l6[1] if (td[:, 1] <= zg).any() else 0.0)
-    N = (td[:, 2] * td[:, 0]).sum() - (l6 * s.bars[:, 0]).sum()
-    Me = (td[:, 2] * td[:, 0] * (td[:, 1] - zc)).sum() - (l6 * s.bars[:, 0] * (s.bars[:, 1] - zc)).sum()
-    sig_pc = N / A + Me / I * (s.h - zc)  # compression + at the bottom (tension) edge
+    N, zN = s.prestress_resultant("p0")
+    sig_pc = N / A + N * (zN - zc) / I * (s.h - zc)  # compression + at the bottom (tension) edge
     W0 = I0 / (s.h - z0)
-    # S0: first moment about the transformed centroid of the transformed area below it (equal to that above)
-    a1, q1 = s.part(z0)
-    Ac, Qc = s.part(s.h)
-    S0 = (Qc - q1) - (Ac - a1) * z0
-    alpha_s = s.steel.Es / c.Ec - 1
-    for a, d in s.bars:
-        if d > z0:
-            S0 += alpha_s * a * (d - z0)
-    for a, d, _, duct in td:
-        if d > z0:
-            S0 += (s.tendon.Ep / c.Ec * a - (a if s.pretensioned else duct)) * (d - z0)
+    S0 = s.first_moment(z0)
     gamma = 2 * S0 / W0
     Mcr = (sig_pc + gamma * c.ftk) * W0
     return Mcr / 1e6, {"sigma_pc": sig_pc, "W0": W0, "S0": S0, "gamma": gamma, "Np0": N / 1e3}
@@ -487,7 +579,7 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
         _, pt = s.tendon_masks()
         if not pt.any():
             bot, top = s.edge_masks()
-            single = s.replace(bars=s.bars[~top])
+            single = s.replace(bars=s.bars[~top], bar_d=s.bar_d[~top])
             x1 = brentq(lambda x: single.forces(x)[0], lo, hi, xtol=1e-9 * s.h)
             if x1 <= xb * single.h0():  # an over-reinforced single section is not a valid alternative (5.2.2-3)
                 M_single = single.forces(x1)[1]
