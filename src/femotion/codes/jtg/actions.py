@@ -2,8 +2,8 @@
 
 Units: kN, m, Hz. Clauses (docs/codes/JTG_D60-2015.md): 4.1.5 (basic combination), 4.1.6 (frequent and
 quasi-permanent combinations), 4.1.8 (characteristic values for elastic stresses), 4.3.1 (lane and vehicle loads,
-design lanes, transverse and longitudinal reduction), 4.3.2 (impact factor), 4.3.6 (crowd load); γ0 by design safety
-class (4.1.5). Temperature actions (4.3.12): femotion.codes.jtg.temperature.
+design lanes, transverse and longitudinal reduction), 4.3.2 (impact factor), 4.3.5 (braking force), 4.3.6 (crowd
+load); γ0 by design safety class (4.1.5). Temperature actions (4.3.12): femotion.codes.jtg.temperature.
 
     from femotion.codes import jtg
     q, P = jtg.lane_load(L0=20.0)                        # Class I: 10.5 kN/m, 300 kN
@@ -303,3 +303,24 @@ def characteristic_combination(G, Q=None, others=()):
     for q in ([Q] if Q is not None else []) + list(others):
         hi, lo = _variable(hi, lo, q, 1.0)
     return _pair(hi, lo)
+
+
+# ── braking force (制动力), 4.3.5 ──
+BRAKING_LANE_FACTORS = {1: 1.0, 2: 2.0, 3: 2.34, 4: 2.68}  # same-direction lanes → × one lane's force (4.3.5 item 1-2)
+BRAKING_MIN = {"I": 165.0, "II": 90.0}  # kN, the least braking force of one lane (4.3.5 item 1-1)
+
+
+def braking_force(L: float, lanes: int = 1, grade: str = "I", L0: float | None = None) -> float:
+    """characteristic braking force (kN) of traffic in one direction (4.3.5 item 1): one lane 10 % of the lane load
+    (no impact) over the loaded length L (m), 0.1 (qk L + Pk), × the longitudinal reduction of table 4.3.1-6 for L,
+    at least 165 kN for Class I and 90 kN for Class II; lanes in the same direction × 1, 2, 2.34, 2.68 (1 … 4 lanes;
+    the commentary: the lane count times the transverse reduction of table 4.3.1-5). Pk by table 4.3.1-2 for the
+    computed span L0, default L (program convention). Distribution to bearings and piers: femotion.codes.jtg.devices
+    (4.3.5 item 3); table 4.3.5 (fixed and movable bearings on rigid piers) is not implemented."""
+    if lanes not in BRAKING_LANE_FACTORS:
+        raise ValueError("4.3.5 gives the braking force of 1 … 4 lanes in the same direction")
+    g = str(grade).upper().replace("CLASS", "").strip()
+    g = {"1": "I", "2": "II"}.get(g, g)
+    q, P = lane_load(L if L0 is None else L0, g)
+    one = max(0.1 * (q * L + P) * longitudinal_reduction(L), BRAKING_MIN[g])
+    return one * BRAKING_LANE_FACTORS[lanes]
