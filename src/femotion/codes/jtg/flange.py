@@ -8,6 +8,7 @@ Pass the result to jtg.tee(bf=…) or jtg.box(b_top=…).
     bf = jtg.tee_flange_width(L=30_000, b=200, hf=180, spacing=2200, region="end span")        # inner girder
     bf_out = jtg.tee_flange_width_outer(bf, b=200, overhang=900, t_overhang=160)
     bm = jtg.box_flange_width(bi=4500, l=40_000, x=20_000, kind="end span", right=40_000)    # one flange part
+    bc = jtg.box_flange_width(bi=4500, l=12_000, x=3_000, kind="cantilever")                 # a cantilever arm
 
 Clauses, formulas, table 4.3.4: docs/codes/JTG_3362-2018.md.
 """
@@ -97,18 +98,29 @@ def box_theoretical_span(l: float, kind: str, *, left: float | None = None, righ
 
 
 def box_flange_width(bi: float, l: float, x: float, *, kind: str = "simple", left: float | None = None,
-                     right: float | None = None, h: float | None = None) -> float:
+                     right: float | None = None, h: float | None = None, cantilever_left: float | None = None,
+                     cantilever_right: float | None = None) -> float:
     """effective width bmi (4.3.4) of one flange part of actual width bi (figure 4.3.4: each top or bottom flange part
     beside a web) at x along a span of computed length l (from its left support):
     kind="simple": ρs bi at both supports (li = l), ρf bi (li = l) over the middle part l − 2a;
     kind="end span" (end support at x = 0, interior support at x = l, the next span `right`): ρs (li = 0.8 l) at the end
     support, ρf (li = 0.8 l) over l − a − c, ρs (li = 0.2 (l + right)) at the interior support;
     kind="interior span": ρs (li = 0.2 (l + left)) and ρs (li = 0.2 (l + right)) at the two supports, ρf (li = 0.6 l) over
-    l − 2c.
+    l − 2c;
+    kind="cantilever": a cantilever arm of length l, x from its free end (0) to the support (l): ρs bi with li = 1.5 l
+    over the whole arm (table 4.3.4, cantilever row).
     a = bi (the actual width of the flange part), at most 0.25 l; c = 0.1 l; within a and c straight-line interpolation
-    between ρs bi and ρf bi (table 4.3.4 notes). Cantilevers: box_flange_coefficient with li = 1.5 l."""
+    between ρs bi and ρf bi (table 4.3.4 notes).
+    cantilever_left / cantilever_right: the length of a cantilever arm beyond the left / right support of this span. The
+    cantilever row of table 4.3.4 carries the arm's ρs bi (li = 1.5 × arm) to the support and changes to the span's
+    ρf bi over a = bi ≤ 0.25 × arm inside the span; the span's own rule (its kind) gives ρf and the other support
+    (program reading of the table's figure, docs/codes/JTG_3362-2018.md §12.2)."""
+    co = lambda li, sup: box_flange_coefficient(bi, li, support=sup, h=h) * bi  # noqa: E731
+    if kind == "cantilever":
+        if not 0 <= x <= l:
+            raise ValueError("0 ≤ x ≤ l (x from the free end)")
+        return co(1.5 * l, True)
     a, c = min(bi, 0.25 * l), 0.1 * l
-    co = lambda li, sup: box_flange_coefficient(bi, li, support=sup, h=h) * bi
     if kind == "simple":
         sup_l = sup_r = co(l, True)
         mid = co(l, False)
@@ -124,7 +136,13 @@ def box_flange_width(bi: float, l: float, x: float, *, kind: str = "simple", lef
         sup_l, mid, sup_r = co(0.2 * (l + left), True), co(0.6 * l, False), co(0.2 * (l + right), True)
         zl, zr = c, c
     else:
-        raise ValueError("kind: 'simple', 'end span' or 'interior span'")
+        raise ValueError("kind: 'simple', 'end span', 'interior span' or 'cantilever'")
+    if cantilever_left is not None:
+        sup_l, zl = co(1.5 * cantilever_left, True), min(bi, 0.25 * cantilever_left)
+    if cantilever_right is not None:
+        sup_r, zr = co(1.5 * cantilever_right, True), min(bi, 0.25 * cantilever_right)
     if not 0 <= x <= l:
         raise ValueError("0 ≤ x ≤ l")
+    if zl + zr > l:
+        raise ValueError("the two transition lengths overlap: the span is shorter than a + a (or c)")
     return float(np.interp(x, [0.0, zl, l - zr, l], [sup_l, mid, mid, sup_r]))

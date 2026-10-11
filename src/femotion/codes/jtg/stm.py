@@ -21,7 +21,8 @@ Statically indeterminate models are solved by stiffness (femotion.frame, member 
 Checks (B.3): ties γ0 T ≤ fsd As + fpd Ap (B.3.2); struts γ0 C ≤ fce,d Acs (+ f'sd Ass, B.3.3-4) with
 fce,d = βc fcd / (0.8 + 170 ε1) ≤ 0.85 βc fcd, ε1 = εs + (εs + 0.002) cot² θs (B.3.3-2, -3), taken with the tie at either
 end of the strut that gives the largest ε1 (θs the angle between the strut and that tie; every such angle ≥ 25°, B.2.3);
-node faces γ0 S ≤ βn fcd An (B.3.4, table B.3.4) where their areas are given; the surface mesh of B.3.5 when given.
+node faces γ0 S ≤ βn fcd An (B.3.4, table B.3.4) where their areas are given, βn raised by node(confine=k) for nodes
+with confining reinforcement whose effect analysis or tests confirm (table note); the surface mesh of B.3.5 when given.
 Strut and node areas are the user's (figures B.3.3-1 … -3: strut_width for the width; the thickness out of the plane at
 most 6d either side of the anchored bars at a node formed by anchored bars, figure B.3.3-3b).
 """
@@ -42,6 +43,19 @@ def beta_c(c: Concrete) -> float:
 
 
 BETA_N = {"CCC": 0.85, "CCT": 0.75, "CTT": 0.65}  # × βc, table B.3.4
+EC2_NODE_BONUS = 1.10  # EN 1992-1-1 6.5.4 (5): node stresses may be raised by up to 10 % (confined by stirrups, …)
+
+
+def confinement_factor(c: Concrete | str | int, sigma2: float) -> float:
+    """strength gain of concrete under a lateral confining pressure σ2 (MPa), fck,c / fck by EN 1992-1-1 3.1.9:
+    1 + 5 σ2 / fck for σ2 ≤ 0.05 fck (3.24), 1.125 + 2.5 σ2 / fck above (3.25). One way to back the raise of βn that the
+    note to table B.3.4 allows for nodes with confining reinforcement (node(confine=…)); σ2 from the confining steel is
+    the user's (e.g. a spiral: 2 fsd Asp1 / (dcor s))"""
+    c = c if isinstance(c, Concrete) else _concrete(c)
+    if sigma2 < 0:
+        raise ValueError("σ2: a confining (compressive) pressure, ≥ 0")
+    r = sigma2 / c.fck
+    return 1 + 5 * r if r <= 0.05 else 1.125 + 2.5 * r
 
 
 def strut_width(L: float, theta: float, h: float = 0.0) -> float:
@@ -95,6 +109,7 @@ class StrutTie:
     loads: list = field(default_factory=list)  # per node: (Fx, Fz) kN
     bearing: list = field(default_factory=list)  # per node: bearing face area (mm²) or None
     kinds: list = field(default_factory=list)  # per node: node type given by the user, or None
+    confines: list = field(default_factory=list)  # per node: factor ≥ 1 on βn (confining reinforcement, table B.3.4 note)
     members: list = field(default_factory=list)
     N: np.ndarray | None = None  # member forces (kN, tension +)
     R: np.ndarray | None = None  # reactions (n_nodes, 2) kN
@@ -109,18 +124,23 @@ class StrutTie:
 
     # ── model ──
     def node(self, x: float, z: float, *, support: str = "", load=(0.0, 0.0), bearing: float | None = None,
-             kind: str | None = None) -> int:
+             kind: str | None = None, confine: float = 1.0) -> int:
         """a node at (x, z) mm; support: "x", "z" or "xz" (reaction components); load (Fx, Fz) kN; bearing: area of the
         bearing face (plate, pile top) for the node check of the reaction or load (its resultant). kind: "CCC", "CCT" or
         "CTT" to set the node type of table B.3.4 (default: from the ties meeting there, reactions and loads taken as
-        compressions — give kind where a reaction or load pulls on the node)"""
+        compressions — give kind where a reaction or load pulls on the node). confine: a factor ≥ 1 on βn for a node
+        with confining reinforcement whose effect analysis or tests confirm (note to table B.3.4, which gives no value:
+        the factor and its backing are the user's, e.g. confinement_factor or EC2_NODE_BONUS)"""
         if kind is not None and kind not in BETA_N:
             raise ValueError(f"node kind: one of {', '.join(BETA_N)}")
+        if confine < 1.0:
+            raise ValueError("confine: a factor ≥ 1 on βn (table B.3.4 note)")
         self.X.append((float(x), float(z)))
         self.fixed.append(("x" in support, "z" in support))
         self.loads.append((float(load[0]), float(load[1])))
         self.bearing.append(bearing)
         self.kinds.append(kind)
+        self.confines.append(float(confine))
         return len(self.X) - 1
 
     def strut(self, i: int, j: int, *, area: float, Ass: float = 0.0, ends=(None, None), EA: float = 1.0,
@@ -295,6 +315,11 @@ class StrutTie:
         kind = self._node_kind(a)
         if kind == "TTT":
             raise ValueError(f"node {a}: TTT nodes are not in table B.3.4")
-        bn = BETA_N[kind] * beta_c(c)
-        return Check(label, gamma0 * S, bn * c.fcd * An / 1e3, "kN", "JTG 3362-2018 B.3.4",
-                     {"node_type": kind, "beta_n": bn, "An": An})
+        k = self.confines[a]
+        bn = BETA_N[kind] * beta_c(c) * k
+        chk = Check(label, gamma0 * S, bn * c.fcd * An / 1e3, "kN", "JTG 3362-2018 B.3.4",
+                    {"node_type": kind, "beta_n": bn, "An": An, "confine": k})
+        if k > 1.0:
+            chk.notes.append(f"βn raised × {k:.3f} for confining reinforcement (table B.3.4 note: confirmed by analysis "
+                             "or tests, the user's)")
+        return chk
