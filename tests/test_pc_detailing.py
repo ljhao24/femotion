@@ -2,16 +2,16 @@
 post-tensioned anchorage zones (8.2.1, 8.2.2, 9.4.18, 9.4.20) and the detailing of columns, piers, joints and pile caps
 (9.6.1–9.6.10).
 
-Where a rule is a formula it is checked against something other than itself: 9.4.8 against the AASHTO LRFD shear
-check it was derived from (commentary p232–233: φ = 0.9, the cylinder strength 0.8 f'cu, dc = cover + ds/2); 9.4.8-2
-against the exact resultant of the deviation forces of a tendon turning through an arc (the code's form is its
-linearisation); 9.3.14-2 against the circle through three points; the radial force of 8.2.6-5 against 2 Pd sin(α/2)
-(commentary p213); the bursting force of a group of anchors against hand-built resultants and physical limits (a
-load over the whole end face bursts nothing; anchors symmetric about the centroid cancel their inclinations); the
-dense-anchor distance against the AASHTO value the commentary quotes (1.5 a, widened to 2 a, p212); the surface mesh of
-9.6.4 against its commentary (five 8 mm bars a metre, p239); the hoop rules of 9.6.1 against the independent code path
-of jtg.shear_circle; the clear spacing on a circle against bar coordinates. Table-like rules: the printed values with
-their pages and the edges of "not less than" / "more than"."""
+Independent of the formula under test: 9.4.8-2 against the exact resultant of the deviation forces of a tendon turning
+through an arc (the code's form is its linearisation); 9.3.14-2 against the circle through three points; the radial
+force of 8.2.6-5 against 2 Pd sin(α/2) (commentary p213); the blister length of figure 9.4.19 against its geometry; the
+clear spacing on a circle against bar coordinates; the bursting force of a group of anchors against hand-built
+resultants and physical limits (a load over the whole end face bursts nothing; anchors symmetric about the centroid
+cancel their inclinations). Consistency only (the same model, not an independent source): 9.4.8 against the
+commentary's own derivation from the AASHTO check (p232–233, the constant not rounded); the hoop rules of 9.6.1 in
+jtg.shear_circle and in column_detailing (written to the same convention). From the commentary: the dense-anchor
+distance (AASHTO's 1.5 a widened to 2 a, p212), the surface mesh of 9.6.4 (five 8 mm bars a metre, p239). Table-like
+rules: the printed values with their pages and the edges of "not less than" / "more than"."""
 import math
 
 import numpy as np
@@ -32,9 +32,10 @@ def warned(chk, text):
 @pytest.mark.parametrize("Pd, r, fcu, ds", [(1951.0, 8000.0, 45.0, 90.0), (3500.0, 15000.0, 50.0, 110.0),
                                             (900.0, 4000.0, 40.0, 70.0)])
 def test_curved_cover_from_aashto(Pd, r, fcu, ds):
-    """commentary 9.4.8 (p232–233): in-plane Fin = P/r ≤ Vc, out-of-plane Fout = P/(π r) ≤ Vc, Vc = 0.33 φ dc √f'ci
-    (N/mm), φ = 0.9, f'ci = 0.8 f'cu (cylinder / cube), dc = cover + ds/2. Solved for the cover independently: the
-    code rounds 0.33 · 0.9 · √0.8 = 0.2656 to 0.266, so the two agree to 0.2 %"""
+    """consistent with the commentary's derivation (p232–233, not an independent source): in-plane Fin = P/r ≤ Vc,
+    out-of-plane Fout = P/(π r) ≤ Vc, Vc = 0.33 φ dc √f'ci (N/mm), φ = 0.9, f'ci = 0.8 f'cu (cylinder / cube),
+    dc = cover + ds/2; the code rounds 0.33 · 0.9 · √0.8 = 0.2656 to 0.266, so the two agree to 0.2 %. It catches
+    copying and unit errors (N against kN)"""
     P = Pd * 1e3
     k = 0.33 * 0.9 * math.sqrt(0.8 * fcu)
     Cin, Cout = td.curved_cover(Pd, r, fcu, ds)
@@ -232,18 +233,35 @@ def test_end_zone_9_4_6_9_4_18_9_4_13():
 
 def test_anchorage_zone_extent_8_2_1():
     """8.2.1 notes (p78) and figure 8-2 (p210): the zone 1.0–1.2 × max(h, b'f) long, the local zone 1.2 × the plate's
-    longer side; zone_steel counts the stirrups inside (ends included)"""
+    longer side; zone_steel counts the stirrups inside (ends included). The ties in the web's plane (8.2.2 bursting,
+    8.2.5 edge tension) count the web's stirrups from the end of the local zone to factor × h: the commentary to 8.2.2
+    (p210) treats the web as a rectangular plate of depth h, whose zone by note 1 is (1.0–1.2) h"""
     z = td.anchorage_zone(2000, bf=2200, plate=(230, 270))
     assert z["length"] == 2200 and z["length_range"] == (2200, pytest.approx(2640))
-    assert z["local_length"] == pytest.approx(324) and z["general"] == (pytest.approx(324), 2200)
-    assert td.anchorage_zone(2000, factor=1.2)["length"] == pytest.approx(2400)
+    assert z["local_length"] == pytest.approx(324) and z["web"] == (pytest.approx(324), 2000)
+    assert z["flange"] == (0.0, 2200)
+    assert td.anchorage_zone(2000, factor=1.2, plate=(230, 230))["web"][1] == pytest.approx(2400)
     with pytest.raises(ValueError):
         td.anchorage_zone(2000, factor=1.3)
     x = np.arange(50, 2500, 100)  # stirrups every 100 mm from 50 mm
     A = 2 * math.pi * 16 ** 2 / 4
-    n = ((x >= 324) & (x <= 2200)).sum()
-    assert td.zone_steel(x, A, *z["general"]) == pytest.approx(n * A)
+    n = ((x >= 324) & (x <= 2000)).sum()
+    assert td.zone_steel(x, A, *z["web"]) == pytest.approx(n * A)
     assert td.zone_steel([324.0, 2200.0, 2200.1], 1.0, 324, 2200) == 2.0
+
+
+def test_bursting_steel_range_of_a_box_girder():
+    """review H1: a box girder 2.5 m deep with a 12.5 m deck. The zone of figure 8-2 is 12.5 m long, but the bursting
+    force of 8.2.2 acts in the web's plane: its steel is the web's stirrups within h, whatever the deck width (the
+    web as a rectangular plate, commentary p210; the tension within about 3/4 h, commentary to 9.4.7 p232)"""
+    z = td.anchorage_zone(2500, bf=12500, plate=(300, 300))
+    assert z["length"] == 12500 and z["web"] == (pytest.approx(360), 2500)
+    x = np.arange(50, 13000, 100)
+    A = 2 * math.pi * 16 ** 2 / 4  # φ16, two legs
+    As = td.zone_steel(x, A, *z["web"])
+    assert As == pytest.approx(21 * A)  # 450 … 2450 mm
+    assert As < td.zone_steel(x, A, *z["flange"]) / 5
+    assert z["web"] == td.anchorage_zone(2500, bf=0.0, plate=(300, 300))["web"]  # b'f plays no part
 
 
 # ── 8.2.2: dense anchors and the bursting force of a group ──────────────────
@@ -301,9 +319,11 @@ def test_blister_zones_and_rules_9_4_19_9_4_20():
     figure 9.4.20, commentary figure 9-3 p235): bursting stirrups ≤ 150 mm over ≥ 1.2 h; tie-back bars ≥ 1.5 m centred
     on the anchor face line, local-bending bars ≥ 1.5 m centred one wall thickness ahead of it, both within 1.5 a either
     side of the tendon (3 a in all); radial reinforcement over the curved length"""
-    z = td.blister_zones(hb=500, a=230, t=250, R=6000, alpha=12)
+    z = td.blister_zones(hb=500, a=230, t=250, R=6000, deviation=12, width=600, L=2500)
     assert z["bursting"] == pytest.approx(600) and z["tie_back"] == (-750, 750) and z["bending"] == (-500, 1000)
     assert 2 * z["half_width"] == pytest.approx(3 * 230) and z["radial"] == pytest.approx(6000 * math.radians(12))
+    assert z["zone"] == (1800, 3000)  # 8.2.1 note 1 (p78): 3 × the blister's width, its length + 2 × the wall
+    assert td.blister_zones(500, 230, 250)["zone"] is None
     S, al = (180, 220), 12.0
     Lmin = 400 / math.sin(math.radians(al))
     ok = td.blister_detailing(hb=500, a=230, t=250, deviation=15, face_angle=90, L=Lmin + 1, S=S, alpha=al, R=6000,
@@ -323,6 +343,8 @@ def test_blister_zones_and_rules_9_4_19_9_4_20():
                      (dict(tie_back=(-750, 700)), "tie-back"), (dict(bending=(-450, 1000)), "local-bending"),
                      (dict(bar_half_width=346), "either side"),
                      (dict(R=6000, alpha=12, radial_extent=1000), "radial"),
+                     (dict(R=6000, deviation=10, radial_extent=td.blister_zones(0, 0, 0, R=6000, deviation=10)["radial"]
+                           - 1), "radial"),
                      (dict(plate="flat", layers=3), "layers")):
         r = td.blister_detailing(**base, **kw)
         assert r.ok and len(r.warnings) == 1 and text in r.warnings[0], kw
@@ -396,8 +418,9 @@ def test_column_rules_9_6_1():
 
 
 def test_column_hoops_agree_with_shear_circle():
-    """two code paths for the hoops of a round column (9.6.1): jtg.shear_circle and pier_detailing.column_detailing.
-    Mixed bar sizes: the spacing uses the thinnest bar, the hoop diameter the thickest (GB 50010-2010 9.3.2)"""
+    """consistency of two code paths for the hoops of a round column (9.6.1), written to the same convention:
+    jtg.shear_circle and pier_detailing.column_detailing. Mixed bar sizes: the spacing uses the thinnest bar, the hoop
+    diameter the thickest (GB 50010-2010 9.3.2)"""
     col = jtg.circle(1200, 24, 25, 70, concrete="C35")
     mixed = col.replace(bar_d=np.r_[np.full(12, 32.0), np.full(12, 25.0)])
     for sec in (col, mixed):
@@ -413,16 +436,20 @@ def test_spiral_column_9_6_2():
     """9.6.2 (p117): the rules axial_spiral applies (items 1, 2, 4) and item 3: embedment ≥ the column's diameter and
     ≥ la. Both functions report the same 9.6.2 rules"""
     col = jtg.circle(800, 12, 22, 60, concrete="C30")
-    r = pd.column_detailing(col, spiral=(10, 50), embedment=800, la=700)
+    r = pd.column_detailing(col, indirect=(10, 50), embedment=800, la=700)
     assert not r.warnings and r.details["dcor"] == pytest.approx(2 * 340 + 22)
-    assert warned(pd.column_detailing(col, spiral=(10, 50), embedment=799, la=700), "diameter")
-    assert warned(pd.column_detailing(col, spiral=(10, 50), embedment=900, la=901), "la")
+    assert warned(pd.column_detailing(col, indirect=(10, 50), embedment=799, la=700), "diameter")
+    assert warned(pd.column_detailing(col, indirect=(10, 50), embedment=900, la=901), "la")
     thin = jtg.circle(800, 8, 16, 60, concrete="C30")  # 0.42 % of the core, pitch 35 mm
-    bad = pd.column_detailing(thin, spiral=(8, 35))
+    bad = pd.column_detailing(thin, indirect=(8, 35))
     a = jtg.axial_spiral(thin, 3000.0, 3000.0, spiral=(8, 35))
     spiral_w = [w for w in a.warnings if "9.6.2" in w]
     assert len(spiral_w) == 2 and set(spiral_w) <= set(bad.warnings)
-    assert warned(pd.column_detailing(col, spiral=(10, 90)), "pitch")
+    assert warned(pd.column_detailing(col, indirect=(10, 90)), "pitch")
+    # review M1: a spiral used as ordinary ties (a 5.3.1 column) is a 9.6.1 column: pass it as ties
+    big = jtg.circle(1500, 28, 28, 75, concrete="C35")
+    assert not pd.column_detailing(big, ties=(12, 150), closed=True).warnings
+    assert warned(pd.column_detailing(big, indirect=(12, 150)), "pitch")  # only when counted by 5.3.2
 
 
 def test_side_bars_9_6_3():
@@ -546,3 +573,64 @@ def test_detailing_reports_never_fail_and_skip_missing_inputs():
     assert td.pretensioned_detailing("strand", 15.2).ok
     bad = td.end_zone_detailing(plate="flat", layers=1, stirrup_spacing=500, rho_v=0.0, closed=False)
     assert bad.ok and len(bad.warnings) == 5 and "WARNING" in str(bad)
+
+
+# ── after the review (shared/refs/codes/PCDET_REVIEW.md) ─────────────────────
+def test_mixed_reinforcement_hogging_9_4_2():
+    """review M2: 9.4.2 (p109) asks for ordinary bars at the tension face, the top one over interior supports"""
+    tendons = dict(concrete="C50", tendons=[(1251, 300, 1100, 90)])
+    top_only = jtg.tee(200, 2000, 2200, 180, top=[(16, 16, 50)], **tendons)
+    bottom_only = jtg.tee(200, 2000, 2200, 180, bottom=[(10, 20, 60)], **tendons)
+    assert not td.girder_detailing(top_only, pc_class="A", hogging=True).warnings
+    assert warned(td.girder_detailing(top_only, pc_class="A"), "bottom")
+    assert warned(td.girder_detailing(bottom_only, pc_class="B", hogging=True), "top")
+
+
+def test_least_dimension_unknown_is_named_9_6_1():
+    """review M3: 9.6.1 item 4 (p117) limits the tie spacing to the least dimension; for a section whose least
+    dimension the program cannot tell (a box pier) the rule is skipped and named, or checked with least"""
+    pier = jtg.box(3000, 2000, 300, 300, 600, concrete="C40", bottom=[(30, 25, 60)], top=[(30, 25, 60)])
+    r = pd.column_detailing(pier, ties=(12, 300))
+    assert not r.warnings and any("least dimension" in n for n in r.notes)
+    assert warned(pd.column_detailing(pier, ties=(12, 301), least=300), "tie spacing")
+    assert not any("least dimension" in n for n in pd.column_detailing(pier, ties=(12, 300), least=300).notes)
+    ring = jtg.circle(2000, 40, 28, 80, hollow=1200)  # program convention: 0.8 × the outer diameter
+    assert pd.column_detailing(ring).details["least_dimension"] == pytest.approx(1600)
+
+
+def test_beam_bars_past_the_column_centre_9_6_7():
+    """review L2: 9.6.7 item 1 1) (p118): the top bars shall run past the column centre line (> 0), should by ≥ 5 d"""
+    r = pd.beam_bar_anchorage(28, la=980, straight=980, beyond_centre=0)
+    assert len(r.warnings) == 1 and "should" not in r.warnings[0] and "centre line" in r.warnings[0]
+    r = pd.beam_bar_anchorage(28, la=980, straight=980, beyond_centre=1)
+    assert len(r.warnings) == 1 and "should" in r.warnings[0]
+
+
+def test_review_low_items():
+    """review L1, L4, L5, L6, L9 and the presence rules added to 9.4.13, 9.4.18 item 3, 9.6.8 item 1"""
+    sec = jtg.tee(200, 2000, 2200, 180, concrete="C50", bottom=[(10, 20, 60)], tendons=[(1251, 1800, 1100, 97)])
+    assert any("outer" in n for n in td.duct_detailing(sec).notes)  # L1: the section's duct is the outer one
+    assert "4.1.8" in pd.ramp_piers(["single", "single"]).warnings[0]  # L4
+    assert any("both h and b" in n for n in pd.tie_beam_detailing(1500, h=1200, tie=(8, 300)).notes)  # L5
+    # L6: 9.6.10 item 6, figure 9.6.10 (p119): hangers between piles ≥ 3 D apart, beyond 1 D from each centre
+    assert pd.hanger_zones([0, 3000], 1000) == [(1000.0, 2000.0)]
+    assert pd.hanger_zones([0, 2500], 1000) == []
+    assert pd.hanger_zones([0, 3600, 6100], 1200) == [(1200.0, 2400.0)]
+    # L9: 1 : 2 within 5 % (program convention)
+    assert not td.segmental_detailing(key_height=52, key_mean_width=100).warnings
+    assert warned(td.segmental_detailing(key_height=53, key_mean_width=100), "1 : 2")
+    # 9.4.13 (p111): bars round the anchors; 9.4.18 item 3 (p112): bars against spalling at the end face
+    assert warned(td.end_zone_detailing(seal_bars=False), "sealing")
+    assert warned(td.end_zone_detailing(spalling_bars=False), "spalling")
+    assert not td.end_zone_detailing(seal_bars=True, spalling_bars=True).warnings
+    # 9.6.8 item 1 (p118): column bars run through tie-beam joints
+    assert warned(pd.column_bar_anchorage(28, through=False), "tie-beam")
+
+
+def test_dense_anchors_are_per_web():
+    """review L10: 8.2.2 works in a web's plane; two webs with anchors at the same heights are called one by one, and
+    each web's group is the same as the other's"""
+    a, y = 230.0, [700.0, 1300.0]
+    assert rg.dense_anchors(y, a) == [[0], [1]]
+    both = rg.dense_anchors(y + y, a)  # the two webs thrown together: wrongly paired, which is why it is per web
+    assert both == [[0, 2], [1, 3]]

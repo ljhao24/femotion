@@ -411,7 +411,7 @@ def shear_circle(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, al
     must be at least 0.36 ftd b h0. Compression is not counted (5.2.9 has none; safe side).
     Detailing of the hoops: columns (pile=False) 9.6.1: diameter ≥ 8 mm and ≥ d/4, spacing ≤ 15 d, 0.8 D and 400 mm,
     with more than 3 % longitudinal steel ≤ 10 d and 200 mm (d: the largest longitudinal bar for the diameter, the
-    smallest for the spacing, as GB 50010-2010 9.3.2 reads it; program convention); bored piles (pile=True, 9.6.1 excludes piles): JTG
+    smallest for the spacing, as GB 50010-2010 9.3.2 reads it; program convention, piles alike); bored piles (pile=True, 9.6.1 excludes piles): JTG
     3363-2019 6.2.2 item 3 4): diameter ≥ 8 mm and ≥ d/4, spacing ≤ 15 d and 300 mm. The beam rules of 9.3.12 are not
     applied. Hollow circles: no code basis, not implemented."""
     if sec.kind == "annulus":

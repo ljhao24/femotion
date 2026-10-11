@@ -148,7 +148,8 @@ for Nt, Mt in ((380.0, 60.0), (380.0, 260.0)):
 # φ28 bars (illustrative) ──
 la = 35 * 28
 print("\ndetailing (9.6)")
-# columns: φ12 hoops at 200 mm, 1.2 m into the pile cap; the bars run up to the cap beam's top (1600 − 75 mm)
+# columns: φ12 hoops (or a spiral used as ties: 5.3.1 design, 9.6.1, passed the same way; `indirect` is only for a
+# spiral counted by 5.3.2) at 200 mm, 1.2 m into the pile cap; the bars run up to the cap beam's top (1600 − 75 mm)
 print("  " + str(pdet.column_detailing(col, ties=(12, 200), closed=True, embedment=1200, la=la, eccentric=True)))
 print("  " + str(pdet.column_bar_anchorage(28, la=la, to_top=True, embedment=h * 1e3 - 75, splice_in_joint=False)))
 # cap beam: the stirrups of the shear check (φ16 at 100 mm), φ16 side bars at 150 mm; its top bars run through the
@@ -161,4 +162,5 @@ cap_r = pdet.pile_cap_detailing(h=h_cap, D=1200, spacing=3600, mesh=(1257, 1257,
 print("  " + str(cap_r))
 for note in cap_r.notes:
     print("    note: " + note)
-print(f"  main bars of the pile cap across {pdet.pile_cap_bar_zones([1000, 4600], 1200, 5600)} mm (9.6.10 item 2)")
+print(f"  main bars of the pile cap across {pdet.pile_cap_bar_zones([1000, 4600], 1200, 5600)} mm (9.6.10 item 2), "
+      f"hangers within {pdet.hanger_zones([1000, 4600], 1200)} mm (item 6)")

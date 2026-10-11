@@ -47,7 +47,8 @@ def _d_range(sec: RCSection | None, d):
 
 
 def _least_dimension(sec: RCSection | None):
-    """the least dimension for the tie spacing: rectangle min(b, h), circle 0.8 D (9.6.1 item 4); other shapes None"""
+    """the least dimension for the tie spacing: rectangle min(b, h), circle 0.8 D (9.6.1 item 4; a hollow circle 0.8 of
+    its outer diameter, program convention); other shapes None (give least)"""
     if sec is None:
         return None
     if sec.kind in ("circle", "annulus"):
@@ -66,7 +67,7 @@ def _circle_clear(sec: RCSection, d_max: float):
 def column_detailing(sec: RCSection | None = None, *, d=None, clear=None, rho: float | None = None,
                      least: float | None = None, ties=None, closed: bool | None = None, lap=None,
                      unrestrained: float | None = None, embedment: float | None = None, la: float | None = None,
-                     spiral=None, dcor: float | None = None, eccentric: bool = False, side_d: float | None = None,
+                     indirect=None, dcor: float | None = None, eccentric: bool = False, side_d: float | None = None,
                      horizontal_cast: bool = False) -> Check:
     """columns and piers (9.6.1, 9.6.2, 9.6.3); not for driven or bored piles (9.6.1 excludes them: JTG 3363). From sec:
     the bar diameters (d: one value or (smallest, largest) otherwise), the total steel ratio (rho), the least dimension
@@ -79,10 +80,12 @@ def column_detailing(sec: RCSection | None = None, *, d=None, clear=None, rho: f
     unrestrained: the largest distance of a bar from a corner bar (or a bar held by a cross-tie), ≤ max(150 mm,
     15 tie diameters), else cross-ties (item 5; not for circles, whose hoops hold every bar); embedment of the bars
     into the foundation and the cap beam ≥ la (item 2).
-    spiral = (diameter, pitch) and dcor (default for jtg.circle: the bar circle plus one bar): 9.6.2 items 1, 2, 4
-    (members.spiral_rules, as jtg.axial_spiral) and item 3, embedment ≥ the column's diameter and ≥ la; the tie rules of
-    9.6.1 are then not applied. eccentric=True (9.6.3): h ≥ 600 mm needs side bars of 10–16 mm (side bars: those of sec
-    outside the edge rows, or side_d). The minimum reinforcement of 9.1.12: jtg.axial, jtg.eccentric."""
+    9.6.1 covers columns with ordinary ties or with a spiral used as ties: pass a spiral as ties = (diameter, pitch)
+    (closed=True). indirect = (diameter, pitch) only for a spiral or welded hoops counted as indirect reinforcement by
+    5.3.2 (jtg.axial_spiral), with dcor (default for jtg.circle: the bar circle plus one bar): 9.6.2 items 1, 2, 4
+    (members.spiral_rules, as jtg.axial_spiral) and item 3, embedment ≥ the column's diameter and ≥ la, in place of the
+    tie rules and item 2 of 9.6.1. eccentric=True (9.6.3): h ≥ 600 mm needs side bars of 10–16 mm (side bars: those of
+    sec outside the edge rows, or side_d). The minimum reinforcement of 9.1.12: jtg.axial, jtg.eccentric."""
     R = _Rules("column detailing (9.6.1–9.6.3)", "JTG 3362-2018 9.6.1–9.6.3")
     d_min, d_max = _d_range(sec, d)
     if rho is None and sec is not None:
@@ -99,8 +102,8 @@ def column_detailing(sec: RCSection | None = None, *, d=None, clear=None, rho: f
         R.min("least clear spacing of longitudinal bars", c_lo, COLUMN_CLEAR[0], "9.6.1 item 1")
     R.max("largest clear spacing of longitudinal bars", c_hi, COLUMN_CLEAR[1], "9.6.1 item 1")
     R.max("longitudinal steel ratio", rho, COLUMN_RHO_MAX, "9.6.1 item 1", pct=True, should=True)
-    if spiral is not None:  # 9.6.2 in place of the tie rules and the embedment of 9.6.1
-        ds, s = spiral
+    if indirect is not None:  # 9.6.2 in place of the tie rules and the embedment of 9.6.1
+        ds, s = indirect
         if dcor is None and sec is not None and sec.ring:
             dcor = 2 * sec.ring + (d_max or 0.0)
         if sec is None or dcor is None:
@@ -124,6 +127,10 @@ def column_detailing(sec: RCSection | None = None, *, d=None, clear=None, rho: f
             if rho is not None and rho > TIE_DENSE[0]:
                 lim += [TIE_DENSE[2]] + ([TIE_DENSE[1] * d_min] if d_min else [])
             R.max("tie spacing", st, min(lim), "9.6.1 item 4")
+            if not least:
+                R.skip("tie spacing ≤ the least dimension (give least)", "9.6.1 item 4")
+            if not d_min:
+                R.skip("tie spacing ≤ 15 d (give d)", "9.6.1 item 4")
             if sec is None or sec.kind not in ("circle", "annulus"):  # a circular hoop holds every bar
                 R.max("distance of a bar from a restrained corner bar", unrestrained,
                       max(TIE_REACH[0], TIE_REACH[1] * dt), "9.6.1 item 5")
@@ -153,9 +160,9 @@ def column_detailing(sec: RCSection | None = None, *, d=None, clear=None, rho: f
 
 def wall_mesh_detailing(*, As_h: float | None = None, As_v: float | None = None,
                         spacing: float | None = None) -> Check:
-    """surface mesh of thin-walled piers and of the back walls and ribs of ribbed abutments (9.6.4): ≥ 250 mm²/m
-    horizontally and vertically (the main bars included), spacing ≤ 400 mm (commentary: AASHTO's 264 mm²/m; 250 mm²/m
-    is five 8 mm bars a metre)"""
+    """surface mesh of thin-walled piers and of the back walls and ribs of ribbed abutments (9.6.4), on each face:
+    ≥ 250 mm²/m horizontally and vertically (the main bars at that face included), spacing ≤ 400 mm (commentary:
+    AASHTO's 264 mm²/m of each exposed face; 250 mm²/m is five 8 mm bars a metre)"""
     R = _Rules("wall surface mesh (9.6.4)", "JTG 3362-2018 9.6.4")
     R.min("horizontal mesh", As_h, WALL_MESH_MIN, "9.6.4", unit="mm²/m")
     R.min("vertical mesh", As_v, WALL_MESH_MIN, "9.6.4", unit="mm²/m")
@@ -214,6 +221,8 @@ def tie_beam_detailing(D: float, *, h: float | None = None, b: float | None = No
         R.min("tie diameter", tie[0], TIE_BEAM_TIE[0], "9.6.5")
         lim = min([TIE_BEAM_TIE[1]] + [v for v in (h, b) if v is not None])
         R.max("tie spacing", tie[1], lim, "9.6.5")
+        if h is None or b is None:
+            R.note("tie spacing ≤ the shorter side: give both h and b (9.6.5)")
     return R.report()
 
 
@@ -225,8 +234,8 @@ def beam_bar_anchorage(d: float, *, la: float | None = None, joint: str = "end",
     of the beam) or "interior"; bar: "top" or "bottom"; strength: "tension", "compression" (the bar's strength used) or
     "none". straight: straight embedment; beyond_centre: how far it runs past the column centre line;
     hook = (horizontal, vertical) projections of a 90° hook, the bend included.
-    End joints, top bars, and bottom bars whose tensile strength is used (item 1): straight ≥ la and past the centre
-    line by ≥ 5 d (should); or a 90° hook bent down inside the column's outer bars, horizontal ≥ 0.4 la,
+    End joints, top bars, and bottom bars whose tensile strength is used (item 1): straight ≥ la, past the centre line
+    (beyond_centre > 0) by ≥ 5 d (should); or a 90° hook bent down inside the column's outer bars, horizontal ≥ 0.4 la,
     vertical ≥ 15 d.
     Interior joints (item 2): top bars run through (through=False: a warning); bottom bars preferably through, when
     anchored: strength not used ≥ 12 d (ribbed) or 15 d (plain); used ≥ la; a short column a 90° hook as item 1
@@ -253,7 +262,8 @@ def beam_bar_anchorage(d: float, *, la: float | None = None, joint: str = "end",
             R.note("a 90° hook runs to the inside of the column's outer bars and bends into the joint (9.6.7 item 1)")
         else:
             R.min("straight anchorage (≥ la)", straight, la, cl)
-            R.min("past the column centre line (≥ 5 d)", beyond_centre, 5 * d, cl, should=True)
+            if R.min("past the column centre line", beyond_centre, 0.0, cl, strict=True) is not False:
+                R.min("past the column centre line (≥ 5 d)", beyond_centre, 5 * d, cl, should=True)
     else:
         cl = "9.6.7 item 2"
         if hook is not None:
@@ -267,13 +277,15 @@ def beam_bar_anchorage(d: float, *, la: float | None = None, joint: str = "end",
 
 
 def column_bar_anchorage(d: float, *, la: float | None = None, to_top: bool | None = None,
-                         embedment: float | None = None, hook=None, splice_in_joint: bool | None = None) -> Check:
-    """the column's longitudinal bars in a joint with a cap beam or tie beam (9.6.8): they run through tie-beam joints,
-    splices outside the joint zone (item 1); into a cap beam they reach its top (to_top) with an anchorage length from
-    the cap's soffit ≥ la (embedment, item 2), or, the cap being too shallow, a 90° hook running to the inside of the
-    cap's top bars: vertical projection ≥ 0.4 la, horizontal ≥ 12 d (hook = (vertical, horizontal), the bend
-    included). d: bar diameter; la: table 9.1.4."""
+                         embedment: float | None = None, hook=None, splice_in_joint: bool | None = None,
+                         through: bool | None = None) -> Check:
+    """the column's longitudinal bars in a joint with a cap beam or tie beam (9.6.8): they run through tie-beam joints
+    (through), splices outside the joint zone (item 1); into a cap beam they reach its top (to_top) with an anchorage
+    length from the cap's soffit ≥ la (embedment, item 2), or, the cap being too shallow, a 90° hook running to the
+    inside of the cap's top bars: vertical projection ≥ 0.4 la, horizontal ≥ 12 d (hook = (vertical, horizontal), the
+    bend included). d: bar diameter; la: table 9.1.4."""
     R = _Rules("column bars in a joint (9.6.8)", "JTG 3362-2018 9.6.8")
+    R.flag("column bars through tie-beam joints", through, "column bars stop in a tie-beam joint", "9.6.8 item 1")
     R.flag("splices outside the joint", None if splice_in_joint is None else not splice_in_joint,
            "column bars spliced inside the joint zone", "9.6.8 item 1")
     R.flag("bars up to the cap top", to_top, "column bars stop short of the cap beam's top", "9.6.8 item 2")
@@ -303,7 +315,8 @@ def ramp_piers(supports, *, restrainers: bool | None = None) -> Check:
                "the overturning of the girder (4.1.8)")
     runs = [i for i in singles if i + 1 in singles]
     R.flag("no consecutive single-bearing piers", not runs,
-           f"consecutive single-column single-bearing piers at {runs} and the next", "9.6.9 item 2")
+           f"consecutive single-column single-bearing piers at {runs} and the next: to be avoided, the commentary "
+           "accepts a number for which the overturning check of 4.1.8 is met", "9.6.9 item 2")
     R.flag("restrainers at transition piers and abutments", restrainers,
            "no restrainers or unseating devices at the transition piers and abutments", "9.6.9 item 3", should=True)
     return R.report()
@@ -336,6 +349,13 @@ def pile_cap_bar_zones(centres, D: float, B: float) -> list[tuple[float, float]]
     return out
 
 
+def hanger_zones(centres, D: float) -> list[tuple[float, float]]:
+    """where the hangers of a pile cap go (9.6.10 item 6, figure 9.6.10): between neighbouring piles 3 D or more apart,
+    the middle part beyond 1 D from each pile's centre, (xi + D, xi+1 − D). centres: pile centres along a line (mm)."""
+    x = np.sort(np.asarray(centres, float))
+    return [(float(a + D), float(b - D)) for a, b in zip(x[:-1], x[1:]) if b - a >= PILE_CAP_SPACING * D - 1e-9]
+
+
 def pile_cap_detailing(*, h: float | None = None, D: float | None = None, spacing: float | None = None,
                        outside_ratio: float | None = None, one_way: bool | None = None, cross=None, mesh=None,
                        tie_d: float | None = None, hanger=None) -> Check:
@@ -346,8 +366,8 @@ def pile_cap_detailing(*, h: float | None = None, D: float | None = None, spacin
     direction only, then cross = (diameter, spacing) across them ≥ 12 mm, ≤ 250 mm (item 3). mesh = (mm²/m one way,
     mm²/m the other, bar diameter): one layer over the pile heads, 1200–1500 mm²/m each way (should; more: a note),
     bars 12–16 mm (item 4). tie_d: vertical ties ≥ 16 mm (item 5). hanger = (diameter, spacing): with the piles ≥ 3 D
-    apart, hangers between them (should), within 1 D of each pile's centre-to-centre middle part, ≥ 12 mm at ≤ 200 mm
-    (item 6). Note the code's two thresholds: item 2 "more than 3 D", item 6 "3 D or more"."""
+    apart, hangers between them (should) in the middle part, more than 1 D from either pile's centre (hanger_zones),
+    ≥ 12 mm at ≤ 200 mm (item 6). Note the code's two thresholds: item 2 "more than 3 D", item 6 "3 D or more"."""
     R = _Rules("pile cap detailing (9.6.10)", "JTG 3362-2018 9.6.10")
     R.min("cap depth (≥ 1.5 m)", h, PILE_CAP_DEPTH[1], "9.6.10 item 1")
     R.min("cap depth (≥ 1.5 D)", h, None if D is None else PILE_CAP_DEPTH[0] * D, "9.6.10 item 1", should=True)
