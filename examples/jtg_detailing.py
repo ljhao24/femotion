@@ -36,9 +36,9 @@ show("durability (4.5.3, 3.1.2)", jtg.durability(frames, env, life=life))
 print(f"  lowest class C{jtg.min_concrete_class(env, 'superstructure', life)}, "
       f"cover of the outermost steel ≥ {jtg.cover_min(env, 'superstructure', life):g} mm (table 9.1.1)")
 
-# stirrups of 10 mm around the main bars; on the top face the 12 mm transverse bars of the deck lie outside the
-# longitudinal flange bars
-kw = dict(env=env, life=life, stirrup_d=10, outer_d=(10, 12))
+# stirrups of 10 mm around the main bars, 30 mm from the bottom and the sides of the web; on the top face the 12 mm
+# transverse bars of the deck lie outside the longitudinal flange bars
+kw = dict(env=env, life=life, stirrup_d=10, outer_d=(10, 12), side_cover=30)
 show("two rows of five in a 200 mm web", jtg.section_detailing(rows, **kw))
 show("two welded frames of five layers", jtg.section_detailing(frames, welded_frame=True, main_rows=5, **kw))
 show("the same girder at the coast (environment III)",
