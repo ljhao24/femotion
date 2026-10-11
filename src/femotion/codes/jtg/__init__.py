@@ -26,6 +26,10 @@
     regions      JTG 3362-2018 8.2–8.5: anchorage zones, diaphragms over bearings, cap beams, pile caps
     external     JTG 3362-2018 9.4.21–9.4.27: detailing of external tendons (the sections take external tendons in rc
                  and sls: 5.2.5, 5.2.6, 5.2.9-5, 6.1.6-7, 6.1.7-5, 7.1.5-3)
+    slab         JTG 3362-2018 4.2, 5.6, 9.2: deck slabs (spans, wheel load distribution widths, slabs between ribs and
+                 cantilevers with the D60 vehicle), punching of slabs and footings, slab detailing
+    transverse   JTG 3362-2018 table 6.1.3: box girders across the bridge as closed frames (wheels, transverse tendons,
+                 temperature), shear flow of single cells, in-plane principal stresses, transverse stress checks
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
 
@@ -50,7 +54,7 @@ from .actions import (DYNAMIC_FACTOR, GAMMA_0, PSI, RAILING_LOADS, SIDEWALK_SLAB
                       lane_load, longitudinal_reduction, quasi_permanent_combination, simple_beam_frequency,
                       transverse_reduction)
 from . import prestress, regions  # noqa: F401
-from . import creep  # noqa: F401
+from . import creep, slab, transverse  # noqa: F401
 from .bearing import bearing_base_area, fcd_at, local_bearing, mesh_ratio, spiral_ratio  # noqa: F401
 from .composite import (COMPOSITE_CAMBER_LONG_TERM, Composite, composite, composite_crack_resistance,  # noqa: F401
                         composite_crack_width, composite_design_moments, composite_inclined_crack_resistance,
