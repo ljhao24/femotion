@@ -18,7 +18,13 @@ ty αc Ec; on a statically indeterminate structure the free strain and curvature
     jtg.crack_resistance(sec, Ms[k], Ml[k], pc_class="A", temperature=th_k)          # ψ = 0.8 in the frequent combination
 
 ThermalStresses keeps the positive gradient; .negative() is the negative one (× −0.5, figure 4.3.12 note). The checks
-of femotion.codes.jtg.sls take, at each point, whichever of the two (or neither) is unfavourable.
+of femotion.codes.jtg.sls on uncracked sections take, at each point, whichever of the two (or neither) is unfavourable;
+those on cracked sections (crack_width, class B service_stresses) put the secondary effects into the combination that
+fixes the cracked section, add the self-equilibrating stress on that section (_cracked_thermal) and take the
+unfavourable case as a whole:
+
+    jtg.crack_width(sec, Ms[k], Ml[k], temperature=th_k)                            # ψ = 0.8, cracked section
+    jtg.service_stresses(sec, Mk[k], pc_class="B", temperature=th_k)                # ψ = 1.0, appendix J
 """
 from __future__ import annotations
 
@@ -217,9 +223,36 @@ def _concrete_integrals(sec: RCSection, t, z_lo: float, z_hi: float, zc: float):
     return a0, a1
 
 
+def _cracked_thermal(sec: RCSection, profile: Profile, r: dict, *, hogging: bool = False,
+                     alpha: float = EXPANSION["concrete"]) -> ThermalStresses:
+    """appendix D on a cracked transformed section (appendix D commentary): r is femotion.codes.jtg.sls._cracked of sec
+    (of sec.flipped() with hogging=True: the top in tension); the concrete above the neutral axis and every bar and
+    tendon at αE A with the weights of the appendix J notes, the gradient on the tension side of the axis ignored. x = inf
+    (the whole section in compression): the whole section, the gradient counted throughout. In sec's coordinates."""
+    c = sec.concrete
+    x, A, zc_s, I = r["x"], r["A"], r["zc"], r["I"]
+    zc = sec.h - zc_s if hogging else zc_s
+    z_cut = sec.h - x if hogging else x
+    aS = sec.steel.Es / c.Ec
+    aP = sec.tendon.Ep / c.Ec if sec.prestressed else 0.0
+    wb, wp = r["w_bars"], r["w_tendons"]  # appendix J notes (compression steel limits) as in the cracked section
+    steel = [(aS * a * w, d) for (a, d), w in zip(sec.bars, wb)] + \
+        [(aP * a * w, d) for (a, d, _, _), w in zip(sec.tendons, wp)]
+    th = ThermalStresses(profile, alpha, c.Ec, A, zc, I, 0.0, 0.0, z_max=z_cut, hogging=hogging, kind="cracked")
+    z_lo, z_hi = (max(z_cut, 0.0), sec.h) if hogging else (0.0, min(z_cut, sec.h))
+    q0, q1 = _concrete_integrals(sec, th, z_lo, z_hi, zc)
+    for a, d in steel:
+        td = float(th.t(d))
+        q0 += a * td
+        q1 += a * td * (zc - d)
+    th.Nt = alpha * c.Ec * q0
+    th.Mt0 = -alpha * c.Ec * q1
+    return th
+
+
 def thermal_stresses(sec: RCSection, profile: Profile, *, M_sec: float = 0.0, N_sec: float = 0.0,
                      alpha: float = EXPANSION["concrete"], kind: str = "transformed", cracked: bool = False,
-                     hogging: bool = False, M: float | None = None, M_p2: float = 0.0) -> ThermalStresses:
+                     hogging: bool = False, M: float | None = None, M_p2: float = 0.0, N: float = 0.0) -> ThermalStresses:
     """appendix D for a temperature profile (normally temperature_gradient, the positive gradient) on a section:
     Nt = Σ Ay ty αc Ec (D.0.1-1), Mt0 = −Σ Ay ty αc Ec ey (D.0.1-2), σt = −Nt/A0 + Mt0 y/I0 + ty αc Ec (D.0.1-3); with the
     secondary moment of a continuous beam M_sec (kN·m, sagging +, femotion.frame.thermal for the free curvature) Mt =
@@ -231,33 +264,23 @@ def thermal_stresses(sec: RCSection, profile: Profile, *, M_sec: float = 0.0, N_
     D as printed, Ay the concrete only, A0, I0 of the transformed section (a few per cent more at the top edge).
     cracked=True (appendix D commentary): the cracked transformed section, the gradient on its tension side ignored
     (sagging: below the neutral axis; hogging=True, top in tension: above it, program reading). Reinforced concrete: the
-    neutral axis in bending (7.2.4). Class B prestressed members: under Np0 and the moment M (kN·m, the combination's,
-    sagging +) with M_p2, by appendix J (as jtg.service_stresses); M is required."""
+    neutral axis in bending (7.2.4); with an axial compression N (kN, at the gross centroid) and the moment M (kN·m) of
+    the combination, the axis under N at the eccentricity M/N (appendix J generalised, program convention). Class B
+    prestressed members: under Np0 (+ N) and the moment M (kN·m, the combination's, sagging +) with M_p2, by appendix J
+    (as jtg.service_stresses); M is required. The secondary moment of a cracked section is not part of its neutral-axis
+    moment here: jtg.crack_width and jtg.service_stresses put it into the moment themselves."""
     c = sec.concrete
     if cracked:
-        from .sls import _cracked
+        from .sls import _cracked_under
         s = sec.flipped() if hogging else sec
-        if sec.prestressed:
-            if M is None:
-                raise ValueError("cracked prestressed section: pass M (kN·m) for the neutral axis under Np0 (appendix J)")
-            k = -1.0 if hogging else 1.0
-            Np0, hps = s.prestress_resultant("p0")
-            eN = k * (M + M_p2) * 1e6 / Np0 - hps
-            r = _cracked(s, N=Np0, z_R=-eN)
-            if r["x"] == math.inf:
-                raise ValueError("the section stays in compression under Np0 and M: not cracked, use cracked=False")
-        else:
-            r = _cracked(s, limits=False)
-        x, A, zc_s, I = r["x"], r["A"], r["zc"], r["I"]
-        zc = sec.h - zc_s if hogging else zc_s
-        z_cut = sec.h - x if hogging else x
-        aS = s.steel.Es / c.Ec
-        aP = s.tendon.Ep / c.Ec if s.prestressed else 0.0
-        wb, wp = r["w_bars"], r["w_tendons"]  # appendix J notes (compression steel limits) as in the cracked section
-        steel = [(aS * a * w, d) for (a, d), w in zip(sec.bars, wb)] + \
-            [(aP * a * w, d) for (a, d, _, _), w in zip(sec.tendons, wp)]
-        th = ThermalStresses(profile, alpha, c.Ec, A, zc, I, 0.0, 0.0, z_max=z_cut, hogging=hogging, kind="cracked")
-        z_lo, z_hi = (z_cut, sec.h) if hogging else (0.0, z_cut)
+        if M is None and (sec.prestressed or N > 0):
+            raise ValueError("cracked section under an axial force (Np0 of a prestressed section, or N): pass M (kN·m) "
+                             "for the neutral axis (appendix J)")
+        k = -1.0 if hogging else 1.0
+        r = _cracked_under(s, k * ((M or 0.0) + M_p2), N)
+        if r["x"] == math.inf:
+            raise ValueError("the section stays in compression under Np0 and M: not cracked, use cracked=False")
+        th = _cracked_thermal(sec, profile, r, hogging=hogging, alpha=alpha)
     else:
         if kind == "gross":
             A, zc, I, steel = sec.area, sec.zg, sec.I, []
@@ -270,14 +293,13 @@ def thermal_stresses(sec: RCSection, profile: Profile, *, M_sec: float = 0.0, N_
         else:
             raise ValueError("kind: 'transformed', 'net', 'gross' or 'literal'")
         th = ThermalStresses(profile, alpha, c.Ec, A, zc, I, 0.0, 0.0, kind=kind)
-        z_lo, z_hi = 0.0, sec.h
-    q0, q1 = _concrete_integrals(sec, th, z_lo, z_hi, zc)
-    for a, d in steel:
-        td = float(th.t(d))
-        q0 += a * td
-        q1 += a * td * (zc - d)
-    th.Nt = alpha * c.Ec * q0
-    th.Mt0 = -alpha * c.Ec * q1
+        q0, q1 = _concrete_integrals(sec, th, 0.0, sec.h, zc)
+        for a, d in steel:
+            td = float(th.t(d))
+            q0 += a * td
+            q1 += a * td * (zc - d)
+        th.Nt = alpha * c.Ec * q0
+        th.Mt0 = -alpha * c.Ec * q1
     th.M_sec = M_sec * 1e6
     th.N_sec = N_sec * 1e3
     return th

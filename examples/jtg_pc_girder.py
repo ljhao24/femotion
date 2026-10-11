@@ -6,7 +6,8 @@ at both ends), Class I lane load and crowd, 100 mm asphalt surfacing, designed a
     elastic shortening, relaxation, creep and shrinkage) → σpe, σp0 → secondary moments of the prestress and of the
     temperature gradient on the frame → basic combination with both → flexure (span, pier), shear (α2 for prestressed
     members, bent tendons) → serviceability (normal and inclined crack resistance with the temperature gradient), stresses
-    in service (characteristic combination with impact), stresses at transfer, deflection, camber and pre-camber →
+    in service (characteristic combination with impact); a class B what-if with fewer strands (crack width and stresses
+    on the cracked section, with the temperature gradient) → stresses at transfer, deflection, camber and pre-camber →
     anchorage zone: local compression under the anchors, bursting and spalling forces.
 
     uv run python examples/jtg_pc_girder.py
@@ -194,6 +195,26 @@ for k_, Ms, Ml, Mk in [(k_span, Ms_max, Ml_max, Mk_max), (k_pier, Ms_min, Ml_min
     r = jtg.crack_resistance(s, Ms[k_], Ml[k_], pc_class='A', M_p2=M_sec[k_], temperature=th)
     print(f"      {r}  (temperature {r.details['sigma_t']:+.2f} MPa at that edge)")
     print(f"      {jtg.service_stresses(s, Mk[k_], pc_class='A', M_p2=M_sec[k_], temperature=th)}")
+# the same girder as a partially prestressed class B member (what-if: 6 of the 9 strands in each tendon, the losses
+# kept, σp0 with the reduced precompression; the secondary moment of the prestress scales with the force): crack width
+# (6.4.4 item 3) and stresses in service (7.1.4) on the cracked section, with the temperature gradient (its secondary
+# moment in the moment, its self-equilibrating stress on the cracked section, appendix D commentary)
+print("\nclass B what-if (6 of 9 strands per tendon)")
+f_B = 6 / 9
+for k_, Ms, Ml, Mk in [(k_span, Ms_max, Ml_max, Mk_max), (k_pier, Ms_min, Ml_min, Mk_min)]:
+    i = node_of[k_]
+    s, _ = girder_at(i)
+    s_pc = ps.concrete_stress(s_pe[i] * Ap * f_B, ep_n[i], ep_n[i], An, In, M=M_sec[k_] * f_B * 1e6)
+    td = s.tendons * [f_B, 1, 1, f_B]
+    td[:, 2] = ps.sigma_p0(s_con, lI[i] + lII[i], post=True, alpha_EP=aEP, sigma_pc=s_pc)
+    sB = s.replace(tendons=td)
+    th = jtg.thermal_stresses(sB, grad, M_sec=Mt2[k_])
+    kw = dict(pc_class="B", M_p2=M_sec[k_] * f_B, temperature=th)
+    w = jtg.crack_width(sB, Ms[k_], Ml[k_], env="I", tendon_bundles=[(n_tendons, 6, 15.2)], **kw)
+    print(f"  x = {x_sec[k_]:5.1f} m  {w}  (gradient: {w.details.get('temperature')})")
+    sv_ = jtg.service_stresses(sB, Mk[k_], **kw)
+    print(f"               {sv_}  (gradient: {sv_.details['temperature']}, "
+          f"tendon {sv_.details['tendon_stress'].max():.0f} MPa)")
 # principal stresses along the girder (6.3.1 item 2, 7.1.6): every section from h/2 off the supports, each shear extreme
 # with the moment extreme of the same combination (envelopes: the pairs are not concurrent loadings)
 worst_t = worst_c = None

@@ -183,8 +183,10 @@ def test_crack_resistance_with_temperature():
     s1 = jtg.service_stresses(pc, 4000, pc_class="A", temperature=th)
     assert s1.details["edge_stress"]["top"] - s0.details["edge_stress"]["top"] == pytest.approx(
         max(0.0, th.sigma(0.0), th.negative().sigma(0.0)))
-    with pytest.raises(NotImplementedError):
-        jtg.service_stresses(pc, 4000, pc_class="B", temperature=th)
+    # class B: the cracked section with the gradient (tests/test_bclass.py); the unfavourable case is never below none
+    b0 = jtg.service_stresses(pc, 7000, pc_class="B")
+    b1 = jtg.service_stresses(pc, 7000, pc_class="B", temperature=th)
+    assert set(b1.details["cases"]) == {"none", "positive", "negative"} and b1.demand >= b0.demand
 
 
 def test_thermal_literal_and_cracked_prestressed():
