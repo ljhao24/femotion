@@ -31,7 +31,8 @@ area, I = span_sec.area * 1e-6, span_sec.I * 1e-12
 mass = area * 2.6 + 0.55  # girder + pavement and railing share (t/m)
 # Ec I: the frequencies for the impact factor take Ec I (JTG D60-2015 4.3.2). JTG 3362 4.3.1 asks for 0.8 Ec I of a
 # reinforced concrete member in the force analysis (jtg.frame_section(span_sec, member="rc", …)); on a girder of one
-# section and one material it scales all the stiffness alike and leaves the forces unchanged.
+# section and one material it scales all the stiffness alike and leaves the forces from loads unchanged (the forces
+# from imposed deformations, temperature gradient or settlement, scale with EI: full Ec I is on the safe side).
 sec = Section(E=c.Ec * 1e3, A=area, Iy=I, Iz=10 * I, J=0.01, mass=mass)
 m = Model()
 xs = np.linspace(0, 2 * L, 2 * n + 1)
