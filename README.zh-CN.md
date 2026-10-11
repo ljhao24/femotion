@@ -89,6 +89,14 @@ Python 写出、JavaScript 读回，两边用同一份标准样例（`tests/data
 `femotion.viz` 上（只用标准库和 NumPy 的 SVG），标题、图例、注释、字号、线宽、颜色一致，页面按"所有标注都放得下"求解，
 标注自动避让。例子：`examples/jtg_figures_section.py`、`examples/jtg_charts.py`、`examples/jtg_loads_figures.py`。
 
+计算书（[docs/report.md](docs/report.md)，英文）：`femotion.report` 把计算书写成一个自包含的 HTML 文件（封面、章节自动编号、目录、
+带表号的表格、带图号的图、公式块、提示框、交叉引用），浏览器里直接看（侧边目录、手机上也能读），打印即得 A4 计算书（章节另起一页、
+图表不跨页、页眉写项目和构件、页脚"第 n 页 共 N 页"）；`Report.pdf` 用 Chrome 打印两遍，目录带页码。`femotion.codes.jtg.report`
+把验算结果写进去：每项验算先写符号公式、再代入数值、再得结果（标规范式号），结论框写 γ0Sd ≤ R 和利用率，不满足的条件、构造提示
+（不影响结论）分开列出，配截面图；另有验算汇总表、构造提示汇总和结论，以及材料、截面特性、荷载工况、作用组合等设计资料表。
+完整例子 `examples/jtg_report_rc_girder.py`：两跨连续钢筋混凝土 T 梁的整本计算书（设计依据、设计资料、计算模型、作用效应、
+承载能力和正常使用验算、构造检查、汇总和结论），`--pdf` 直接出 PDF。
+
 规范里的数值、公式和条文号已经逐条对照交通运输部公开的规范原文核对过，程序用到的全部条文、公式、表格和参数按规范分文件整理在 [docs/codes/](docs/codes/)（[JTG D60—2015](docs/codes/JTG_D60-2015.md)、[JTG 3362—2018](docs/codes/JTG_3362-2018.md)），每项注明原文页码和对应函数，出计算书时可以直接引用；没有做的条文列在 JTG 3362—2018 那份的第 11 节。体内无黏结预应力规范没有规定，不含。
 
 用法示例、模块说明和验证项目见英文 [README](README.md)。

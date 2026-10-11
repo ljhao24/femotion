@@ -297,7 +297,8 @@ def laminated_bearing(b: Laminated, Rck: float, *, dl: float, sigma_c: float | N
     th = abs(theta) + math.atan(abs(slope))
     delta = Rck * 1e3 * b.te / (b.Ae * b.Ee) + Rck * 1e3 * b.te / (b.Ae * b.Eb)
     cd = Check("compression of the bearing (8.7.3-8, -9)", delta, 0.07 * b.te, "mm", "JTG 3362-2018 8.7.3-9",
-               {"delta_cm": delta, "theta": th, "uplift_limit": th * la / 2, "S": b.S, "Ee": b.Ee, "Eb": b.Eb},
+               {"delta_cm": delta, "theta": th, "uplift_limit": th * la / 2, "S": b.S, "Ee": b.Ee, "Eb": b.Eb,
+                "Rck": Rck, "te": b.te, "Ae": b.Ae, "la": la},
                failed=list(geo_l), limit_check=True, symbol="δc,m")
     if delta < th * la / 2 - 1e-12:
         cd.failed.append(f"δc,m = {delta:.3f} mm < θ la/2 = {th * la / 2:.3f} mm: the bearing lifts off at one edge")
@@ -314,7 +315,8 @@ def laminated_bearing(b: Laminated, Rck: float, *, dl: float, sigma_c: float | N
     sigma_s = 0.65 * fy_plate
     ts_req = K_P * Rck * 1e3 * tes / (b.Ae * sigma_s)
     pl = Check("steel plates (8.7.3-10)", ts_req, b.ts, "mm", "JTG 3362-2018 8.7.3-10",
-               {"tes_u_plus_l": tes, "sigma_s": sigma_s, "Kp": K_P}, limit_check=True, symbol="ts,req")
+               {"tes_u_plus_l": tes, "sigma_s": sigma_s, "Kp": K_P, "Rck": Rck, "Ae": b.Ae, "fy": fy_plate},
+               limit_check=True, symbol="ts,req")
     if b.ts < PLATE_MIN - 1e-9:
         pl.warnings.append(f"plates {b.ts:g} mm < {PLATE_MIN:g} mm (8.7.3 item 4)")
     if b.edge < EDGE_MIN - 1e-9:

@@ -176,6 +176,7 @@ def crack_resistance(sec: RCSection, Ms: float, Ml: float, *, pc_class: str, seg
     gov = max(cand, key=lambda n: edges[n]["demand"] - edges[n]["limit"])
     g = edges[gov]
     d = {k: g[k] for k in ("sigma_st", "sigma_lt", "sigma_pc", "W0")} | {"edge": gov, **edges}
+    d.update(Ms=Ms, Ml=Ml, M_G=M_G, M_p2=M_p2)  # inputs, for calculation reports
     if temperature is not None and k_ != "B":
         d["sigma_t"] = g["sigma_t"]
     if k_ == "FULL":
@@ -671,6 +672,7 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
         Ate = _Ate(s, a_s)
         rho_te = As_te / Ate
         dd["Ate"] = Ate
+        dd.update(a_s=a_s, b_te=s.width(s.h * (1 - 1e-6)))  # Ate = min(2 as b, A), for calculation reports
     rho_c = min(max(rho_te, 0.01), 0.1)
     if d is None:
         d = _diam(s, mask, extra_d)
@@ -694,6 +696,8 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
         C3 = C3_given
     W = C1 * C2 * C3 * sss / E * (c + d) / (0.36 + 1.7 * rho_c)
     dd.update(sigma_ss=sss, C1=C1, C2=C2, C3=C3, c=c, d=d, rho_te=rho_te, rho_te_used=rho_c, E=E)
+    dd.setdefault("Ms", Ms)  # the effects of this case and the steel area, for calculation reports
+    dd.update(Ml=Ml, N=N, Nl=Nl, As_te=As_te if rho_te is not None and "Ate" in dd else None, member=mtype)
     if th is not None:
         dd.update(M_s=Ms, N_s=N)
     chk = Check("crack width", W, lim if lim is not None else 0.0, "mm", "JTG 3362-2018 6.4.3, table 6.4.2", dd, notes,
@@ -858,7 +862,7 @@ def deflection_limit(L: float, cantilever: bool = False) -> float:
 def deflection_check(f: float, L: float, cantilever: bool = False) -> Check:
     """6.5.3: f = ηθ × the deflection under the frequent vehicle (without impact) and crowd loads (mm), L in mm"""
     return Check("deflection (long term, live load)", f, deflection_limit(L, cantilever), "mm", "JTG 3362-2018 6.5.3",
-                 limit_check=True, symbol="f")
+                 {"L": L, "cantilever": cantilever}, limit_check=True, symbol="f")
 
 
 def precamber_rc(f_G: float, f_Q: float, L: float) -> float:
@@ -961,6 +965,10 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
             skt = skt - psi_t * np.array([temperature.unfavourable(d, "tension") for d in sec.tendons[:, 1]])
         sp = sec._sigma_pe() + aEP * skt
         d = {"edge_stress": edge, "tendon_stress": sp, "sigma_kt": skt}
+        # the parts at each edge, for calculation reports: σkc = Mk y0 / I0 and the prestress σpt (6.1.6 with Mp2)
+        d.update(Mk=Mk, N=N, I0=I0, z0=z0, sigma_kc={n: Mk * 1e6 * (z0 - z) / I0 for n, z in (("top", 0.0),
+                                                                                              ("bottom", sec.h))},
+                 sigma_pt={n: float(sec.prestress_stress(z, M_p2)) for n, z in (("top", 0.0), ("bottom", sec.h))})
         chk = Check(f"concrete compression in service ({gov} edge)", edge[gov], 0.5 * c.fck, "MPa",
                     "JTG 3362-2018 7.1.3, 7.1.5", d, limit_check=True, symbol="σkc + σpt", section=sec, hogging=Mk < 0)
     else:

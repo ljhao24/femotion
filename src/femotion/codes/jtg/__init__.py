@@ -49,6 +49,9 @@
                  crack width, stacked on one x axis
     figures      drawings of the sections (femotion.viz SVG): outline, bars, ducts and tendons to scale, with a check
                  laid over them (compression zone, neutral axis, service stresses, detailing not met)
+    report       calculation reports (femotion.report): a check written with its formulas and the values substituted,
+                 the summary of all checks, tables of materials, sections, loads and combinations (not imported here:
+                 from femotion.codes.jtg import report)
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
 

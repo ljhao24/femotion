@@ -140,6 +140,8 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | `femotion.frame.stages` | construction stages (members, supports, links, loads, tendons added and removed) and linear creep and shrinkage step by step in time: section forces, reactions, displacements since each node was built | own (linear) |
 | `femotion.codes.jtg` | Chinese highway bridge codes: traffic, crowd and temperature actions and combinations (JTG D60-2015); effective flange widths, ultimate-limit-state resistance of reinforced and prestressed concrete sections with internal and external tendons (flexure, shear, compression, tension, torsion, local compression, punching), prestress losses, crack resistance with temperature gradients, crack width, deflection and stress checks, composite flexural members, deck slabs, box girders across the bridge, creep secondary effects, strut-and-tie models, anchorage zones, diaphragms, cap beams and pile caps, hinges, elastomeric bearings, expansion joints, durability and detailing (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
 | `femotion.codes.jtg.figures`, `.charts` | sections to scale with their reinforcement and the result of a check laid over it (a `Check` keeps its section and shows itself in Jupyter); moment, shear, utilisation, stress, deflection and crack-width charts along a girder ([docs/figures.md](docs/figures.md)) | viz |
+| `femotion.report` | calculation reports (计算书) as one self-contained HTML file: cover, numbered chapters, contents, tables, figures, formulas, cross-references; screen and A4 print styles (running head, page numbers); `Report.pdf` prints with Chrome, the contents with page numbers ([docs/report.md](docs/report.md)) | — (Chrome for PDF) |
+| `femotion.codes.jtg.report` | checks written into a report: each formula in symbols and with the values substituted, the verdict, failures and warnings apart, the section drawing; the summary of all checks; tables of materials, sections, load cases and combinations ([docs/report.md](docs/report.md)) | report |
 
 ### Which frame solver?
 
@@ -188,7 +190,10 @@ moments, pre-camber); `examples/jtg_box_transverse.py` the deck slab of a box gi
 joint and a concrete hinge; `examples/jtg_detailing.py` durability and the detailing of a T girder. Drawings for the
 report ([docs/figures.md](docs/figures.md)): `examples/jtg_figures_section.py` sections with their checks laid over
 them; `examples/jtg_charts.py` moment, shear, utilisation and serviceability charts along a girder;
-`examples/jtg_loads_figures.py` load cases and influence-line placements. Values and formulas have been checked clause
+`examples/jtg_loads_figures.py` load cases and influence-line placements. A complete calculation report
+([docs/report.md](docs/report.md)): `examples/jtg_report_rc_girder.py` writes the girder of `jtg_rc_girder.py` up as one
+HTML file (basis, design data, model, actions, ultimate and serviceability checks with their formulas and values,
+detailing, summary), `--pdf` prints it. Values and formulas have been checked clause
 by clause against the official texts. [docs/codes/](docs/codes/) has one file per code (in Chinese) with every clause,
 formula, table and parameter the program uses, page references and the function using each, and lists what is not
 covered.
