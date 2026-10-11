@@ -107,18 +107,12 @@ print(f"\nhighest flexure ratio along the girder: {ratios[k]:.3f} at x = {x[k]:.
 
 # ── the pier moment reduced for the width of the bearing (4.3.5) ──
 # the design reaction that goes with the largest hogging moment: self-weight from the jump of its shear, the lane load
-# placed as for Mmin at the pier (q on the negative part of the moment influence line, P at its lowest ordinate)
+# in the very placement that gives Mmin at the pier (its layout, solved as a load case: q over both spans, P at the
+# lowest ordinate), not a sum over the nodes where the line is negative (that drops half an element each side of the pier)
 kL, kR = 2 * (n - 1) + 1, 2 * n  # the sections just left and right of the pier
 R_G = abs(G_V[kL] - G_V[kR])
-Fu = np.zeros((sv.m.ndof, len(nodes)))
-for j, nd in enumerate(nodes):
-    Fu[6 * nd + 2, j] = -1.0
-R_line = np.array([(sv.K @ sv.solve(Fu[:, j]))[6 * nodes[n] + 2] for j in range(len(nodes))])  # reaction per unit load
-s_M, eta_M = il.line(k_pier, "My")
-q_lane, P_lane = jtg.lane_load(L)
-neg = np.interp(xs, s_M, eta_M) < 0
-R_Q = (q_lane * float(np.trapezoid(np.where(neg, R_line, 0.0), xs)) + P_lane * R_line[int(np.argmin(eta_M))]) \
-    * live(mu2).factor()
+pier_lane = live(mu2).layouts(il, "My", k_pier)[1]  # (max, min): the hogging placement
+R_Q = float(pier_lane.load_case(il).solve(sv).reactions()[6 * nodes[n] + 2])
 R_d = 1.2 * R_G + 1.4 * R_Q
 y_c = (pier_sec.h - pier_sec.zg) / 1e3  # soffit to the centroid axis (m)
 a = jtg.spread_length(0.45, y_c)  # 450 mm long bearing, 45° spread up to the centroid
