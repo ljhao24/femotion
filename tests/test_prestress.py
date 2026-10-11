@@ -154,7 +154,8 @@ def test_friction_and_anchorage():
     for l, s_end in [(30000, 1250.0), (6000, 1370.0)]:
         x = np.linspace(0, l, 200001)
         loss, lf = ps.anchorage_loss_reverse(1395, s_end, l, 6, 1.95e5, x)
-        assert np.trapezoid(loss, x) == pytest.approx(6 * 1.95e5, rel=1e-6)
+        area = float(((loss[1:] + loss[:-1]) / 2 * np.diff(x)).sum())  # trapezoid rule (np.trapezoid needs NumPy 2)
+        assert area == pytest.approx(6 * 1.95e5, rel=1e-6)
         assert (lf <= l) == (l == 30000)
 
 
