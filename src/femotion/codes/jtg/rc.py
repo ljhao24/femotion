@@ -747,8 +747,15 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
     As, Ap only (ρ = (Ap + As)/(b h0), program convention)."""
     s = sec.flipped() if hogging else sec
     if s.kind in ("circle", "annulus"):  # 3362 has no rule: GB 50010-2010 6.3.15 (members.shear_circle)
+        if (slab or pc_class is not None or bent_tendons or vertical is not None or alpha2 is not None
+                or alpha3 is not None or bent_external):
+            raise ValueError("circular sections: slab, alpha2, alpha3, pc_class and prestressing inputs do not apply "
+                             "(jtg.shear_circle)")
         from .members import shear_circle
-        return shear_circle(s, Vd, stirrups, gamma0=gamma0, alpha1=alpha1, stirrup_steel=stirrup_steel, bent=bent)
+        chk = shear_circle(s, Vd, stirrups, gamma0=gamma0, alpha1=alpha1, stirrup_steel=stirrup_steel, bent=bent)
+        chk.notes.append("via jtg.shear: column detailing, no axial force; piles and members in tension: "
+                         "jtg.shear_circle(..., pile=True, Nd=…)")
+        return chk
     c, st = s.concrete, s.steel
     b, h0 = s.web(), s.h0(external=False)
     t, _ = s.groups()
