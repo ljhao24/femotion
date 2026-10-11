@@ -344,3 +344,17 @@ def test_singly_reinforced_alternative_keeps_inner_tension_rows():
     assert r.details["x"] < 100
     x1 = 330 * 2 * a25 / (18.4 * 2000)
     assert r.details["M_singly_reinforced"] == pytest.approx(330 * a25 * ((1450 - x1 / 2) + (1250 - x1 / 2)) / 1e6, rel=1e-9)
+
+
+def test_web_width_with_a_flange_edge_on_the_grid():
+    """b = the narrowest width; a flange edge falling on a sampling point used to give b = 0 (Rect.width is 0 on an
+    edge): tee(200, 1000, 1600, 260) and boxes with t_top = 220 at h = 1400 (found by the detailing review). Swept over
+    common T and box proportions, the web is always the given width."""
+    for h in range(500, 3001, 50):
+        for hf in (120, 150, 160, 180, 200, 220, 250, 260, 300, 350):
+            assert jtg.tee(200, h, 1600, hf, bottom=[(4, 25, 60)]).web() == pytest.approx(200)
+    for h in range(1000, 4001, 100):
+        for tt in (200, 220, 250, 280):
+            assert jtg.box(5000, h, tt, 200, 600, bottom=[(20, 20, 60)]).web() == pytest.approx(600)
+    s = jtg.tee(200, 1000, 1600, 260, bottom=[(4, 25, 60)])
+    assert jtg.shear(s, 300.0, (2, 10, 200)).details["b"] == pytest.approx(200)

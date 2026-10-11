@@ -222,9 +222,16 @@ class RCSection:
         return sum(p.width(z) for p in self.pieces)
 
     def web(self):
-        """web width b: the narrowest total width over the depth (the web of T, I and box sections, b of a rectangle)"""
-        zs = np.linspace(0.02 * self.h, 0.98 * self.h, 197)
-        return min(self.width(z) for z in zs)
+        """web width b: the narrowest total width over the depth (the web of T, I and box sections, b of a rectangle),
+        between 2 % and 98 % of h. The width is taken on a grid and between the rectangles' edges, never on an edge
+        (where Rect.width is 0), so a flange edge falling on a grid point does not turn b into 0."""
+        lo, hi = 0.02 * self.h, 0.98 * self.h
+        edges = sorted({z for p in self.pieces if isinstance(p, Rect) for z in (p.top, p.bottom) if lo < z < hi})
+        tol = 1e-9 * self.h
+        grid = [z for z in np.linspace(lo, hi, 197) if all(abs(z - e) > tol for e in edges)]
+        cuts = sorted({lo, hi, *edges})
+        mids = [(a + b) / 2 for a, b in zip(cuts, cuts[1:]) if b - a > tol]
+        return min(self.width(z) for z in grid + mids)
 
     def replace(self, **kw) -> "RCSection":
         return dataclasses.replace(self, **kw)

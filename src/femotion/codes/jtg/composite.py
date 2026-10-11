@@ -140,7 +140,9 @@ def interface_shear(comp: Composite, Vd: float, stirrups, *, gamma0: float = 1.0
     Asv = legs * math.pi * dia * dia / 4
     R = (0.12 * fcd * b * h0 + 0.85 * st.fsv * Asv / sv * h0) / 1e3
     return Check("composite joint shear (beam)", gamma0 * Vd, R, "kN", "JTG 3362-2018 8.1.6",
-                 {"b": b, "h0": h0, "fcd": fcd, "Asv": Asv})
+                 {"b": b, "h0": h0, "fcd": fcd, "Asv": Asv},
+                 ["8.1.6 holds with the detailing of 9.3.16, 9.3.17: check it with "
+                  "jtg.detailing.composite_beam_detailing (warnings)"])
 
 
 def interface_shear_slab(Vd: float, *, b: float, h0: float, gamma0: float = 1.0, s: float | None = None,

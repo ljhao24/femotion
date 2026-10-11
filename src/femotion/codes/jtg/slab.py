@@ -604,21 +604,22 @@ def punching(Fld: float, *, Um: float, h0: float, h: float, concrete, sigma_pc: 
         chk.details["V_outer"] = out
         if gamma0 * Fld > out:
             chk.failed.append(f"outside the punching steel: γ0Fld > {out:.0f} kN (5.6.1 on Um = {Um_outer:.0f} mm, 5.6.2)")
+    pre = "; a premise of the punching steel in 5.6.2-2/-3, 5.6.2 note"
     if h < 150:
-        chk.warnings.append(f"slab {h:.0f} mm < 150 mm with punching steel (9.2.9)")
+        chk.warnings.append(f"slab {h:.0f} mm < 150 mm with punching steel (9.2.9{pre})")
     dt = detailing or {}
     if stirrups is not None:
         if "stirrup_d" in dt and dt["stirrup_d"] < 8:
-            chk.warnings.append(f"punching stirrups {dt['stirrup_d']} mm < 8 mm (9.2.9)")
+            chk.warnings.append(f"punching stirrups {dt['stirrup_d']} mm < 8 mm (9.2.9{pre})")
         if "stirrup_s" in dt and dt["stirrup_s"] > h0 / 3:
-            chk.warnings.append(f"punching stirrup spacing {dt['stirrup_s']} mm > h0/3 = {h0 / 3:.0f} mm (9.2.9)")
+            chk.warnings.append(f"punching stirrup spacing {dt['stirrup_s']} mm > h0/3 = {h0 / 3:.0f} mm (9.2.9{pre})")
     else:
         if not 30 <= bent[1] <= 45:
-            chk.warnings.append(f"bent bars at {bent[1]}°: 9.2.9 asks for 30° … 45°")
+            chk.warnings.append(f"bent bars at {bent[1]}°: 9.2.9 asks for 30° … 45° ({pre[2:]})")
         if "bent_d" in dt and dt["bent_d"] < 12:
-            chk.warnings.append(f"bent bars {dt['bent_d']} mm < 12 mm (9.2.9)")
+            chk.warnings.append(f"bent bars {dt['bent_d']} mm < 12 mm (9.2.9{pre})")
         if "bent_n" in dt and dt["bent_n"] < 5:
-            chk.warnings.append(f"{dt['bent_n']} bent bars per direction < 5 (9.2.9)")
+            chk.warnings.append(f"{dt['bent_n']} bent bars per direction < 5 (9.2.9{pre})")
     return chk
 
 
