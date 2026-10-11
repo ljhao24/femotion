@@ -23,7 +23,12 @@
     stm          JTG 3362-2018 appendix B: strut-and-tie models (statics, ties, struts, nodes)
     creep        JTG 3362-2018 4.3.8, 6.5.6, appendix C: creep secondary effects (commentary 4-7…4-20), the appendix C
                  concrete and later prestress losses for the staged analysis of femotion.frame.stages
-    regions      JTG 3362-2018 8.2–8.5: anchorage zones, diaphragms over bearings, cap beams, pile caps
+    regions      JTG 3362-2018 8.2–8.5: anchorage zones (with dense anchors), diaphragms over bearings, cap beams, pile caps
+    tendon_detailing  JTG 3362-2018 9.4.1–9.4.20: detailing of prestressed superstructures (stirrups, pretensioning,
+                 ducts, cover and spacing of curved ducts 9.4.8, radii, anchorage zones and blisters with their
+                 reinforcement zones 8.2.1, 9.4.18, 9.4.20, segmental joints)
+    pier_detailing   JTG 3362-2018 9.6: detailing of columns, spiral columns, thin walls, cap and tie beams, joints,
+                 box-girder ramp piers, pile caps
     external     JTG 3362-2018 9.4.21–9.4.27: detailing of external tendons (the sections take external tendons in rc
                  and sls: 5.2.5, 5.2.6, 5.2.9-5, 6.1.6-7, 6.1.7-5, 7.1.5-3)
     slab         JTG 3362-2018 4.2, 5.6, 9.2: deck slabs (spans, wheel load distribution widths, slabs between ribs and
@@ -55,6 +60,7 @@ from .actions import (DYNAMIC_FACTOR, GAMMA_0, PSI, RAILING_LOADS, SIDEWALK_SLAB
                       transverse_reduction)
 from . import prestress, regions  # noqa: F401
 from . import creep, slab, transverse  # noqa: F401
+from . import pier_detailing, tendon_detailing  # noqa: F401
 from .bearing import bearing_base_area, fcd_at, local_bearing, mesh_ratio, spiral_ratio  # noqa: F401
 from .composite import (COMPOSITE_CAMBER_LONG_TERM, Composite, composite, composite_crack_resistance,  # noqa: F401
                         composite_crack_width, composite_design_moments, composite_inclined_crack_resistance,

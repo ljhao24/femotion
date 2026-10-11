@@ -8,7 +8,8 @@ given (bearing reactions of the two spans), the frequent ones as a ratio of them
     cantilever top tie (8.4.6), the same cantilever as a strut-and-tie model (appendix B: strut and node checks) →
     local compression under a bearing (5.7) → pile forces (8.5.1), pile cap strut-and-tie (8.5.4), punching (8.5.5) →
     columns: effective lengths (appendix E), biaxial bending of a circular column (5.3.8, appendix F) → a pile's shear
-    (3362 has no rule for circles: GB 50010-2010 6.3.15) → a tie beam between the pile caps in tension (5.4.2).
+    (3362 has no rule for circles: GB 50010-2010 6.3.15) → a tie beam between the pile caps in tension (5.4.2) →
+    detailing (9.6): columns, cap beam, joints, pile cap.
 
     uv run python examples/jtg_substructure.py
 """
@@ -17,6 +18,7 @@ import math
 import numpy as np
 
 from femotion.codes import jtg
+from femotion.codes.jtg import pier_detailing as pdet
 from femotion.codes.jtg import regions as rg
 from femotion.frame import Model, Section, Solver
 
@@ -141,3 +143,22 @@ tie = jtg.rect(800, 1000, concrete="C30", top=[(5, 22, 60)], bottom=[(5, 22, 60)
 for Nt, Mt in ((380.0, 60.0), (380.0, 260.0)):
     r = jtg.tension(tie, Nt, Mt, gamma0=gamma0)
     print(f"tie beam ({r.details['case']}): " + str(r))
+
+# ── detailing (9.6; warnings do not change a verdict). la: the anchorage length of table 9.1.4, here 35 d for the
+# φ28 bars (illustrative) ──
+la = 35 * 28
+print("\ndetailing (9.6)")
+# columns: φ12 hoops at 200 mm, 1.2 m into the pile cap; the bars run up to the cap beam's top (1600 − 75 mm)
+print("  " + str(pdet.column_detailing(col, ties=(12, 200), closed=True, embedment=1200, la=la, eccentric=True)))
+print("  " + str(pdet.column_bar_anchorage(28, la=la, to_top=True, embedment=h * 1e3 - 75, splice_in_joint=False)))
+# cap beam: the stirrups of the shear check (φ16 at 100 mm), φ16 side bars at 150 mm; its top bars run through the
+# column joints (the cantilevers continue beyond the columns)
+print("  " + str(pdet.cap_beam_detailing(l * 1e3, h * 1e3, concrete=c, stirrup=(16, 100), side=(16, 150))))
+print("  " + str(pdet.beam_bar_anchorage(28, joint="interior", bar="top", through=True)))
+# pile cap: piles exactly 3 D apart (9.6.10 item 2: the main bars over the whole width; item 6: hangers), φ16 mesh at
+# 160 mm over the pile heads (1257 mm²/m), φ16 vertical ties; the hangers asked for here are missing, a note says so
+cap_r = pdet.pile_cap_detailing(h=h_cap, D=1200, spacing=3600, mesh=(1257, 1257, 16), tie_d=16)
+print("  " + str(cap_r))
+for note in cap_r.notes:
+    print("    note: " + note)
+print(f"  main bars of the pile cap across {pdet.pile_cap_bar_zones([1000, 4600], 1200, 5600)} mm (9.6.10 item 2)")
