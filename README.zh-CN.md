@@ -70,7 +70,9 @@ Python 写出、JavaScript 读回，两边用同一份标准样例（`tests/data
   正截面和斜截面抗裂（主应力）、裂缝宽度（受弯、偏压含圆形截面、受拉、B 类构件含有轴力和温度梯度）、刚度和挠度、预拱度、
   使用阶段应力（含 B 类开裂截面和温度梯度，附录 J）、施工阶段应力；
   翼缘有效宽度（T 形、箱形）、温差应力（附录 D，并接进抗裂、主应力和使用阶段应力验算）、受扭和剪扭、局部承压、
-  组合式受弯构件（预制梁加现浇层，两阶段受力）、拉压杆模型（附录 B）、锚固区、支座横隔梁、盖梁、桩基承台（8.2～8.5）。
+  组合式受弯构件（预制梁加现浇层，两阶段受力，含负弯矩区和 B 类）、拉压杆模型（附录 B）、锚固区、支座横隔梁、盖梁、桩基承台（8.2～8.5）；
+  斜截面搜索、箍筋和弯起钢筋设计、支点负弯矩削峰；混凝土铰、板式橡胶支座、伸缩装置（8.6～8.8）；耐久性（4.5）和第 9 章能写成数值的
+  构造（保护层、锚固、搭接、净距、管道、锚固区、墩柱、承台等）。构造不满足只进 `Check.warnings`，不改变验算结论 `Check.ok`。
 - 预加力次效应：`femotion.frame.prestress` 由钢筋线形算等效荷载，得总效应、主效应和次效应；温度梯度和收缩的次效应：`femotion.frame.thermal`。
 - 施工阶段和收缩徐变：`femotion.frame.stages` 按阶段增删构件、支座、连接和荷载（体系转换），用附录 C 的徐变系数和收缩应变逐步累加
   （6.5.6），得各时刻的内力、支反力和自建成以来的位移（预拱度、立模标高）；`femotion.codes.jtg.creep` 是条文说明式（4-7）～（4-20）的闭合式。
@@ -78,7 +80,7 @@ Python 写出、JavaScript 读回，两边用同一份标准样例（`tests/data
 内力来自 `femotion.frame.influence`：分解一次就得到所有截面的影响线，车道荷载、车辆轴列的最不利加载，自重按一致荷载
 精确算到单元端。完整流程见 `examples/jtg_rc_girder.py`（两跨连续钢筋混凝土 T 梁）和 `examples/jtg_pc_girder.py`（两跨连续后张法预应力 I 梁：
 钢筋线形 → 损失 → 有效预应力 → 预加力和温度梯度的次弯矩 → 组合 → 承载能力、抗裂、应力、挠度、锚固区验算），
-`examples/jtg_external_girder.py`（体外预应力箱梁），`examples/jtg_composite_girder.py`（预制预应力梁加现浇桥面板），`examples/jtg_staged_girder.py`（先简支后连续的三跨预应力梁，算到成桥后 10 年），`examples/jtg_box_transverse.py`（箱梁顶板横向计算、冲切、面内主应力），`examples/jtg_substructure.py`（双柱墩盖梁、桩基承台、桩和墩柱）。
+`examples/jtg_external_girder.py`（体外预应力箱梁），`examples/jtg_composite_girder.py`（预制预应力梁加现浇桥面板），`examples/jtg_staged_girder.py`（先简支后连续的三跨预应力梁，算到成桥后 10 年），`examples/jtg_box_transverse.py`（箱梁顶板横向计算、冲切、面内主应力），`examples/jtg_substructure.py`（双柱墩盖梁、桩基承台、桩和墩柱，含构造检查），`examples/jtg_devices.py`（支座、伸缩缝、混凝土铰），`examples/jtg_detailing.py`（耐久性和 T 梁构造）。
 
 规范里的数值、公式和条文号已经逐条对照交通运输部公开的规范原文核对过，程序用到的全部条文、公式、表格和参数按规范分文件整理在 [docs/codes/](docs/codes/)（[JTG D60—2015](docs/codes/JTG_D60-2015.md)、[JTG 3362—2018](docs/codes/JTG_3362-2018.md)），每项注明原文页码和对应函数，出计算书时可以直接引用；没有做的条文列在 JTG 3362—2018 那份的第 11 节。体内无黏结预应力规范没有规定，不含。
 
