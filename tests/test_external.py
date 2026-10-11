@@ -434,7 +434,7 @@ def test_temperature_and_torsion_with_external_tendons():
     tendon at σpe,ex) agree with the internal tendon of vanishing area"""
     ex, lim = _stiffless_pair()
     grad = jtg.temperature_gradient(1200)
-    w = [jtg.crack_width(s, 1300.0, 900.0, pc_class="B", tendon_bundles=[(1, 6, 15.2)],
+    w = [jtg.crack_width(s, 1600.0, 1100.0, pc_class="B", tendon_bundles=[(1, 6, 15.2)],
                          temperature=jtg.thermal_stresses(s, grad)) for s in (ex, lim)]
     assert w[0].demand > 0 and w[0].demand == pytest.approx(w[1].demand, rel=1e-6)
     v = [jtg.service_stresses(s, 1500.0, pc_class="B", temperature=jtg.thermal_stresses(s, grad)) for s in (ex, lim)]
