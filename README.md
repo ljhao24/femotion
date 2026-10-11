@@ -131,6 +131,8 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | `femotion.result` | the `fem-result/1` file | — |
 | `femotion.io` | other formats: read / write meshes, export results (VTU, ParaView `.pvd` collections) | meshio |
 | `femotion.models` | ready-made illustrative structures (a 500 m cable-stayed bridge) | — |
+| `femotion.frame.influence` | influence lines of every section from one factorisation, lane-load and axle-train envelopes, exact section forces under distributed loads | own (linear) |
+| `femotion.codes.jtg` | Chinese highway bridge codes: traffic actions and combinations (JTG D60-2015), ultimate-limit-state resistance of reinforced-concrete sections (JTG 3362-2018); alpha, see [docs/jtg.md](docs/jtg.md) | — |
 
 ### Which frame solver?
 
@@ -139,6 +141,23 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | Linear, solved many times (vehicles frame by frame, influence lines, cable-force optimisation, modes) | `frame.linear` after `crosscheck` passes | factorise once, ~0.2 ms per load case; ~20× faster than OpenSees |
 | Nonlinear: yielding, plastic hinges, buckling, large displacements, slack cables, collapse after member loss, earthquake damage | `frame.opensees` | mature, widely validated |
 | Linear, solved once or twice | either; OpenSees if in doubt | speed does not matter |
+
+### Design-code checks
+
+```python
+from femotion.codes import jtg
+from femotion.frame.influence import InfluenceLines, chain_sections, uniform_load_forces
+
+il = InfluenceLines(sv, deck_nodes, chain_sections(deck_beams))     # every section's influence line at once
+G = uniform_load_forces(sv, il.sections, "My")                         # self-weight, exact at the element ends
+Q = jtg.LiveLoad(L0=16, lanes=2, mu=jtg.impact_factor(f1)).effects(il, "My")
+Mmax, Mmin = jtg.basic_combination(G, Q)
+sec = jtg.tee(200, 1100, 1600, 160, concrete="C40", bottom=[(10, 28, 110)], top=[(8, 20, 50)])   # mm
+print(jtg.flexure(sec, Mmax.max()))      # flexure: γ0Sd = …, R = …, ratio … → OK
+```
+
+Reinforced concrete only for now (no prestress, no serviceability). The code values are an unverified transcription:
+check [docs/jtg.md](docs/jtg.md) before relying on them. `examples/jtg_rc_girder.py` checks a two-span continuous girder.
 
 ## Validation
 

@@ -1,0 +1,164 @@
+"""JTG D60-2015 actions and JTG 3362-2018 reinforced-concrete resistance against hand calculations."""
+import math
+
+import numpy as np
+import pytest
+
+from femotion.codes import jtg
+
+A20, A25 = math.pi * 20 ** 2 / 4, math.pi * 25 ** 2 / 4
+
+
+# ── materials and actions ───────────────────────────────────────────────────
+def test_materials():
+    c = jtg.concrete("C30")
+    assert (c.fcd, c.ftd, c.fcuk, c.beta, c.eps_cu) == (13.8, 1.39, 30.0, 0.8, 0.0033)
+    assert jtg.concrete(80).beta == pytest.approx(0.74) and jtg.concrete(80).eps_cu == pytest.approx(0.003)
+    assert jtg.rebar("HRB500").fsv == 330.0 and jtg.rebar("HRB500").fsd_c == 400.0
+    # table 5.2.1 up to C50
+    for s, v in [("HPB300", 0.58), ("HRB400", 0.53), ("HRB500", 0.49)]:
+        assert jtg.xi_b(jtg.concrete(50), jtg.rebar(s)) == v
+
+
+def test_lane_load_and_factors():
+    assert jtg.lane_load(5) == (10.5, 270.0)
+    assert jtg.lane_load(50) == (10.5, 360.0)
+    assert jtg.lane_load(20) == (10.5, 300.0)
+    assert jtg.lane_load(20, shear=True)[1] == pytest.approx(360.0)
+    assert jtg.lane_load(20, "II") == pytest.approx((7.875, 225.0))
+    assert jtg.impact_factor(1.0) == 0.05 and jtg.impact_factor(20) == 0.45
+    assert jtg.impact_factor(5.0) == pytest.approx(0.1767 * math.log(5) - 0.0157)
+    assert jtg.transverse_reduction(1) == 1.2 and jtg.transverse_reduction(3) == 0.78
+    assert jtg.longitudinal_reduction(100) == 1.0 and jtg.longitudinal_reduction(500) == 0.96
+    assert jtg.design_lanes(12.0) == 2 and jtg.design_lanes(15.0, two_way=False) == 4
+    assert sum(jtg.VEHICLE_AXLES) == 550
+
+
+def test_basic_combination():
+    hi, lo = jtg.basic_combination(np.array([100.0, -100.0]), (np.array([50.0, 50.0]), np.array([-20.0, -20.0])))
+    assert np.allclose(hi, [1.2 * 100 + 1.4 * 50, -100 + 1.4 * 50])
+    assert np.allclose(lo, [100 - 1.4 * 20, -1.2 * 100 - 1.4 * 20])
+    hi, _ = jtg.basic_combination(np.array([0.0]), (np.array([10.0]), np.array([0.0])), others=[(np.array([4.0]), np.array([0.0]))])
+    assert hi[0] == pytest.approx(14 + 0.75 * 1.4 * 4)
+
+
+# ── flexure ─────────────────────────────────────────────────────────────────
+def test_singly_reinforced_rectangle():
+    s = jtg.rect(250, 500, concrete="C30", steel="HRB400", bottom=[(3, 20, 45)])
+    r = jtg.flexure(s, 100.0)
+    x = 330 * 3 * A20 / (13.8 * 250)
+    assert r.details["x"] == pytest.approx(x, rel=1e-6)
+    assert r.resistance == pytest.approx(330 * 3 * A20 * (455 - x / 2) / 1e6, rel=1e-6)
+    assert r.ok and r.ratio == pytest.approx(100 / r.resistance)
+
+
+def test_tee_neutral_axis_in_web():
+    As = 6 * math.pi * 28 ** 2 / 4
+    s = jtg.tee(200, 800, 600, 100, concrete="C30", steel="HRB400", bottom=[(6, 28, 70)])
+    r = jtg.flexure(s, 500.0)
+    x = (330 * As / 13.8 - 400 * 100) / 200
+    Mu = 13.8 * (200 * x * (730 - x / 2) + 400 * 100 * (730 - 50))
+    assert r.details["x"] == pytest.approx(x, rel=1e-6)
+    assert r.resistance == pytest.approx(Mu / 1e6, rel=1e-6)
+
+
+def test_tee_neutral_axis_in_flange():
+    As = 4 * math.pi * 25 ** 2 / 4
+    s = jtg.tee(200, 800, 1200, 120, concrete="C30", steel="HRB400", bottom=[(4, 25, 60)])
+    r = jtg.flexure(s, 300.0)
+    x = 330 * As / (13.8 * 1200)
+    assert x < 120 and r.resistance == pytest.approx(330 * As * (740 - x / 2) / 1e6, rel=1e-6)
+
+
+def test_compression_bars_below_2as():
+    s = jtg.rect(250, 500, bottom=[(3, 20, 45)], top=[(3, 20, 40)])
+    r = jtg.flexure(s, 100.0)
+    assert r.details["x"] < 80 and r.notes
+    about = 330 * 3 * A20 * (455 - 40)  # moments about the compression bars
+    x1 = 330 * 3 * A20 / (13.8 * 250)
+    single = 330 * 3 * A20 * (455 - x1 / 2)  # compression bars ignored
+    assert r.resistance == pytest.approx(max(about, single) / 1e6, rel=1e-6)
+    # a wide flange: x tiny, ignoring the top bars gives more
+    t = jtg.tee(200, 1100, 1600, 160, concrete="C40", bottom=[(8, 28, 110)], top=[(8, 20, 50)])
+    As = 8 * math.pi * 28 ** 2 / 4
+    x = 330 * As / (18.4 * 1600)
+    assert jtg.flexure(t, 1.0).resistance == pytest.approx(330 * As * (990 - x / 2) / 1e6, rel=1e-6)
+
+
+def test_over_reinforced_and_minimum_steel():
+    heavy = jtg.rect(250, 500, bottom=[(8, 32, 60)])
+    assert any("over-reinforced" in f for f in jtg.flexure(heavy, 10.0).failed)
+    light = jtg.rect(400, 1000, bottom=[(2, 12, 40)])
+    assert any("minimum" in f for f in jtg.flexure(light, 1.0).failed)
+
+
+def test_hogging_uses_top_bars():
+    s = jtg.rect(250, 500, top=[(3, 20, 45)], bottom=[(2, 12, 40)])
+    r = jtg.flexure(s, -100.0)
+    assert r.details["h0"] == pytest.approx(455)
+    assert "hogging" in r.name and r.resistance > 100
+
+
+# ── shear ───────────────────────────────────────────────────────────────────
+def test_shear_formula():
+    s = jtg.tee(200, 1300, 1600, 150, concrete="C40", bottom=[(6, 32, 90)])
+    r = jtg.shear(s, 600.0, stirrups=(2, 10, 150))
+    As, h0 = 6 * math.pi * 32 ** 2 / 4, 1210.0
+    P = 100 * As / (200 * h0)
+    rho = 2 * math.pi * 25 / (150 * 200)
+    Vcs = 1.1 * 0.45e-3 * 200 * h0 * math.sqrt((2 + 0.6 * P) * math.sqrt(40) * rho * 330)
+    assert r.resistance == pytest.approx(Vcs, rel=1e-9) and r.details["alpha3"] == 1.1
+    assert r.details["V_section_max"] == pytest.approx(0.51e-3 * math.sqrt(40) * 200 * h0)
+    assert jtg.shear(s, 600.0, stirrups=(2, 6, 300)).failed  # 0.094 % < 0.11 %
+
+
+# ── compression ─────────────────────────────────────────────────────────────
+def test_stability_factor():
+    assert jtg.stability_factor(12 * 400, b=400) == 0.95
+    assert jtg.stability_factor(9 * 400, b=400) == pytest.approx(0.99)
+    assert jtg.stability_factor(5 * 1000, d=1000) == 1.0
+
+
+def test_axial():
+    s = jtg.rect(400, 400, bottom=[(2, 20, 40)], top=[(2, 20, 40)])
+    r = jtg.axial(s, 1000.0, l0=4800)
+    assert r.resistance == pytest.approx(0.9 * 0.95 * (13.8 * 160000 + 330 * 4 * A20) / 1e3)
+
+
+def test_large_eccentricity_symmetric_rectangle():
+    """symmetric bars, both yield: N = fcd b x and N e_s = fcd b x (h0 − x/2) + fsd' As' (h0 − as')"""
+    As = 4 * A25
+    s = jtg.rect(400, 600, bottom=[(4, 25, 40)], top=[(4, 25, 40)])
+    e0 = 500.0
+    es = e0 + 300 - 40
+    a, b, K = 13.8 * 400 / 2, 13.8 * 400 * (es - 560), 330 * As * 520
+    x = (-b + math.sqrt(b * b + 4 * a * K)) / (2 * a)
+    r = jtg.eccentric(s, Nd=1000.0, Md=1000.0 * e0 / 1e3)  # no l0: η = 1
+    assert r.details["case"] == "large eccentricity"
+    assert r.resistance == pytest.approx(13.8 * 400 * x / 1e3, rel=1e-6)
+
+
+def test_eta():
+    s = jtg.rect(400, 600, bottom=[(4, 25, 40)], top=[(4, 25, 40)])
+    e0, l0, h0 = 300.0, 9000.0, 560.0
+    z1, z2 = min(0.2 + 2.7 * e0 / h0, 1), min(1.15 - 0.01 * l0 / 600, 1)
+    assert jtg.eta_factor(s, e0, l0, h0) == pytest.approx(1 + (l0 / 600) ** 2 * z1 * z2 / (1300 * e0 / h0))
+    assert jtg.eta_factor(s, e0, 2000.0, h0) == 1.0  # l0/i ≤ 17.5
+
+
+def test_circle_code_formula_close_to_strain_method():
+    s = jtg.circle(1200, 24, 25, 60, concrete="C30")
+    for e0 in (100.0, 300.0, 800.0):
+        Nd = 5000.0
+        a = jtg.eccentric(s, Nd, Nd * e0 / 1e3, method="code").resistance
+        b = jtg.eccentric(s, Nd, Nd * e0 / 1e3, method="strain").resistance
+        assert a == pytest.approx(b, rel=0.06)
+
+
+def test_circle_geometry():
+    s = jtg.circle(1000, 12, 20, 50)
+    assert s.area == pytest.approx(math.pi * 500 ** 2, rel=1e-12)
+    assert s.zg == pytest.approx(500)
+    assert s.I == pytest.approx(math.pi * 1000 ** 4 / 64, rel=1e-12)
+    hol = jtg.circle(2000, 30, 25, 60, hollow=1400)
+    assert hol.area == pytest.approx(math.pi * (1000 ** 2 - 700 ** 2), rel=1e-12)
