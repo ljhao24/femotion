@@ -6,7 +6,11 @@
     check     crosscheck(model): run both solvers on the same model before trusting the fast one
     sections  sections of any shape through sectionproperties: elastic properties and fiber sections (extra "sections")
     post      reactions, internal-force diagrams, mode classification on plain arrays (works with either solver)
-    influence influence lines of many sections at once, lane-load and axle-train envelopes, exact distributed-load forces
+    influence influence lines of many sections at once, lane-load and axle-train envelopes and the worst placements
+              behind them, exact distributed-load forces
+    loads     load cases as data: nodal, point, distributed (partial, trapezoidal), self-weight, imposed strains,
+              tendons, settlements, bar strains; solved exactly at the element ends, combined with factors
+    figures   drawings (femotion.viz SVG): load arrangements in elevation, influence lines with their worst placements
     prestress tendons: equivalent loads, total / primary / secondary effects on statically indeterminate frames
     thermal   imposed strains and curvatures (temperature, shrinkage): secondary effects on statically indeterminate frames
     stages    construction stages and creep / shrinkage step by step in time (linear): members, supports, loads by stage
@@ -15,3 +19,4 @@ Linear problems solved many times go to `linear` once `check.crosscheck` passes;
 """
 from .linear import Solver, pretension_influence  # noqa: F401
 from .model import Model, Section, local_axes, lumped_masses  # noqa: F401
+from .loads import LoadCase, combine  # noqa: F401

@@ -12,6 +12,8 @@ load); γ0 by design safety class (4.1.5). Temperature actions (4.3.12): femotio
     Qmax, Qmin = live.effects(il, "My")                  # il: femotion.frame.influence.InfluenceLines
     Sd = jtg.basic_combination(G, (Qmax, Qmin))          # (max, min) design effects, without γ0
     Ss = jtg.frequent_combination(G, LiveLoad(L0=20.0, lanes=2).effects(il, "My"))   # serviceability: no impact
+    hi, lo = live.layouts(il, "My", k)                   # where qk and Pk go for section k (values = effects())
+    veh = live.vehicle_layouts(il, "Vz", k)[1]           # the 550 kN vehicle: axle positions, heading
 """
 from __future__ import annotations
 
@@ -142,6 +144,26 @@ class LiveLoad:
         f = self.factor()
         return mx * f, mn * f
 
+    def layouts(self, il, comp: str, sections=None):
+        """the lane-load placements behind effects(): a (max, min) pair of femotion.frame.influence.LaneLayout per
+        section (sections: one index, a list, or None for all), qk and Pk (× 1.2 for shear) with this load's factor;
+        their values are effects() exactly. layout.load_case(il) turns one into a load case."""
+        q, P = lane_load(self.L0, self.grade, shear=comp in ("Vy", "Vz"))
+        f = self.factor()
+        return _per_section(il, sections, lambda k, sense: il.lane_layout(k, comp, q, P, sense, factor=f, kind="lane"))
+
+    def vehicle_layouts(self, il, comp: str, sections=None):
+        """the vehicle placements behind vehicle_effects(): (max, min) femotion.frame.influence.AxleLayout per section"""
+        f = self.factor()
+        return _per_section(il, sections, lambda k, sense: il.axle_layout(k, comp, VEHICLE_AXLES, VEHICLE_SPACINGS,
+                                                                           sense, factor=f, kind="vehicle"))
+
+
+def _per_section(il, sections, make):
+    ks = range(len(il.sections)) if sections is None else np.atleast_1d(sections)
+    out = [(make(int(k), "max"), make(int(k), "min")) for k in ks]
+    return out[0] if sections is not None and np.ndim(sections) == 0 else out
+
 
 # ── crowd load (人群荷载), 4.3.6 ──
 SIDEWALK_SLAB_LOAD = 4.0  # kN/m², sidewalk slabs as local members (4.3.6 item 3)
@@ -178,6 +200,12 @@ class CrowdLoad:
         """(max, min) effects of every section of `il` (femotion.frame.influence.InfluenceLines); combine as another
         variable action: basic_combination(..., others=[crowd]), frequent_combination(..., kinds=["crowd"])"""
         return il.lane(comp, self.intensity() * self.width * self.distribution, 0.0)
+
+    def layouts(self, il, comp: str, sections=None):
+        """the placements behind effects(): (max, min) femotion.frame.influence.LaneLayout per section (sections: one
+        index, a list, or None for all); q = intensity × width × distribution, no point load"""
+        q = self.intensity() * self.width * self.distribution
+        return _per_section(il, sections, lambda k, sense: il.lane_layout(k, comp, q, 0.0, sense, kind="crowd"))
 
 
 def _is_pair(it) -> bool:
