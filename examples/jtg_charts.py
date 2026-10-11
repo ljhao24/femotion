@@ -72,15 +72,7 @@ x = np.array([xs[b + (e == "j")] for b, e in secs])
 k_pier = int(np.argmin(Mmin))
 kL, kR = 2 * (n - 1) + 1, 2 * n
 R_G = abs(G_V[kL] - G_V[kR])
-Fu = np.zeros((sv.m.ndof, len(nodes)))
-for j, nd in enumerate(nodes):
-    Fu[6 * nd + 2, j] = -1.0
-R_line = np.array([(sv.K @ sv.solve(Fu[:, j]))[6 * nodes[n] + 2] for j in range(len(nodes))])
-s_M, eta_M = il.line(k_pier, "My")
-q_lane, P_lane = jtg.lane_load(L)
-neg = np.interp(xs, s_M, eta_M) < 0
-R_Q = (q_lane * float(np.trapezoid(np.where(neg, R_line, 0.0), xs)) + P_lane * R_line[int(np.argmin(eta_M))]) \
-    * live(mu2).factor()
+R_Q = float(live(mu2).layouts(il, "My", k_pier)[1].load_case(il).solve(sv).reactions()[6 * nodes[n] + 2])
 R_d = 1.2 * R_G + 1.4 * R_Q
 a = jtg.spread_length(0.45, (pier_sec.h - pier_sec.zg) / 1e3)
 Mmin_r = jtg.peak_shaving(x, Mmin, L, R_d, a)
