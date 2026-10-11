@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ...viz import Figure, _fmt, _text_box, text_width
+from ...viz import FONT, Figure, _fmt, _text_box, text_width
 from .rc import RCSection, flexure as _flexure, shear as _shear
 
 # classes used besides those of femotion.viz (one <style> per figure; "ch-…" names only tag elements)
@@ -1458,9 +1458,8 @@ class Stack:
             y += H + self.gap
         H = y - self.gap
         return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{_fmt(W)}" height="{_fmt(H)}" '
-                f'viewBox="0 0 {_fmt(W)} {_fmt(H)}" class="fm-root"><style>.fm-root text {{ font-family: '
-                f"'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif; }} .fm-title {{ font-size: 15px; "
-                f'font-weight: 600; }}</style><rect width="100%" height="100%" fill="#ffffff"/>{"".join(body)}</svg>')
+                f'viewBox="0 0 {_fmt(W)} {_fmt(H)}" class="fm-root"><style>:where(.fm-root) text {{ font-family: {FONT}; }} '
+                f'.fm-title {{ font-size: 15px; font-weight: 600; }}</style><rect width="100%" height="100%" fill="#ffffff"/>{"".join(body)}</svg>')
 
     def _repr_svg_(self) -> str:
         return self.svg()

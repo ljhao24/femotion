@@ -17,7 +17,8 @@ itself in Jupyter (_repr_svg_), saves as .svg or .html, and goes into an HTML pa
     chart.polyline(zip(x, M), "demand")          # clipped to the box
 
 Styles are CSS classes (STYLE below); every class name is prefixed with "fm-" in the output so that figures can sit in
-any page. Text uses a font list that covers Chinese.
+any page. The default text style sits in :where() (no specificity), so a text class (fm-small, fm-tick, …) always wins.
+Text uses a font list that covers Chinese.
 """
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ COLORS = {
 }
 C = COLORS
 STYLE = f"""
-.fm-root text {{ font-family: {FONT}; fill: {C['ink']}; }}
+:where(.fm-root) text {{ font-family: {FONT}; fill: {C['ink']}; }}
 .fm-title {{ font-size: 15px; font-weight: 600; }}
 .fm-label {{ font-size: 12px; }}
 .fm-small {{ font-size: 10.5px; fill: {C['muted']}; }}
