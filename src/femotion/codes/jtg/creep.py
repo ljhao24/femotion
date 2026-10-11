@@ -14,6 +14,7 @@ femotion.frame.stages (6.5.6: creep and shrinkage increments of every stage summ
 such assumption and takes the Appendix C concrete from concrete_creep:
 
     cr = concrete_creep(jtg.concrete(50), RH=70, h=300)         # femotion.frame.stages.Creep
+    k = fly_ash_factor(20, t0)                                  # table C.2.4, with a convention outside 7–90 d
     loss = later_losses(Ap, l5, cr, t0=7, Ep=…, alpha_EP=…, sigma_pc=…, rho=…, rho_ps=…)   # tendon force lost after transfer
 
 Units: φ dimensionless, ages in days, h in mm, stresses MPa, Ap mm², forces kN. Clauses: docs/codes/JTG_3362-2018.md.
@@ -60,6 +61,8 @@ def redistribution_phi(creep, t: float, tau: float, tau0: float | None = None) -
     considered. creep: a femotion.frame.stages.Creep (e.g. concrete_creep) or a function φ(t, t0) of ages (d)"""
     f = _phi_fn(creep)
     one = lambda a, b: float(np.asarray(f(np.array([float(a)]), np.array([float(b)])))[0])  # noqa: E731
+    if t < tau:
+        raise ValueError("the age considered (t) comes before the transformation (tau)")
     if tau0 is None:
         return one(t, tau)
     if tau < tau0:
@@ -101,23 +104,31 @@ def _reactions(sv: Solver, U: np.ndarray, F: np.ndarray, sections) -> np.ndarray
 
 
 def system_transformation(sv1: Solver, sv2: Solver, sections, comp: str, phi: float, *, w=None, tendons=None,
-                          g: float = 9.81) -> dict:
+                          g: float = 9.81, with_trusses: bool = False) -> dict:
     """creep redistribution of what was applied before a system transformation, both structures solved by
     femotion.frame: sv1 the earlier structure, sv2 the later one (the same model with the joints made continuous,
     restraints or supports added). Loads: the self-weight of the beams (or w, global load per length (n_beams, 3)), and
     the tendons (femotion.frame.prestress.Tendon) stressed on the earlier structure. sections: (beam, "i" | "j") for comp
     in N, Vy, Vz, T, My, Mz, or (node, dof 0–5) with comp = "R" for support reactions (a support of the later structure
-    only has 0 on the earlier one; supports removed at the transformation are not covered).
+    only has 0 on the earlier one; supports removed at the transformation are not covered). with_trusses: the
+    self-weight of the bars too (lumped at their ends, as femotion.frame.stages does).
+    Valid for several redundants (a whole continuous girder) only while the creep of the later structure is uniform:
+    every concrete member of the same age and creep coefficient, no steel members; otherwise use femotion.frame.stages.
     Returns {"dead": Transfer} (4-12, 4-19) and, with tendons, {"prestress": Transfer} (4-17, 4-18, 4-20)."""
     out = {}
 
     def dead(sv):
-        ef, U = uniform_load_forces(sv, [], None, w=w, g=g, with_trusses=False)
+        ef, U = uniform_load_forces(sv, [], None, w=w, g=g, with_trusses=with_trusses)
         if comp == "R":
             feq = sv.beam_end_forces(U) - ef
             F = np.zeros(sv.m.ndof)
             for e, (i, j, *_) in enumerate(sv.m.beams):
                 F[np.r_[6 * i:6 * i + 6, 6 * j:6 * j + 6]] += sv._beam_cache[e][2].T @ feq[e]
+            if with_trusses and w is None:
+                for (i, j, sec, tag) in sv.m.trusses:
+                    half = sec.mass * np.linalg.norm(sv.m.X[j] - sv.m.X[i]) / 2 * g
+                    F[6 * i + 2] -= half
+                    F[6 * j + 2] -= half
             return _reactions(sv, U, F, sections)
         return section_forces(sv, U, sections, comp, end_forces=ef)
 
@@ -145,30 +156,66 @@ def _rh_beta(c: Concrete, RH: float, method: str) -> float:
     return RH if method == "formula" and c.grade <= 50 else (55.0 if RH < 70 else 80.0)
 
 
+def _c9(alpha: float, t0: np.ndarray) -> np.ndarray:
+    """φ(α, t0) = β(α) γ(α, t0) of the commentary (C-8), (C-9) (p252), α as a fraction; ∞ where the bracket of γ is ≤ 0
+    (very young concrete)"""
+    a = alpha / 100.0
+    den = 1.451 - 1.689 * np.asarray(t0, float) ** -0.360 * (1 + a) ** 0.416
+    gamma = np.where(den > 0, 1.0 / np.sqrt(np.where(den > 0, den, 1.0)), np.inf)
+    return (1 - 1.0273 * a ** 0.4218) * gamma
+
+
+def fly_ash_factor(alpha: float, t0):
+    """φ(α, t0) of table C.2.4: fly-ash content α 10–30 % (by mass), loading age t0 (d), linear between the tabulated
+    values (note 2). A staged analysis needs loading ages outside the table's 7–90 d; there the program takes the
+    larger of the edge value and the commentary's formula (C-8), (C-9) carried on from the edge (edge value × formula(t0)
+    / formula(edge)), and at most 1 (no more creep than without fly ash). Before 7 d that is the formula, which grows as
+    the concrete gets younger; after 90 d the 90-day value, while the formula keeps falling slowly (6 % lower at 365 d,
+    12 % in the limit). The creep is never below either reading: larger losses and long-term deflections (program
+    convention)."""
+    if not 10 <= alpha <= 30:
+        raise ValueError("table C.2.4 covers fly-ash contents of 10–30 %")
+    t0 = np.asarray(t0, float)
+    col = [float(np.interp(alpha, ps._FA_A, row)) for row in ps._FA_TAB]  # across α within each row, as _interp2
+    inside = np.interp(t0, ps._FA_T0, col)  # then along t0; the edge rows outside 7–90 d
+    edge = np.clip(t0, 7.0, 90.0)
+    with np.errstate(invalid="ignore"):
+        carried = inside * _c9(alpha, t0) / _c9(alpha, edge)
+    out = np.where((t0 < 7.0) | (t0 > 90.0), np.minimum(np.maximum(inside, carried), 1.0), inside)
+    return float(out) if out.ndim == 0 else out
+
+
 def concrete_creep(c: Concrete, RH: float, h: float, *, ts: float = 3.0, method: str = "table",
                    fly_ash: float | None = None) -> Creep:
     """the creep coefficient φ(t, t0) (C.2.1-1, C.2.3, C.2.4) and shrinkage εcs(t, t0) (C.1.3) of Appendix C as a
     femotion.frame.stages.Creep: concrete class c, annual mean relative humidity RH (%), notional size h = 2A/u (mm),
-    ts age at the end of curing (3–7 d); method and fly_ash as femotion.codes.jtg.prestress.creep_coefficient. The same
-    values as prestress.creep_coefficient and shrinkage_strain, evaluated on arrays: φ0(t0) once per loading age,
-    βc(t − t0) on the whole array. Shrinkage before ts is not counted (from max(t0, ts))."""
+    ts age at the end of curing (3–7 d); method as femotion.codes.jtg.prestress.creep_coefficient; fly_ash: content α
+    (%) for the correction of C.2.4 through fly_ash_factor (loading ages outside the table included). The same values
+    as prestress.creep_coefficient and shrinkage_strain, evaluated on arrays (φ0 between the rows of table C.2.2, or
+    by the formulas, and βc(t − t0) on the whole array). Shrinkage before ts is not counted (from max(t0, ts))."""
+    if fly_ash is not None:
+        fly_ash_factor(fly_ash, 28.0)  # check the content now
     rh_b = _rh_beta(c, RH, method)
     bH = ps.beta_H(rh_b, h)
     eps0 = ps.nominal_shrinkage(c, RH, method)
-    keys, vals = np.empty(0), np.empty(0)  # φ0(t0) (with the fly-ash factor) of the loading ages seen so far, sorted
+    # φ0(t0) on arrays. Formulas: φRH β(fcm) β(t0), so φ0(28) β(t0)/β(28). Table: linear in t0 between the rows of
+    # table C.2.2 (note 4; the interpolation across h is fixed), beyond 90 d φ0(90) β(t0)/β(90) (C.2.3 note)
+    beta = lambda a: 1.0 / (0.1 + a ** 0.2)  # noqa: E731  β(t0), C.2.1-5
+    formula = method == "formula" and c.grade <= 50
+    if formula:
+        a28 = ps.nominal_creep(c, RH, h, 28.0, method) / beta(28.0)
+    else:
+        rows = np.array(ps._T0_TAB, float)
+        at_rows = np.array([ps.nominal_creep(c, RH, h, a, method) for a in rows])
 
     def phi0(t0):
-        nonlocal keys, vals
-        idx = np.minimum(np.searchsorted(keys, t0), max(len(keys) - 1, 0))
-        hit = keys[idx] == t0 if len(keys) else np.zeros(t0.shape, bool)
-        if not hit.all():
-            new = np.unique(t0[~hit])
-            v = [ps.creep_coefficient(c, RH, h, a + 1.0, a, method, fly_ash) / ps.beta_c(1.0, rh_b, h) for a in new]
-            keys, vals = np.r_[keys, new], np.r_[vals, v]
-            o = np.argsort(keys)
-            keys, vals = keys[o], vals[o]
-            idx = np.searchsorted(keys, t0)
-        return vals[idx]
+        if formula:
+            v = a28 * beta(t0)
+        else:
+            if (t0 < rows[0]).any():
+                raise ValueError("table C.2.2 starts at 3 days")
+            v = np.where(t0 > rows[-1], at_rows[-1] * beta(t0) / beta(rows[-1]), np.interp(t0, rows, at_rows))
+        return v * fly_ash_factor(fly_ash, t0) if fly_ash else v
 
     def phi(t, t0):
         t, t0 = np.broadcast_arrays(np.asarray(t, float), np.asarray(t0, float))
@@ -191,12 +238,13 @@ def concrete_creep(c: Concrete, RH: float, h: float, *, ts: float = 3.0, method:
 
 def later_losses(Ap, l5, creep: Creep, t0: float, *, Ep: float, alpha_EP: float, sigma_pc, rho, rho_ps,
                  fcu_transfer: float | None = None):
-    """the tendon force lost after transfer, as the loss function of femotion.frame.stages: dt (days after stressing at
-    concrete age t0) → (σl5 × r(dt) + σl6(t0 + dt)) Ap / 1000 (kN) per element. σl5: the relaxation loss of 6.2.6 (the
-    final value, MPa) with r the ratio of table C.3.1 (prestress.relaxation_ratio; from 0 at transfer to 0.50 at 2 d
-    linearly, program convention); σl6(t) of 6.2.7 with φ(t, t0) and εcs(t, t0) of `creep` (normally concrete_creep of
-    the girder). Ap (mm²), l5, sigma_pc (MPa), rho, rho_ps: one value or one per element. Post-tensioned tendons
-    (σlII = σl5 + σl6, table 6.2.8)."""
+    """the tendon force lost after transfer, as the loss function of femotion.frame.stages: dt (days after stressing)
+    → (σl5 × r(dt) + σl6(t0 + dt)) Ap / 1000 (kN) per element. t0: age of the concrete when this tendon is stressed and
+    anchored (6.2.7: t0 of φ(t, t0) and εcs(t, t0)), so a tendon stressed later gets its own, later t0. σl5: the
+    relaxation loss of 6.2.6 (the final value, MPa) with r the ratio of table C.3.1 (prestress.relaxation_ratio; from 0
+    at transfer to 0.50 at 2 d linearly, program convention); σl6(t) of 6.2.7 with φ(t, t0) and εcs(t, t0) of `creep`
+    (normally concrete_creep of the girder). Ap (mm²), l5, sigma_pc (MPa), rho, rho_ps: one value or one per element.
+    Post-tensioned tendons (σlII = σl5 + σl6, table 6.2.8)."""
     Ap, l5, spc, rho, rps = (np.asarray(a, float) for a in (Ap, l5, sigma_pc, rho, rho_ps))
 
     def loss(dt):

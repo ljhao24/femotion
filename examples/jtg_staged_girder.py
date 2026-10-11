@@ -5,9 +5,10 @@ One post-tensioned T girder of a three-span deck (3 × 30 m, C50, RH 70 %), buil
     day 60   wet joints over the piers, hogging tendons stressed across them, permanent bearings (one fixed): continuous
     day 90   surfacing and barriers
     … until 10 years after completion, creep and shrinkage of Appendix C, later prestress losses of 6.2.6 and 6.2.7
-→ pier moment and reactions at each stage and how creep changes them (the creep secondary moment), against the closed
-  forms of the commentary to 4.3.8 (4-19, 4-20) → mid-span deflections of each stage, since built and total → pre-camber
-  of 6.5.5 from the staged long-term deflections, against the simplified way of 6.5.3–6.5.5 (ηθ, 2.0).
+→ pier moment and reactions at each stage and how creep changes them (the creep secondary moment) → the closed forms of
+  the commentary to 4.3.8 (4-19, 4-20) taken apart: the same with parallel creep curves and the force Pe throughout,
+  then Appendix C creep, then the losses as they happen → mid-span deflections of each stage, since built, staged and
+  elastic → pre-camber of 6.5.5 from the staged long-term deflections, against the simplified way of 6.5.3–6.5.5.
 
     uv run python examples/jtg_staged_girder.py
 
@@ -23,7 +24,7 @@ from femotion.codes.jtg import creep as jc
 from femotion.codes.jtg import prestress as ps
 from femotion.frame import Model, Section, Solver
 from femotion.frame.prestress import Tendon
-from femotion.frame.stages import Stage, analyse
+from femotion.frame.stages import Stage, analyse, parallel_creep
 
 L, n, RH = 30.0, 30, 70.0  # span (m), elements per span, relative humidity (%)
 girder = jtg.tee(b=200, h=1800, bf=2400, hf=180, bf_bottom=700, hf_bottom=250, concrete="C50")
@@ -56,27 +57,28 @@ s_con = strand.sigma_con_max()
 xi = np.linspace(0, 1, n + 1)
 e_pos = 4 * (girder.h - girder.zg - 150) * 1e-3 * xi * (1 - xi)  # parabola, 150 mm above the bottom at mid-span
 An, zn, In = girder.props("net")
-Ap_pos, Ap_neg = 3 * 9 * 139.0, 2 * 5 * 139.0  # mm²
+Ap_pos, Ap_neg = 2 * 9 * 139.0, 2 * 5 * 139.0  # mm²
 s_pos = s_con * 0.88  # after friction, anchorage set and elastic shortening (first batch), illustrative
 s_neg = s_con * 0.85
 
 
-def losses(Ap, s_i, e_mm, M_g=0.0, As=0.0):
-    """loss function of one tendon: σl5 of 6.2.6 at σpe = s_i, σl6 of 6.2.7 with σpc at the tendon (N, mm)"""
+def losses(Ap, s_i, e_mm, t0, M_g=0.0, As=0.0):
+    """loss function of one tendon stressed at concrete age t0 (d): σl5 of 6.2.6 at σpe = s_i, σl6 of 6.2.7 with σpc at
+    the tendon (N, mm) and φ(t, t0), εcs(t, t0) from that age"""
     l5 = ps.relaxation_loss(strand, s_i)
     s_pc = ps.concrete_stress(s_i * Ap, e_mm, e_mm, An, In, M=M_g)
     rho, rps = ps.steel_ratios(An, In, Ap, abs(e_mm), As, abs(e_mm))
-    return jc.later_losses(Ap, l5, cr, 7.0, Ep=strand.Ep, alpha_EP=aEP, sigma_pc=s_pc, rho=rho, rho_ps=rps,
+    return jc.later_losses(Ap, l5, cr, t0, Ep=strand.Ep, alpha_EP=aEP, sigma_pc=s_pc, rho=rho, rho_ps=rps,
                            fcu_transfer=0.9 * c.fcuk)
 
 
 Mg_mid = sec.mass * 9.81 * L ** 2 / 8 * 1e6  # N·mm, girder weight on the simple span
 td_pos = [Tendon(sp, e_pos, s_pos * Ap_pos / 1e3) for sp in spans]
-loss_pos = losses(Ap_pos, s_pos, e_pos.max() * 1e3, Mg_mid)
+loss_pos = losses(Ap_pos, s_pos, e_pos.max() * 1e3, 7.0, Mg_mid)  # stressed at 7 d
 # hogging tendons: straight, 120 mm below the top, 6 m either side of each joint
 e_neg = -(girder.zg - 120) * 1e-3
 td_neg = [Tendon(spans[s][-6:] + spans[s + 1][:6], np.full((12, 2), e_neg), s_neg * Ap_neg / 1e3) for s in range(2)]
-loss_neg = losses(Ap_neg, s_neg, e_neg * 1e3)
+loss_neg = losses(Ap_neg, s_neg, e_neg * 1e3, 67.0)  # stressed on day 60: girder 67 d old
 
 stages = [
     Stage(0.0, "girders stressed", beams=deck, age=7, tendons=[(t, loss_pos) for t in td_pos]),
@@ -109,8 +111,6 @@ print(f"creep and shrinkage from completion to 10 years: pier moment {dM[0]:+.0f
       f"{res.reactions(k_e)[0, 2] - res.reactions(k_c)[0, 2]:+.0f} kN")
 
 # ── the closed forms of the commentary: what was applied before the joints (girder weight, positive tendons) ──
-pre = analyse(m, [Stage(0.0, beams=deck, age=7, tendons=[(t, loss_pos) for t in td_pos]),
-                  Stage(60.0, links=[0, 1], release={p2: (1, 0, 0, 0, 0, 0) for _, p2 in piers})], creep=cr, t_end=t_end)
 m1 = copy.deepcopy(m)
 m1.links = []
 m2 = copy.deepcopy(m)
@@ -118,14 +118,30 @@ for _, p2 in piers:
     m2.fixed[p2][0] = False
 phi = jc.redistribution_phi(cr, t_end + 7, 67, 7)  # loaded at 7 d, made continuous at 67 d (4-19, 4-20)
 Pe = td_pos[0].force - loss_pos(t_end)[()]
-tr = jc.system_transformation(Solver(m1), Solver(m2), pier, "My", phi,
-                              tendons=[Tendon(sp, e_pos, Pe) for sp in spans])
-M_step = pre.section_forces(pre.index(t_end), pier, "My")[0]
-M_cf = tr["dead"].final[0] + tr["prestress"].final[0]
-print(f"\nwhat was on the girders before the joints, pier moment at 10 years (φ(t,τ0) − φ(τ,τ0) = {phi:.2f}):")
-print(f"  step by step (Appendix C) {M_step:.0f} kN·m;  closed forms 4-19 + 4-20 (Dischinger) {M_cf:.0f} kN·m "
-      f"(weight {tr['dead'].final[0]:.0f}, prestress {tr['prestress'].final[0]:.0f}); were the loads applied on the "
-      f"continuous girder: {tr['dead'].second[0] + tr['prestress'].second[0]:.0f}")
+tr = jc.system_transformation(Solver(m1), Solver(m2), pier, "My", phi, tendons=[Tendon(sp, e_pos, Pe) for sp in spans])
+joint = Stage(60.0, links=[0, 1], release={p2: (1, 0, 0, 0, 0, 0) for _, p2 in piers})
+parallel = parallel_creep(lambda t: cr.phi(t, np.full(np.shape(t), 7.0)))  # the curve of the girders, loaded at 7 d
+
+
+def before_joints(creep, weight=True, tendons=()):
+    r = analyse(m, [Stage(0.0, beams=deck, age=7, self_weight=weight, tendons=tendons), joint], creep=creep, t_end=t_end)
+    return r.section_forces(r.index(t_end), pier, "My")[0]
+
+
+const = [Tendon(sp, e_pos, Pe) for sp in spans]  # the force after all losses from the start, as 4-20 takes it
+with_losses = [(t, loss_pos) for t in td_pos]
+print(f"\nwhat was on the girders before the joints, pier moment at 10 years (φ(t,τ0) − φ(τ,τ0) = {phi:.2f}), kN·m:")
+print(f"  {'':<44}{'weight':>8}{'prestress':>10}{'total':>8}")
+print(f"  {'closed forms 4-19, 4-20 (Dischinger)':<44}{tr['dead'].final[0]:8.0f}{tr['prestress'].final[0]:10.0f}"
+      f"{tr['dead'].final[0] + tr['prestress'].final[0]:8.0f}")
+for name, creep_, tds in [("step by step, parallel curves, Pe throughout", parallel, const),
+                          ("step by step, Appendix C, Pe throughout", cr, const),
+                          ("step by step, Appendix C, losses in time", cr, with_losses)]:
+    g_ = before_joints(creep_)
+    p_ = before_joints(creep_, weight=False, tendons=tds)
+    print(f"  {name:<44}{g_:8.0f}{p_:10.0f}{g_ + p_:8.0f}")
+print(f"  {'the same loads on the continuous girder':<44}{tr['dead'].second[0]:8.0f}"
+      f"{tr['prestress'].second[0]:10.0f}{tr['dead'].second[0] + tr['prestress'].second[0]:8.0f}")
 
 # ── deflections (upward +, mm) and pre-camber ──
 print(f"\n{'mid-span deflection (mm, up +)':<34}{'span 1':>8}{'span 2':>8}{'elastic: span 1':>17}{'span 2':>8}")

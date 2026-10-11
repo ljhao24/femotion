@@ -1,7 +1,9 @@
 """Construction stages and creep (femotion.frame.stages, femotion.codes.jtg.creep), JTG 3362-2018 4.3.8, 4.3.9, 6.5.6,
 Appendix C. Every check names its independent source: closed-form creep solutions (Dischinger's rate-of-creep method,
-which is what the commentary formulas 4-8…4-20 are), the theorems of linear creep, the age-adjusted effective modulus
-method of Trost and Bažant, the commentary's own tables of 10-year values, plain statics and femotion.frame.thermal."""
+which is what the commentary formulas 4-8…4-20 are), Volterra integral equations of statically indeterminate structures
+solved here with their own discretisation and Appendix C written out anew (non-parallel creep), the theorems of linear
+creep, the age-adjusted effective modulus method of Trost and Bažant (as a comparison), the commentary's tables of
+10-year values and its fly-ash formula, plain statics and femotion.frame.thermal."""
 import copy
 import math
 
@@ -270,7 +272,7 @@ def test_restrained_shrinkage_and_relaxation_vs_aaem():
     - suddenly imposed strain (relaxation): N(t)/N0 = 1 − φ/(1 + χφ); the step-by-step value is 5.9 % above it (the χ
       that fits is 0.84; over other ages, sizes and durations 0.75–0.93, around the 0.8 of the literature);
     - shrinkage: N = EA εcs / (1 + χφ). AAEM with 0.8 is 15 % low: shrinkage of a 300 mm member develops much more
-      slowly than its creep (βs half-time 350 (h/h0)² ≈ 3150 d against βH ≈ 916 d), so the restraint force arises late
+      slowly than its creep (βs reaches 0.5 after about 1050 d, βc after about 101 d), so the restraint force arises late
       and creeps as if loaded older; the χ that fits this history is ≈ 0.58 (χ = 0.8 was set for relaxation-type
       histories). Both lie between the elastic solution EA εcs and the effective-modulus one EA εcs / (1 + φ)."""
     sec = Section(E=C50.Ec * 1e3, A=1.0, Iy=0.1, Iz=0.1, J=0.1)
@@ -423,3 +425,191 @@ def test_unstable_and_misuse():
     res = analyse(m, [Stage(0.0, beams=deck)], t_end=10)
     with pytest.raises(ValueError):
         res.index(3.3333)
+
+
+# ── independent Volterra solutions (no femotion code): non-parallel creep on statically indeterminate structures ──
+# Appendix C written out from C.1.1 and C.2.1 for C40 (fcm = 0.8 · 40 + 8 = 40 MPa), RH 70 %, h = 300 mm, ts = 3 d
+_FCM, _RH, _H, _TS = 40.0, 70.0, 300.0, 3.0
+_PHI_RH = 1 + (1 - _RH / 100) / (0.46 * (_H / 100) ** (1 / 3))
+_B_FCM = 5.3 / math.sqrt(_FCM / 10)
+_B_H = min(150 * (1 + (1.2 * _RH / 100) ** 18) * _H / 100 + 250, 1500)
+_EPS0 = (160 + 10 * 5.0 * (9 - _FCM / 10)) * 1e-6 * 1.55 * (1 - (_RH / 100) ** 3)
+
+
+def _phi_c40(t, s):
+    t, s = np.broadcast_arrays(np.asarray(t, float), np.asarray(s, float))
+    d = np.maximum(t - s, 0.0)
+    return _PHI_RH * _B_FCM / (0.1 + s ** 0.2) * (d / (_B_H + d)) ** 0.3
+
+
+def _eps_c40(t, t0):
+    bs = lambda d: np.sqrt(d / (350 * (_H / 100) ** 2 + d))  # noqa: E731
+    return _EPS0 * (bs(t - _TS) - bs(t0 - _TS))
+
+
+_XG, _WG = np.polynomial.legendre.leggauss(12)
+_XG, _WG = (_XG + 1) / 2, _WG / 2
+
+
+def _volterra(K, f, starts, t_end, jumps=(), per_decade=80, first=1e-4):
+    """y(t) from Σ ΔYj K(t, tj) + ∫ K(t, s) dy(s) = f(t), with the jumps ΔYj at tj and y continuous and piecewise
+    linear in t on a grid geometric after every start; each segment's integral by 12-point Gauss–Legendre, the last one
+    with s = t − h u^(10/3) against the (t − s)^0.3 of the kernel; solved node by node (a different discretisation from
+    the step-by-step method of femotion.frame.stages, which takes the stress linear in log time and its own quadratures)"""
+    r = 10 ** (1 / per_decade)
+    g = set()
+    marks = sorted(starts) + [t_end]
+    for a, b in zip(marks[:-1], marks[1:]):
+        d = first * r ** np.arange(int(np.log(max((b - a) / first, 1)) / np.log(r)) + 2)
+        g |= set((a + d[d < b - a]).tolist()) | {a, b}
+    g = np.array(sorted(g))
+    sl = np.zeros(len(g))
+    p = 10 / 3
+    for k in range(1, len(g)):
+        t, a, b = g[k], g[:k], g[1:k + 1]
+        h = b - a
+        Ik = (K(t, a[:, None] + h[:, None] * _XG[None, :]) * _WG).sum(axis=1) * h
+        Ik[-1] = (K(t, t - h[-1] * _XG ** p) * p * _XG ** (p - 1) * _WG).sum() * h[-1]
+        rhs = f(t) - sum(dy * float(K(t, tj)) for tj, dy in jumps if tj <= t)
+        sl[k] = (rhs - (sl[1:k] * Ik[:-1]).sum()) / Ik[-1]
+    yc = np.r_[0.0, np.cumsum(sl[1:] * np.diff(g))]
+    return lambda t: float(np.interp(t, g, yc)) + sum(dy for tj, dy in jumps if tj <= t)
+
+
+_CR40 = jc.concrete_creep(jtg.concrete(40), 70, 300, method="formula", ts=3)
+
+
+def test_volterra_two_spans_of_different_ages():
+    """two-span continuous girder 20 + 30 m, span 1 cast 53 days before span 2 (ages 60 d and 7 d when loaded by the
+    weight on the continuous girder), 10 kN/m more on span 2 at day 100. Reference: the pier moment X from compatibility
+    at the pier, ∫ Σ δi [1 + φi(t, s)] dX(s) = −Σ Δi [1 + φi(t, tload)], δi = Li/3EI, Δi = w Li³/24EI, solved by
+    _volterra. Non-parallel (Appendix C) creep, non-uniform ages, a later load: within 2 × 10⁻⁵"""
+    L1, L2, w, q = 20.0, 30.0, 2.6 * 9.81, 10.0
+    d1, d2 = L1 / 3, L2 / 3
+    K = lambda t, s: d1 * (1 + _phi_c40(t + 60, s + 60)) + d2 * (1 + _phi_c40(t + 7, s + 7))  # noqa: E731
+    D1, D2, D2q = w * L1 ** 3 / 24, w * L2 ** 3 / 24, q * L2 ** 3 / 24
+    f = lambda t: -(D1 * (1 + _phi_c40(t + 60, 60.0)) + D2 * (1 + _phi_c40(t + 7, 7.0))  # noqa: E731
+                    + (D2q * (1 + _phi_c40(t + 7, 107.0)) if t >= 100 else 0.0))
+    X = _volterra(K, f, [0.0, 100.0], 3650.0, jumps=[(0.0, -(D1 + D2) / (d1 + d2)), (100.0, -D2q / (d1 + d2))])
+    sec = Section(E=jtg.concrete(40).Ec * 1e3, A=1.0, Iy=0.3, Iz=1.0, J=0.5)
+    m = Model()
+    xs = np.r_[np.linspace(0, L1, 21), np.linspace(L1, L1 + L2, 31)[1:]]
+    nodes = [m.node((x, 0, 0)) for x in xs]
+    deck = [m.beam(a, b, sec) for a, b in zip(nodes[:-1], nodes[1:])]
+    m.fix(nodes[0], (1, 1, 1, 1, 0, 0))
+    m.fix(nodes[20], (0, 1, 1, 1, 0, 0))
+    m.fix(nodes[-1], (0, 1, 1, 1, 0, 0))
+    st = [Stage(0.0, beams=deck[:20], age=60, self_weight=False),
+          Stage(0.0, beams=deck[20:], age=7, self_weight=False, w={b: (0, 0, -w) for b in deck}),
+          Stage(100.0, w={b: (0, 0, -q) for b in deck[20:]})]
+    res = analyse(m, st, creep=Creep(_CR40.phi), t_end=3650, times=(10.0, 1000.0), first=1e-4, per_decade=16)
+    for k, t in [(res.after(1), 0.0), (res.index(10), 10.0), (res.index(100, before=True), 99.999999),
+                 (res.after(2), 100.0), (res.index(1000), 1000.0), (res.index(3650), 3650.0)]:
+        assert res.section_forces(k, [(deck[19], "j")], "My")[0] == pytest.approx(X(t), rel=2e-5), t
+
+
+def test_volterra_transformation_with_appendix_c_creep():
+    """two 20 m precast spans loaded at 28 d, made continuous at 60 d, Appendix C (non-parallel) creep: the pier moment
+    is x(t) M2g with ∫ [1 + φ(t, s)] dx(s) = φ(t, 28) − φ(60, 28) from 60 d on (compatibility at the joint; the closed
+    form 4-19 would take φ(t, s) parallel). Reference _volterra; step-by-step within 3 × 10⁻⁵ of M2g; 4-19 is 35 %
+    high on the redistributed moment here"""
+    m, deck, piers = _girder((20.0, 20.0), sec=Section(E=jtg.concrete(40).Ec * 1e3, A=1.0, Iy=0.3, Iz=1.0, J=0.5, mass=2.6))
+    M2 = uniform_load_forces(Solver(m), [(deck[19], "j")], "My")[0]
+    x = _volterra(lambda t, s: 1 + _phi_c40(t, s), lambda t: float(_phi_c40(t, 28.0) - _phi_c40(60.0, 28.0)), [60.0], 3678.0)
+    res = analyse(m, [Stage(0.0, beams=deck, age=28), Stage(32.0, links=[0])], creep=Creep(_CR40.phi), t_end=3650,
+                  times=(42.0, 132.0, 1032.0), per_decade=16)
+    for t in (42.0, 132.0, 1032.0, 3650.0):
+        assert abs(res.section_forces(res.index(t), [(deck[19], "j")], "My")[0] - x(t + 28) * M2) < 3e-5 * abs(M2), t
+    dischinger = 1 - math.exp(-float(_phi_c40(3678.0, 28.0) - _phi_c40(60.0, 28.0)))
+    assert dischinger / x(3678.0) - 1 == pytest.approx(0.35, abs=0.02)
+
+
+def test_volterra_restrained_bar():
+    """bar fixed at both ends from age 28 d (C40, Appendix C): relaxation of an imposed strain N(t)/N0 and restraint of
+    shrinkage N/(EA εcs), against _volterra of ∫ [1 + φ(t, s)] dy(s) = f(t); within 2 × 10⁻⁵ (default steps 7 × 10⁻⁵)"""
+    sec = Section(E=jtg.concrete(40).Ec * 1e3, A=1.0, Iy=0.1, Iz=0.1, J=0.1)
+    m = Model()
+    a, b = m.node((0, 0, 0)), m.node((10, 0, 0))
+    e = m.beam(a, b, sec)
+    m.fix(a)
+    m.fix(b)
+    K = lambda t, s: 1 + _phi_c40(t, s)  # noqa: E731
+    yr = _volterra(K, lambda t: 1.0, [28.0], 3678.0, jumps=[(28.0, 1.0)])
+    ys = _volterra(K, lambda t: float(_eps_c40(t, 28.0)), [28.0], 3678.0)
+    for pd, tol in ((8, 7e-5), (32, 2e-5)):
+        r1 = analyse(m, [Stage(0.0, beams=[e], age=28, strain={e: 1e-4})], creep=Creep(_CR40.phi), t_end=3650,
+                     times=(100.0,), per_decade=pd)
+        n0 = r1.section_forces(r1.after(0), [(e, "i")], "N")[0]
+        for t in (100.0, 3650.0):
+            assert abs(r1.section_forces(r1.index(t), [(e, "i")], "N")[0] / n0 - yr(t + 28)) < tol, (pd, t)
+        r2 = analyse(m, [Stage(0.0, beams=[e], age=28)], creep=_CR40, t_end=3650, per_decade=pd)
+        eps = float(_eps_c40(3678.0, 28.0))
+        assert r2.section_forces(r2.index(3650), [(e, "i")], "N")[0] / (sec.E * eps) == pytest.approx(ys(3678.0) / eps, abs=tol)
+
+
+def test_fly_ash_outside_table_c24():
+    """table C.2.4 inside 7–90 d (as prestress.creep_coefficient); the commentary's (C-8), (C-9) (α as a fraction)
+    reproduce the table within 0.005; outside, the larger of the edge value and (C-9) carried on from the edge, at most
+    1: before 7 d the formula, after 90 d the 90-day value. A staged analysis with fly ash runs to 10 years"""
+    tab = {(7, 20): 0.65, (28, 20): 0.50, (90, 10): 0.58, (60, 30): 0.38, (14, 10): 0.70}
+    for (t0, a), v in tab.items():
+        assert jc.fly_ash_factor(a, t0) == pytest.approx(v)
+        assert float(jc._c9(a, np.array(float(t0)))) == pytest.approx(v, abs=0.005)
+    c = jtg.concrete(40)
+    assert jc.fly_ash_factor(20, 40) == pytest.approx(ps.creep_coefficient(c, 75, 250, 400, 40, fly_ash=20)
+                                                      / ps.creep_coefficient(c, 75, 250, 400, 40), rel=1e-12)
+    assert jc.fly_ash_factor(20, 365) == pytest.approx(0.46)  # the 90-day value; (C-9) carried on: 0.432
+    c9 = lambda t0: float(jc._c9(20, np.array(t0)))  # noqa: E731
+    assert jc.fly_ash_factor(20, 5) == pytest.approx(0.65 * c9(5.0) / c9(7.0))
+    assert jc.fly_ash_factor(10, 3) == 1.0  # (C-9) carried on exceeds 1
+    with pytest.raises(ValueError):
+        jc.fly_ash_factor(5, 28)
+    cr = jc.concrete_creep(c, 75, 250, fly_ash=20)
+    assert _phi1(cr, 3650, 40) == pytest.approx(ps.creep_coefficient(c, 75, 250, 3650, 40, fly_ash=20), rel=1e-12)
+    m, deck, _ = _girder((20.0,))
+    res = analyse(m, [Stage(0.0, beams=deck, age=14)], creep=cr, t_end=3650, per_decade=4)
+    k0, k = res.after(0), res.index(3650)
+    assert res.displacements(k)[10, 2] == pytest.approx(res.displacements(k0)[10, 2] * (1 + _phi1(cr, 3664, 14)), rel=1e-10)
+
+
+def test_inheritance_on_supports_and_closures():
+    """total displacement of new nodes: nothing on a support, linear between two ends, the same whatever the numbering.
+    A 9 m cantilever, then a 2 m segment (two elements) to an abutment: the abutment node inherits 0, the middle node
+    half of the tangent; a closure of two elements between two equal cantilevers built in either element order: the
+    middle node inherits the average of the two tangents, both drooping towards the gap: w + θ·1"""
+    q, EI = 2.6 * 9.81, SEC.E * SEC.Iy
+    m = Model()
+    nodes = [m.node((x, 0, 0)) for x in np.linspace(0, 11, 12)]
+    deck = [m.beam(a, b, SEC) for a, b in zip(nodes[:-1], nodes[1:])]
+    m.fix(nodes[0])
+    res = analyse(m, [Stage(0.0, beams=deck[:9]), Stage(5.0, beams=deck[9:], fix={nodes[11]: (0, 1, 1, 1, 0, 0)})])
+    w9, th9 = -q * 9 ** 4 / (8 * EI), -q * 9 ** 3 / (6 * EI)
+    U0 = res.U0.reshape(-1, 6)
+    assert U0[11, 2] == 0.0 and res.displacements(res.after(1), total=True)[11, 2] == 0.0
+    assert U0[10, 2] == pytest.approx((w9 + th9 * 1) / 2, rel=1e-9)
+    for order in (1, -1):
+        m = Model()
+        left = [m.node((x, 0, 0)) for x in np.linspace(0, 10, 11)]
+        right = [m.node((x, 0, 0)) for x in np.linspace(22, 12, 11)]
+        mid = m.node((11, 0, 0))
+        bl = [m.beam(a, b, SEC) for a, b in zip(left[:-1], left[1:])]
+        br = [m.beam(a, b, SEC) for a, b in zip(right[:-1], right[1:])]
+        m.fix(left[0])
+        m.fix(right[0])
+        pair = [(left[-1], mid), (right[-1], mid)][::order]
+        cl = [m.beam(a, b, SEC) for a, b in pair]
+        res = analyse(m, [Stage(0.0, beams=bl + br), Stage(5.0, beams=cl, self_weight=False)])
+        w10, th10 = -q * 10 ** 4 / (8 * EI), -q * 10 ** 3 / (6 * EI)
+        assert res.U0[6 * mid + 2] == pytest.approx(w10 + th10, rel=1e-9)
+        assert res.U0[6 * mid + 4] == pytest.approx(0.0, abs=1e-15)
+
+
+def test_input_checks():
+    m, deck, nodes = _continuous((20.0,), n=4)
+    extra = m.node((30, 0, 0))
+    F = np.zeros(m.ndof)
+    F[6 * extra + 2] = -10.0
+    with pytest.raises(ValueError):
+        analyse(m, [Stage(0.0, beams=deck, F=F)])
+    with pytest.raises(ValueError):
+        jc.redistribution_phi(CR, 50, 60, 28)
