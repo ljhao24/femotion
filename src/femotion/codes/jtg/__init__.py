@@ -30,6 +30,8 @@
                  cantilevers with the D60 vehicle), punching of slabs and footings, slab detailing
     transverse   JTG 3362-2018 table 6.1.3: box girders across the bridge as closed frames (wheels, transverse tendons,
                  temperature), shear flow of single cells, in-plane principal stresses, transverse stress checks
+    devices      JTG 3362-2018 8.6–8.8, 9.7, 9.8: concrete hinges, laminated elastomeric bearings (incl. PTFE sliding),
+                 movements at bearings and joints, expansion joints, lifting loops; braking force of D60 4.3.5 in actions
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
 
@@ -77,3 +79,8 @@ from .stm import StrutTie, strut_width  # noqa: F401
 from .temperature import (EFFECTIVE_TEMPERATURE, EXPANSION, NEGATIVE_GRADIENT, Profile, ThermalStresses,  # noqa: F401
                           effective_temperature, temperature_gradient, thermal_stresses)
 from .torsion import torsion, torsion_flange, torsion_moduli  # noqa: F401
+from . import devices  # noqa: F401
+from .actions import braking_force  # noqa: F401
+from .devices import (Laminated, Movements, expansion_joint, hinge_compression, hinge_contact_width,  # noqa: F401
+                      hinge_transverse, installation_width, laminated_bearing, laminated_sliding, movements,
+                      ptfe_sliding)
