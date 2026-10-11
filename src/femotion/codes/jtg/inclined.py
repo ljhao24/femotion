@@ -58,18 +58,21 @@ def _zone_rows(v):
 
 
 def _span_data(x, V, M, a, b, tol):
-    """(x, |V|, M) of the data points within [a, b]; at a duplicated position (both sides of a support) the side
-    belonging to this span is kept"""
+    """(x, |V|, M, duplicates) of the data points within [a, b]; at a duplicated position the side belonging to this
+    span is kept at its ends (both sides of a support); inside the span the left value is kept and its position is
+    returned in `duplicates` (a jump inside a span, e.g. under a point load: split the data there for both sides)"""
     idx = [k for k in range(len(x)) if a - tol <= x[k] <= b + tol]
-    keep = []
+    keep, dup = [], []
     for k in idx:
         if keep and abs(x[k] - x[keep[-1]]) <= tol:
             if abs(x[k] - a) <= tol:  # at the left end of the span keep the last (right side of the support)
                 keep[-1] = k
-            continue  # elsewhere (the right end) keep the first (left side)
+            elif abs(x[k] - b) > tol:
+                dup.append(float(x[k]))
+            continue  # elsewhere the first (left side)
         keep.append(k)
     k = np.array(keep, int)
-    return x[k], np.abs(V[k]), M[k]
+    return x[k], np.abs(V[k]), M[k], dup
 
 
 # ── results ─────────────────────────────────────────────────────────────────
@@ -102,7 +105,11 @@ class InclinedSection:
 
 @dataclass
 class ShearSearch:
+    """the inclined sections checked (`sections`), the section limit of 5.2.11 at the end supports (`limits`), the
+    stirrup rule of 9.3.12 item 3 near the supports (`warnings`, detailing: does not change `ok`) and notes"""
     sections: list = field(default_factory=list)
+    limits: list = field(default_factory=list)
+    warnings: list = field(default_factory=list)
     notes: list = field(default_factory=list)
 
     @property
@@ -112,41 +119,50 @@ class ShearSearch:
 
     @property
     def ok(self) -> bool:
-        return all(s.ok for s in self.sections)
+        return all(s.ok for s in self.sections) and all(c.ok for c in self.limits)
 
     def at(self, source: str) -> list:
         """the inclined sections built from the 5.2.8 positions whose label contains `source`"""
         return [s for s in self.sections if source in s.source]
 
     def __str__(self):
-        listed = [s for s in self.sections if s.source != "grid"]
-        lines = [str(s) for s in listed]
+        lines = [str(s) for s in self.sections if s.source != "grid"]
+        lines += [str(c) for c in self.limits]
         lines.append(f"governing of {len(self.sections)}: {self.governing}")
+        lines += [f"warning: {w}" for w in self.warnings]
         return "\n".join(lines)
 
 
 # ── the search ──────────────────────────────────────────────────────────────
 def shear_search(x, Vd, Md, section, stirrups, *, gamma0: float = 1.0, supports=(), bent=(), positions=(),
-                 alpha1="auto", stirrup_steel: str | Rebar | None = None, grid: bool = True,
-                 shear_kw=None) -> ShearSearch:
+                 alpha1="auto", stirrup_steel: str | Rebar | None = None, grid: bool = True, shear_kw=None,
+                 support_limit: bool = True) -> ShearSearch:
     """checks inclined sections along a beam (5.2.8–5.2.11) and finds the governing one.
     x, Vd, Md: positions (m, non-decreasing; a position may appear twice at a support, the two sides of the shear jump),
     the design shear (kN, the sign is not used) and the moment that goes with it (kN·m, sagging +; the moment envelope of
     the sign that governs there is the usual stand-in), without γ0.
-    section: an RCSection, a callable of x, or rows (x0, x1, RCSection). stirrups: (legs, diameter, spacing) or rows
-    (x0, x1, (legs, diameter, spacing)).
+    section: an RCSection, a callable of x, or rows (x0, x1, RCSection). stirrups: (legs, diameter, spacing), a callable
+    of x, or rows (x0, x1, (legs, diameter, spacing)).
     supports: (x, "end") for end supports (5.2.8 item 1: the tension end h/2 from the support centre; the region within
     h/2 is not searched); (x, "interior"[, diaphragm width m]) for interior supports (item 2: the compression end at the
-    edge of the diaphragm, default at the support). The beam between supports is searched span by span.
+    edge of the diaphragm, default at the support); (x, "free") for the tip of a cantilever. The beam between supports
+    is searched span by span.
+    support_limit: also the section limit of 5.2.11 at each end support, with the shear there (V0d) and b, h0 of the
+    support section (`limits`; the inclined sections start at h/2 and do not reach it).
     bent: rows (x at the bottom bend, x at the top bend, area mm², angle °) of bent-up bars; one counts when the crack,
     drawn straight between the steel levels from x_t to x_c, crosses it with the opposite inclination (5.2.9-3).
     positions: further 5.2.8 positions as (x, "tension" or "compression"[, label]) (e.g. where bars anchored in the
     tension zone stop being needed). Stirrup and section zone boundaries and the bend points of `bent` are added as
-    tension ends. grid: every data point inside the spans is also tried as a compression end.
-    alpha1: "auto" (0.9 where Md at the compression end is hogging, else 1.0, 5.2.9), a number or a callable of x.
+    tension ends (the top bends beyond 5.2.8). grid: every data point inside the spans is also tried as a compression
+    end.
+    alpha1: "auto" by the segment (5.2.9): 0.9 for compression ends in the half of a span next to an interior support
+    and on a cantilever arm (between a support and a "free" tip), 1.0 elsewhere (the halves of figure 5.2.13a, b); a
+    number or a callable of x.
     shear_kw: a dict of further arguments of jtg.shear (pc_class, alpha3, alpha2, vertical, bent_tendons, …), or a
     callable of x returning one. The stirrup ratio is the mean Asv/sv over the projection (the stirrups the crack
-    crosses) divided by b at x_c; the 9.3.12 rules take the stirrups at x_c."""
+    crosses; a callable is averaged over 40 points) divided by b at x_c; the 9.3.12 rules take the stirrups at x_c.
+    9.3.12 item 3 (within one beam depth of a support centre the stirrup spacing should not exceed 100 mm) goes to
+    `warnings`."""
     x = np.asarray(x, float)
     V = np.asarray(Vd, float)
     M = np.asarray(Md, float)
@@ -157,19 +173,22 @@ def shear_search(x, Vd, Md, section, stirrups, *, gamma0: float = 1.0, supports=
                      and all(isinstance(e, (int, float)) for e in v))
     kw_at = shear_kw if callable(shear_kw) else (lambda _x: dict(shear_kw or {}))
     a1_at = alpha1 if callable(alpha1) else None
+    if not (a1_at or alpha1 == "auto"):
+        alpha1 = float(alpha1)
     tol = 1e-9 * max(1.0, float(x[-1] - x[0]))
     sup = sorted([(float(s[0]), str(s[1]), float(s[2]) if len(s) > 2 else 0.0) for s in supports])
     for s in sup:
-        if s[1] not in ("end", "interior"):
-            raise ValueError("supports: (x, 'end') or (x, 'interior'[, diaphragm width])")
+        if s[1] not in ("end", "interior", "free"):
+            raise ValueError("supports: (x, 'end'), (x, 'interior'[, diaphragm width]) or (x, 'free')")
     bounds = sorted({float(x[0]), float(x[-1])} | {s[0] for s in sup if x[0] - tol <= s[0] <= x[-1] + tol})
     res = ShearSearch()
     sst = None if stirrup_steel is None else (stirrup_steel if isinstance(stirrup_steel, Rebar) else _rebar(stirrup_steel))
+    sec_rows = _zone_rows(sec_at)
 
     # tension-end positions common to all spans
     t_pos = [(float(p[0]), p[2] if len(p) > 2 else f"{p[1]} end x = {p[0]:g}") for p in positions if p[1] == "tension"]
     c_pos = [(float(p[0]), p[2] if len(p) > 2 else f"{p[1]} end x = {p[0]:g}") for p in positions if p[1] == "compression"]
-    for rows, what in ((_zone_rows(stir_at), "stirrup change"), (_zone_rows(sec_at), "section change")):
+    for rows, what in ((_zone_rows(stir_at), "stirrup change"), (sec_rows, "section change")):
         for r in (rows or [])[:-1]:
             t_pos.append((r[1], f"{what} x = {r[1]:g}"))
     for xb_, xt_, A, th in bent:
@@ -183,14 +202,35 @@ def shear_search(x, Vd, Md, section, stirrups, *, gamma0: float = 1.0, supports=
             uniq.append(p)
     t_pos = uniq
 
+    def q_of(st):
+        n_, d_, s_ = st
+        return n_ * math.pi * d_ * d_ / 4 / s_
+
+    # 9.3.12 item 3: stirrup spacing within one beam depth of a support centre
+    for s in sup:
+        if s[1] == "free" or not (x[0] - tol <= s[0] <= x[-1] + tol):
+            continue
+        h_s = sec_at(s[0]).h / 1e3
+        us = [u for u in np.r_[np.linspace(s[0] - h_s, s[0], 21), np.linspace(s[0], s[0] + h_s, 21)]
+              if x[0] - tol <= u <= x[-1] + tol]
+        worst = max(stir_at(u)[2] for u in us)
+        if worst > 100 + 1e-9:
+            res.warnings.append(f"stirrups at {worst:g} mm within one beam depth ({h_s:.2f} m) of the support at x = "
+                                f"{s[0]:g}: at most 100 mm there (9.3.12 item 3)")
+
     for a, b in zip(bounds[:-1], bounds[1:]):
         if b - a <= tol:
             continue
-        xs, Vs, Ms = _span_data(x, V, M, a, b, tol)
+        xs, Vs, Ms, dup = _span_data(x, V, M, a, b, tol)
+        if dup:
+            res.notes.append(f"positions given twice inside the span {a:g}–{b:g} m ({', '.join(f'{d:g}' for d in dup)}): "
+                             "the first value is used (split the data there to keep both sides of a jump)")
         if len(xs) < 2:
             continue
         Vf = lambda u: float(np.interp(u, xs, Vs))  # noqa: E731
         Mf = lambda u: float(np.interp(u, xs, Ms))  # noqa: E731
+        m_tol = 1e-9 * max(1.0, float(np.abs(Ms).max()))
+        hog_at = lambda u: Mf(u) < -m_tol  # noqa: E731  (round-off at a zero moment is not hogging)
         delta = 1e-4 * (b - a)
 
         def offset(xs_):
@@ -198,7 +238,9 @@ def shear_search(x, Vd, Md, section, stirrups, *, gamma0: float = 1.0, supports=
                 if abs(s[0] - xs_) <= tol:
                     if s[1] == "end":
                         return sec_at(xs_).h / 2e3, ("end", s[0], 0.0)
-                    return s[2] / 2, ("interior", s[0], s[2])
+                    if s[1] == "interior":
+                        return s[2] / 2, ("interior", s[0], s[2])
+                    return 0.0, ("free", s[0], 0.0)
             return 0.0, (None, None, 0.0)
 
         off_a, kind_a = offset(a)
@@ -207,6 +249,30 @@ def shear_search(x, Vd, Md, section, stirrups, *, gamma0: float = 1.0, supports=
         if hi <= lo:
             continue
 
+        def a1_auto(u, ka=kind_a[0], kb=kind_b[0], mid=(a + b) / 2):
+            """5.2.9: 0.9 near interior supports (the half span next to one; a cantilever arm), else 1.0"""
+            if "free" in (ka, kb) and ({ka, kb} & {"end", "interior"}):
+                return 0.9
+            if (ka == "interior" and u <= mid + 1e-9) or (kb == "interior" and u >= mid - 1e-9):
+                return 0.9
+            return 1.0
+
+        # 5.2.11 at an end support: the shear there (V0d), b and h0 of the support section
+        if support_limit:
+            for xs_, kind in ((a, kind_a), (b, kind_b)):
+                if kind[0] != "end":
+                    continue
+                s0 = sec_at(xs_)
+                hog = hog_at(xs_)
+                sb = s0.flipped() if hog else s0
+                bw, h0 = sb.web(), sb.h0(external=False)
+                V0 = Vf(xs_)
+                lim = 0.51e-3 * math.sqrt(s0.concrete.fcuk) * bw * h0
+                res.limits.append(Check(f"section limit at the end support x = {xs_:g}", gamma0 * V0, lim, "kN",
+                                        "JTG 3362-2018 5.2.11", {"b": bw, "h0": h0, "V0d": V0},
+                                        ["the shear at the support centre (V0d), b and h0 of the support section "
+                                         "(program convention, the near-end-support segment of 5.2.11)"]))
+
         def slope(u):
             """sign of d|M|/dx at u (the crack runs towards the larger moment)"""
             u0, u1 = max(u - delta, a), min(u + delta, b)
@@ -214,7 +280,7 @@ def shear_search(x, Vd, Md, section, stirrups, *, gamma0: float = 1.0, supports=
             return 0 if abs(d) <= 1e-12 * max(1.0, abs(Mf(u))) else (1 if d > 0 else -1)
 
         def C_of(u):
-            hog = Mf(u) < 0
+            hog = hog_at(u)
             s = sec_at(u)
             s = s.flipped() if hog else s
             h0 = s.h0(external=False) / 1e3
@@ -224,34 +290,34 @@ def shear_search(x, Vd, Md, section, stirrups, *, gamma0: float = 1.0, supports=
 
         def build(xc, xt, source):
             C, m, _ = C_of(xc)
-            hog = Mf(xc) < 0
+            hog = hog_at(xc)
             s0 = sec_at(xc)
             stir = stir_at(xc)
             lo_, hi_ = min(xc, xt), max(xc, xt)
             sv_rows = _zone_rows(stir_at)
             sb = s0.flipped() if hog else s0
             bw = sb.web()
-            if hi_ - lo_ > 1e-9 and sv_rows:
-                q = 0.0
-                for z0, z1, (n_, d_, s_) in sv_rows:
-                    L = max(0.0, min(hi_, z1) - max(lo_, z0))
-                    q += L * n_ * math.pi * d_ * d_ / 4 / s_
-                rho = q / (hi_ - lo_) / bw
-            else:
-                n_, d_, s_ = stir
-                rho = n_ * math.pi * d_ * d_ / 4 / s_ / bw
+            if hi_ - lo_ <= 1e-9:
+                q = q_of(stir)
+            elif sv_rows:
+                q = sum(max(0.0, min(hi_, z1) - max(lo_, z0)) * q_of(st) for z0, z1, st in sv_rows) / (hi_ - lo_)
+            else:  # a constant or a callable: the mean over the projection (40 midpoints)
+                q = float(np.mean([q_of(stir_at(u)) for u in lo_ + (np.arange(40) + 0.5) / 40 * (hi_ - lo_)]))
+            rho = q / bw
             # bent-up bars crossed (crack from the tension face at x_t to the compression face at x_c)
             cb, ct = (xc, xt) if hog else (xt, xc)  # x of the crack at the bottom and at the top
             crossing = []
             for xb_, xt_, A, th in bent:
                 if (xb_ - cb) * (xt_ - ct) <= 0 and np.sign(xt_ - xb_) == -np.sign(ct - cb) and ct != cb:
                     crossing.append((A, th))
-            a1 = (a1_at(xc) if a1_at else (0.9 if hog else 1.0)) if (a1_at or alpha1 == "auto") else float(alpha1)
+            a1 = a1_at(xc) if a1_at else (a1_auto(xc) if alpha1 == "auto" else alpha1)
             kw = dict(kw_at(xc))
             chk = _shear(s0, Vf(xc), stir, gamma0=gamma0, hogging=hog, alpha1=a1, bent=crossing, stirrup_steel=sst,
                          rho_sv=rho, **kw)
             # 5.2.11 over the range of the inclined section: least b and h0, largest Vd
-            us = np.unique(np.r_[np.linspace(lo_, hi_, 9), xs[(xs >= lo_) & (xs <= hi_)]])
+            # every section zone overlapping the range is sampled (its middle within the range)
+            zone_mid = [(max(lo_, z0) + min(hi_, z1)) / 2 for z0, z1, _ in (sec_rows or []) if z0 < hi_ and z1 > lo_]
+            us = np.unique(np.r_[np.linspace(lo_, hi_, 9), xs[(xs >= lo_) & (xs <= hi_)], zone_mid])
             bmin = h0min = math.inf
             for u in us:
                 su = sec_at(u)
@@ -342,14 +408,15 @@ class StirrupDesign:
 
 
 def stirrup_design(sec: RCSection, Vd: float, *, legs: int, dia: float | None = None, spacing: float | None = None,
-                   xi: float = 0.6, gamma0: float = 1.0, alpha1: float = 1.0, alpha3: float | None = None,
+                   xi: float = 0.6, gamma0: float = 1.0, alpha1: float | None = None, alpha3: float | None = None,
                    hogging: bool = False, stirrup_steel: str | Rebar | None = None, pc_class: str | None = None,
                    alpha2: float | None = None, bent_tendons=(), step: float | None = 10.0,
                    diameters=STIRRUP_DIAMETERS) -> StirrupDesign:
     """design of the stirrups (5.2.13 item 2). Vd: the design shear for stirrup design (kN, without γ0): V'd at h/2 from
     the support centre of simply supported beams and near end supports, at the diaphragm edge near interior supports of
     constant-depth beams, V0d at the end of a haunch (item 1). Give either the diameter (the spacing is designed) or the
-    spacing (the diameter is designed).
+    spacing (the diameter is designed). alpha1: default 0.9 with hogging=True (the segment next to an interior support,
+    where V'd is taken at the diaphragm edge), else 1.0 (5.2.9).
     Reinforced concrete (5.2.13-1): sv = 0.2e-6 α1² α3² (2 + 0.6P) √fcu,k Asv fsv b h0² / (ξ γ0 Vd)², ξ ≥ 0.6 the share of
     the concrete and stirrups (the rest by bent-up bars, bent_bar_design). Prestressed (commentary to 5.2.13, formula
     5-9): sv = 0.2e-6 α1² α2² α3² (2 + 0.6P) √fcu,k Asv fsv b h0² / (γ0 Vd − Vpb)², Vpb from bent_tendons (5.2.9-4);
@@ -357,12 +424,18 @@ def stirrup_design(sec: RCSection, Vd: float, *, legs: int, dia: float | None = 
     Adopted: the spacing rounded down to `step` (None: not rounded) and within 9.3.12 (≤ h/2, ≤ 400 mm, ρsv ≥ the
     minimum); the diameter the next of `diameters` at or above the need and 8 mm. 5.2.13-1 writes 0.2e-6 for
     0.45² × 1e-6 = 0.2025e-6: the spacing it gives is 1.2 % shorter than 5.2.9-2 needs, and back-substituted
-    Vcs = √(0.2025/0.2) ξ γ0 Vd."""
+    Vcs = √(0.2025/0.2) ξ γ0 Vd. Detailing (warnings): 9.3.12 item 3, at most 100 mm within one beam depth of the
+    support centre, where V'd is taken; item 1, a diameter of at least a quarter of the largest main bar (the tension
+    edge rows, when the section knows the bar diameters)."""
     if (dia is None) == (spacing is None):
         raise ValueError("give either dia (the spacing is designed) or spacing (the diameter is designed)")
     s = sec.flipped() if hogging else sec
     c, st = s.concrete, s.steel
     sst = st if stirrup_steel is None else (stirrup_steel if isinstance(stirrup_steel, Rebar) else _rebar(stirrup_steel))
+    a1_note = None
+    if alpha1 is None:
+        alpha1 = 0.9 if hogging else 1.0
+        a1_note = f"α1 = {alpha1:g} ({'near an interior support' if hogging else 'near an end support'}, 5.2.9)"
     probe = _shear(sec, 0.0, (legs, dia or 10, spacing or 100), hogging=hogging, alpha1=alpha1, alpha3=alpha3,
                    stirrup_steel=sst, pc_class=pc_class, alpha2=alpha2, bent_tendons=bent_tendons)
     d = probe.details
@@ -412,7 +485,15 @@ def stirrup_design(sec: RCSection, Vd: float, *, legs: int, dia: float | None = 
                      stirrup_steel=sst)
         chk.name = f"shear share ξ = {xi:g} of the concrete and stirrups"
     chk.clause = "JTG 3362-2018 5.2.13, 5.2.9"
-    chk.notes = notes + chk.notes
+    chk.notes = notes + ([a1_note] if a1_note else []) + chk.notes
+    if s_ad > 100 + 1e-9:
+        chk.warnings.append(f"spacing {s_ad:g} mm: within one beam depth ({s.h:.0f} mm) of the support centre at most "
+                            "100 mm (9.3.12 item 3)")
+    bot, _ = s.edge_masks()
+    dmain = s.bar_d[bot]
+    dmain = dmain[~np.isnan(dmain)]
+    if len(dmain) and d_ad < dmain.max() / 4 - 1e-9:
+        chk.warnings.append(f"stirrup diameter {d_ad:g} mm < 1/4 of the main bars ({dmain.max():g} mm) (9.3.12 item 1)")
     return StirrupDesign(legs, d_ad, s_ad, s_req, d_req, chk, details)
 
 

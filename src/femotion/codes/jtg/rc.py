@@ -725,7 +725,7 @@ def _balanced_share(s: RCSection, xb: float, demand: float):
     xb_, Mb, _, _ = _moment_resistance(sb, xb)
     out = {"k_balanced": float(kb), "x_balanced": float(xb_), "Mu_balanced": float(Mb) / 1e6, "k_uls": None,
            "x_uls": None}
-    if 0 < demand <= Mb:
+    if 0 <= demand <= Mb:
         f = lambda k: _moment_resistance(_tension_steel_scaled(s, k), xb)[1] - demand  # noqa: E731
         ku = k0 if f(k0) >= 0 else brentq(f, k0, kb, xtol=1e-12)  # f(kb) = Mu,b − γ0 Md ≥ 0
         out.update(k_uls=float(ku), x_uls=float(_moment_resistance(_tension_steel_scaled(s, ku), xb)[0]))
@@ -786,6 +786,8 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0, *, pc_class: str | N
                 chk.notes.append(f"5.2.7: only the tension steel the ultimate limit state needs counted for x: "
                                  f"{bal['k_uls']:.3f} of As, Ap gives x = {bal['x_uls']:.0f} mm ≤ ξb h0; resistance "
                                  f"Mu,b = {bal['Mu_balanced']:.1f} kN·m (tension steel cut to x = ξb h0)")
+                chk.notes.append("the steel provided is still over-reinforced: the failure is the more brittle one "
+                                 "(commentary to 5.2.1–5.2.7, p175)")
         else:
             chk.failed.append(msg)
             if bal is not None and not ring:

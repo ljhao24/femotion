@@ -466,3 +466,110 @@ def test_search_inputs():
     # 5.2.11 over a range that reaches the deeper section takes the least h0 (the shallower one)
     s3 = r.at("section change x = 3")[0]
     assert s3.check.details["h0_min"] == pytest.approx(SEC.h0(external=False))
+
+
+# ── after the independent review (shared/refs/codes/ULS_EXTRA_REVIEW.md) ────
+def test_review_527_zero_moment_and_note():
+    """L1: Md = 0 on an over-reinforced section passes with 5.2.7; L12: the note that the provided steel stays
+    over-reinforced (commentary p175)"""
+    heavy = jtg.rect(250, 500, bottom=[(8, 32, 60)])
+    r = jtg.flexure(heavy, 0.0, uls_steel_only=True)
+    assert r.ok and r.details["clause_5_2_7"]["k_uls"] is not None
+    r2 = jtg.flexure(heavy, 100.0, uls_steel_only=True)
+    assert any("brittle" in n for n in r2.notes)
+
+
+def test_review_support_limit():
+    """M1: the shear between the end support and h/2 (V0d at the support) is checked against 5.2.11 with the support
+    section (the reviewer's case: limit 0.51e-3 √40 × 200 × 990 = 638.6 kN, V0d = 656 kN: too small, though every
+    inclined section passes)"""
+    L, q = 16.0, 82.0
+    x, V, M = _simple(L, q)
+    r = jtg.shear_search(x, V, M, SEC, (2, 12, 100), supports=[(0, "end"), (L, "end")])
+    assert all(s.ok for s in r.sections)
+    lim = 0.51e-3 * math.sqrt(40) * 200 * 990
+    assert len(r.limits) == 2 and r.limits[0].resistance == pytest.approx(lim)
+    assert r.limits[0].demand == pytest.approx(656.0) and not r.limits[0].ok and not r.ok
+    off = jtg.shear_search(x, V, M, SEC, (2, 12, 100), supports=[(0, "end"), (L, "end")], support_limit=False)
+    assert not off.limits and off.ok
+    # a round-off negative zero moment at the support is not hogging: the same section limit at both ends
+    M2 = M.copy()
+    M2[-1] = -1e-12
+    r2 = jtg.shear_search(x, V, M2, SEC, (2, 12, 100), supports=[(0, "end"), (L, "end")])
+    assert r2.limits[1].resistance == pytest.approx(r2.limits[0].resistance)
+
+
+def test_review_alpha1_by_segment():
+    """M2: α1 = 0.9 in the half of a span next to an interior support whatever the sign of the moment (figure 5.2.13b
+    draws that segment over l/2), 1.0 in the half next to an end support; a cantilever arm 0.9 throughout"""
+    L = 16.0
+    x = np.r_[np.linspace(0, L, 161), np.linspace(L, 2 * L, 161)]
+    q = 60.0
+    # two equal spans under q on both: V = q(3L/8 − x), M = q x (3L/8 − x/2) in the first span, mirrored
+    u = np.where(x <= L, x, 2 * L - x)
+    V = q * (3 * L / 8 - u) * np.where(x <= L, 1, -1)
+    M = q * u * (3 * L / 8 - u / 2)
+    r = jtg.shear_search(x, V, M, SEC, (2, 10, 150), supports=[(0, "end"), (L, "interior"), (2 * L, "end")])
+    for s in r.sections:
+        near_pier = abs(s.x_c - L) <= L / 2 + 1e-9  # midspan itself counts as near the pier (the safe side)
+        assert s.check.details["alpha1"] == (0.9 if near_pier else 1.0)
+    assert any(s.Md > 0 and s.check.details["alpha1"] == 0.9 for s in r.sections)  # sagging, next to the pier
+    # a cantilever arm from x = 0 (tip) to 3 m (support), hogging throughout
+    xa = np.linspace(0, 3, 31)
+    arm = jtg.shear_search(xa, 80 * xa, -40 * xa ** 2, SEC, (2, 10, 100),
+                           supports=[(0, "free"), (3, "interior", 0.4)])
+    assert {s.check.details["alpha1"] for s in arm.sections} == {0.9}
+
+
+def test_review_search_inputs():
+    """L5: a position given twice inside a span is reported; L6: a section zone narrower than the sampling inside an
+    inclined section's range still sets b_min; L7: stirrups as a callable are averaged over the projection (a constant
+    callable gives the stirrups' own ratio); 9.3.12 item 3 near the supports goes to warnings"""
+    L = 16.0
+    x, V, M = _simple(L)
+    xd = np.r_[x[:41], [4.0], x[41:]]  # 4.0 twice
+    Vd = np.r_[V[:41], [V[40] - 50], V[41:]]
+    Mdd = np.r_[M[:41], [M[40]], M[41:]]
+    r = jtg.shear_search(xd, Vd, Mdd, SEC, (2, 10, 100), supports=[(0, "end"), (L, "end")])
+    assert any("twice" in n for n in r.notes)
+    narrow = jtg.tee(150, 1100, 1600, 160, concrete="C40", bottom=[(10, 28, 110)], top=[(4, 16, 50)])
+    zones = [(0, 1.11, SEC), (1.11, 1.13, narrow), (1.13, 16, SEC)]
+    rz = jtg.shear_search(x, V, M, zones, (2, 10, 100), supports=[(0, "end"), (L, "end")])
+    s = rz.at("h/2 from end support x = 0")[0]
+    assert s.x_t < 1.11 and s.x_c > 1.13 and s.check.details["b_min"] == pytest.approx(150)
+    rc_ = jtg.shear_search(x, V, M, SEC, lambda u: (2, 10, 100), supports=[(0, "end"), (L, "end")])
+    sc = rc_.at("h/2")[0]
+    assert sc.check.details["rho_sv_mean"] == pytest.approx(2 * A(10) / 100 / 200)
+    assert not rc_.warnings  # 100 mm near the supports
+    wide = jtg.shear_search(x, V, M, SEC, (2, 10, 150), supports=[(0, "end"), (L, "end")])
+    assert len(wide.warnings) == 2 and all("9.3.12 item 3" in w for w in wide.warnings)
+    assert all(s.ok for s in wide.sections)  # detailing warnings do not fail the inclined sections
+
+
+def test_review_stirrup_design_defaults():
+    """L2: hogging=True defaults α1 to 0.9, and 5.2.13-1 has α1²: the spacing is 0.81 of the α1 = 1 one; L3: 9.3.12
+    item 3 (≤ 100 mm within one beam depth of the support) and item 1 (≥ 1/4 of the main bar) go to warnings"""
+    pier = jtg.tee(200, 1100, 1600, 160, concrete="C40", bottom=[(4, 16, 60)], top=[(10, 28, 110)])
+    h = jtg.stirrup_design(pier, 600.0, legs=2, dia=10, hogging=True, step=None)
+    h1 = jtg.stirrup_design(pier, 600.0, legs=2, dia=10, hogging=True, alpha1=1.0, step=None)
+    assert h.details["alpha1"] == 0.9 and h.spacing_required == pytest.approx(0.81 * h1.spacing_required)
+    assert any("α1 = 0.9" in n for n in h.check.notes)
+    assert any("9.3.12 item 3" in w for w in h.check.warnings)
+    big = jtg.tee(200, 1100, 1600, 160, concrete="C40", bottom=[(6, 40, 110)])
+    d = jtg.stirrup_design(big, 900.0, legs=4, dia=8, xi=1.0)
+    assert any("9.3.12 item 1" in w for w in d.check.warnings)  # 8 < 40 / 4
+    ok = jtg.stirrup_design(SEC, 900.0, legs=2, dia=10, xi=1.0)
+    assert ok.spacing <= 100 and not any("9.3.12" in w for w in ok.check.warnings)
+
+
+def test_review_confine_note():
+    """L9: a confinement factor above the +10 % of EN 1992-1-1 6.5.4 (5) is noted (triaxial nodes only, 6.5.4 (6))"""
+    m = jtg.StrutTie("C35")
+    a = m.node(0, 0, support="xz", bearing=400 * 400, confine=1.2)
+    b = m.node(3000, 0, support="z")
+    c = m.node(1500, 1200, load=(0, -3000))
+    m.strut(a, c, area=400 * 500)
+    m.strut(b, c, area=400 * 500)
+    m.tie(a, b, As=12 * 491)
+    face = [r for r in m.check() if "bearing" in r.name][0]
+    assert any("6.5.4 (6)" in n for n in face.notes)

@@ -50,7 +50,9 @@ def confinement_factor(c: Concrete | str | int, sigma2: float) -> float:
     """strength gain of concrete under a lateral confining pressure σ2 (MPa), fck,c / fck by EN 1992-1-1 3.1.9:
     1 + 5 σ2 / fck for σ2 ≤ 0.05 fck (3.24), 1.125 + 2.5 σ2 / fck above (3.25). One way to back the raise of βn that the
     note to table B.3.4 allows for nodes with confining reinforcement (node(confine=…)); σ2 from the confining steel is
-    the user's (e.g. a spiral: 2 fsd Asp1 / (dcor s))"""
+    the user's (e.g. a spiral: 2 fsd Asp1 / (dcor s)). EN 1992-1-1 applies 3.24, 3.25 to nodes under triaxial
+    compression (6.5.4 (6)), with the upper limit σRd,max ≤ k4 ν′ fcd (k4 = 3.0 recommended); nodes confined by stirrups
+    get at most +10 % (6.5.4 (5), EC2_NODE_BONUS). No cap is applied here."""
     c = c if isinstance(c, Concrete) else _concrete(c)
     if sigma2 < 0:
         raise ValueError("σ2: a confining (compressive) pressure, ≥ 0")
@@ -322,4 +324,7 @@ class StrutTie:
         if k > 1.0:
             chk.notes.append(f"βn raised × {k:.3f} for confining reinforcement (table B.3.4 note: confirmed by analysis "
                              "or tests, the user's)")
+        if k > EC2_NODE_BONUS + 1e-12:
+            chk.notes.append(f"× {k:.3f} is beyond the +10 % EN 1992-1-1 6.5.4 (5) allows for confined nodes: more needs "
+                             "triaxial compression (6.5.4 (6), with σRd,max ≤ k4 ν′ fcd)")
         return chk
