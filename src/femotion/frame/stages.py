@@ -25,19 +25,25 @@ and creep properties creeps in proportion to its elastic deformation, so the cre
 the restrained force −φ Δpj; loads inside the span (self-weight, w) keep their fixed-end part, which creeps without
 moving the element ends (only the end-force part is kept in the history).
 
-Integration (Bažant's step-by-step method, program implementation): stress increments of a time step are taken at the
-step's middle on a log scale; in step k (tk−1 → tk) every concrete beam gets the effective modulus
-E″ = E / (1 + φ(tk, tk−½)) and the restrained forces
-    Δrk = −[Σj<k (φ(tk, tj−½) − φ(tk−1, tj−½)) Δpj + EA Δεcs,k (axial)] / (1 + φ(tk, tk−½)),
-then K″ Δu = residual. Stage events are steps of zero length (elastic). Second-order accurate in the step size; the
-steps grow geometrically from `first` days after each stage with `per_decade` steps per decade of elapsed time (the
-defaults, 0.01 d and 8, are within ~4e-4 of closed-form creep solutions; refine both for convergence studies).
+Integration (a step-by-step method after Bažant, program implementation): within a time step the stress changes
+linearly in log(t − ta), ta the last stage (the steps are geometric in t − ta; the first step after a stage follows
+(t − ta)^0.3, the start of the creep curves), so the creep coefficient of step j's increment at time t is its average
+over the step, φ̄j(t) (Gauss–Legendre for past steps, a rule graded towards the end for the current one, where
+φ(t, s) ~ (t − s)^0.3). In step k (tk−1 → tk) every concrete beam gets the effective modulus E″ = E / (1 + φ̄k(tk)) and
+the restrained forces
+    Δrk = [−Σj<k (φ̄j(tk) − φ̄j(tk−1)) Δpj + Δf_cs,k] / (1 + φ̄k(tk)),
+Δf_cs,k the end forces of the step's shrinkage fully restrained (axial tension EA Δεcs), then K″ Δu = residual. Stage
+events are steps of zero length (elastic). Second-order accurate in the step size, checked against independent
+Volterra solutions with non-parallel creep; the steps grow geometrically from `first` days after each stage with
+`per_decade` steps per decade of elapsed time (the defaults, 0.01 d and 8, are within ~1e-4 of the converged
+solutions; refine both for convergence studies). Memory: two (steps × beams × 12) arrays (history, end forces).
 Steel members (beams without a Creep, bars, links) are elastic. Tendons act through their equivalent loads and do not
 add stiffness; the change of their force after transfer comes from the loss function (e.g. JTG 6.2.6, 6.2.7).
 
 Displacements: a node does not move before it is built; `U` holds the displacement since then (what pre-camber and
 formwork levels need), and `displacements(k, total=True)` adds the displacement the node inherited when built: the
-rigid motion of the built part it was attached to (a cast segment follows the tangent of the cantilever tip).
+rigid motion of the built part it was attached to (a cast segment follows the tangent of the cantilever tip), nothing
+on a support, and between two ends (a closure, a segment from a tip to a support) linear between them (_inherit).
 Supports added later hold the node where it is; released supports hand their reaction back to the structure; removed
 members hand their end forces back and take their span loads with them.
 
@@ -98,8 +104,11 @@ class Stage:
     F: np.ndarray | None = None  # nodal loads added now (ndof; kN, kN·m)
     tendons: Sequence = ()  # Tendon stressed now, or (Tendon, loss): loss(dt) the force lost per element (kN) dt days later
     eps0: dict = field(default_factory=dict)  # bar -> added initial strain (pretension +), e.g. cable tensioning
-    strain: dict = field(default_factory=dict)  # beam -> imposed axial strain applied now (elongation +)
-    curvature: dict = field(default_factory=dict)  # beam -> imposed curvature applied now (sagging +)
+    strain: dict = field(default_factory=dict)  # beam -> imposed axial strain applied now (elongation +), lasting
+    curvature: dict = field(default_factory=dict)  # beam -> imposed curvature applied now (sagging +), lasting
+    # strain and curvature stay in the history and creep relaxes their restraint forces: for lasting actions such as
+    # differential shrinkage. Temperature is a short-term variable action: solve it elastically on the structure of the
+    # moment (femotion.frame.thermal) and combine, rather than putting it here.
 
 
 @dataclass
@@ -164,7 +173,8 @@ class _Geometry:
 
 
 def _time_steps(stages, t_end, times, first, per_decade):
-    """steps (t, t_mid, stage index or −1): every stage is a step of zero length, then geometric steps after it"""
+    """steps (t, stage index or −1, time of the last stage): every stage is a step of zero length, then steps growing
+    geometrically after it"""
     ev = [float(s.time) for s in stages]
     if any(b < a for a, b in zip(ev[:-1], ev[1:])):
         raise ValueError("stages must be in time order")
@@ -173,7 +183,7 @@ def _time_steps(stages, t_end, times, first, per_decade):
     steps = []
     marks = sorted(set(ev))
     for n, ta in enumerate(marks):
-        steps += [(ta, ta, s) for s, te in enumerate(ev) if te == ta]
+        steps += [(ta, s, ta) for s, te in enumerate(ev) if te == ta]
         tb = marks[n + 1] if n + 1 < len(marks) else t_end
         D = tb - ta
         if D <= 0:
@@ -181,13 +191,28 @@ def _time_steps(stages, t_end, times, first, per_decade):
         d = first * r ** np.arange(int(np.ceil(np.log(max(D / first, 1.0)) / np.log(r))) + 1)
         d = d[d < D / r ** 0.5]
         extra = [x - ta for x in times if ta < x < tb]
-        d = np.unique(np.r_[d, extra, D])
-        prev = 0.0
-        for di in d:
-            mid = di / 2 if prev == 0.0 else np.sqrt(prev * di)
-            steps.append((ta + di, ta + mid, -1))
-            prev = di
+        steps += [(ta + di, -1, ta) for di in np.unique(np.r_[d, extra, D])]
     return steps
+
+
+# quadrature of the creep kernel over a time step. Within a step the stress is taken linear in log(t − ta), ta the last
+# stage (the step grid is geometric in t − ta; linear in t in the first step after a stage): Gauss–Legendre for the steps
+# behind, where the kernel is smooth, and for the current step a rule graded towards its end, which turns the
+# (t − s)^0.3 of the creep curves into a smooth integrand
+_GX, _GW = np.polynomial.legendre.leggauss(4)
+_GX, _GW = (_GX + 1) / 2, _GW / 2
+_CU, _CW = np.polynomial.legendre.leggauss(8)
+_CU, _CW = (_CU + 1) / 2, _CW / 2
+_P = 10.0 / 3.0
+_CW = _CW * _P * _CU ** (_P - 1)
+_CX = 1.0 - _CU ** _P  # position in the step (0 at its start, 1 at its end), crowded towards the end
+
+
+def _in_step(t0, t1, ta, x):
+    """times at the fractions x of the step t0 → t1 (stress linear in log(t − ta); linear in t when t0 = ta)"""
+    if t0 <= ta:
+        return t0 + (t1 - t0) * x ** (1.0 / 0.3)
+    return ta + (t0 - ta) * ((t1 - ta) / (t0 - ta)) ** x
 
 
 def analyse(m: Model, stages: Sequence[Stage], creep: Creep | dict | None = None, t_end: float | None = None, *,
@@ -220,7 +245,13 @@ def analyse(m: Model, stages: Sequence[Stage], creep: Creep | dict | None = None
     steps = _time_steps(stages, t_end, times, first, per_decade)
     ns = len(steps)
     Tk = np.array([s[0] for s in steps])
-    Tmid = np.array([s[1] for s in steps])
+    # where and how much of each step's stress increment counts: a stage at its instant, a time step spread linearly
+    QS, QW = np.repeat(Tk[:, None], len(_GX), axis=1), np.zeros((ns, len(_GX)))
+    QW[:, 0] = 1.0
+    for k in range(1, ns):
+        if steps[k][1] < 0:
+            QS[k] = _in_step(Tk[k - 1], Tk[k], steps[k][2], _GX)
+            QW[k] = _GW
 
     on_b, on_t, on_l = np.zeros(nb, bool), np.zeros(nt, bool), np.zeros(nl, bool)
     sup = np.zeros(ndof, bool)
@@ -260,7 +291,7 @@ def analyse(m: Model, stages: Sequence[Stage], creep: Creep | dict | None = None
         FE[e] += fe
         Fext[bd[e]] += T.T @ fe
 
-    for k, (t, tmid, s) in enumerate(steps):
+    for k, (t, s, ta) in enumerate(steps):
         scale = np.ones(nb)
         node_was = np.zeros(nn, bool)
         node_was[built >= 0] = True
@@ -325,7 +356,11 @@ def analyse(m: Model, stages: Sequence[Stage], creep: Creep | dict | None = None
             for gr in groups.values():
                 ids = [e for e in gr["beams"] if on_b[e]]
                 j0, c, Tc = gr["j0"], gr["creep"], gr["Tc"]
-                row = np.asarray(c.phi(np.full(k - j0 + 1, t - Tc), Tmid[j0:k + 1] - Tc), float)
+                n = k - j0
+                past = np.asarray(c.phi(np.full(n * len(_GX), t - Tc), QS[j0:k].ravel() - Tc), float).reshape(n, -1)
+                cur_s = _in_step(Tk[k - 1], t, ta, _CX)
+                row = np.r_[(past * QW[j0:k]).sum(axis=1),
+                            float((np.asarray(c.phi(np.full(len(_CX), t - Tc), cur_s - Tc), float) * _CW).sum())]
                 dphi, phikk = row[:-1] - gr["prev"], row[-1]
                 gr["prev"] = row
                 if not ids:
@@ -364,10 +399,14 @@ def analyse(m: Model, stages: Sequence[Stage], creep: Creep | dict | None = None
         node_on = np.abs(diag.reshape(nn, 6)[:, :3]).max(axis=1) > 0
         fixed = sup | (np.abs(diag) < 1e-9)
         free = np.where(~fixed)[0]
+        if s >= 0 and st.F is not None:
+            loaded = np.abs(np.asarray(st.F, float)).reshape(nn, 6).max(axis=1) > 0
+            if (loaded & ~node_on).any():
+                raise ValueError(f"nodal loads on nodes not built: {np.where(loaded & ~node_on)[0].tolist()}")
         # nodes built now inherit the rigid motion of the built part they hang on
         new = np.where(node_on & ~node_was)[0]
         if len(new):
-            _inherit(m, new, node_was, on_b, on_l, on_t, ln, U, U0)
+            _inherit(m, new, node_was, sup, on_b, on_l, on_t, ln, U, U0)
             built[new] = k
         res = Fext - f_int()
         dU = np.zeros(ndof)
@@ -397,32 +436,69 @@ def analyse(m: Model, stages: Sequence[Stage], creep: Creep | dict | None = None
         R[~fixed] = 0.0
         out["R"][k] = R
         out["stage"][k] = cur
-    return History(t=Tk, event=np.array([s[2] >= 0 for s in steps]), built=built, U0=U0,
+    return History(t=Tk, event=np.array([s[1] >= 0 for s in steps]), built=built, U0=U0,
                    names=[s.name for s in stages], **out)
 
 
-def _inherit(m: Model, new, node_was, on_b, on_l, on_t, ln, U, U0):
-    """displacement inherited by nodes built now: the rigid motion (translation + rotation × arm) of a built neighbour
-    through a beam or link built now, spreading along chains of new members; through bars, the translation only"""
-    have = node_was.copy()
+def _inherit(m: Model, new, node_was, sup, on_b, on_l, on_t, ln, U, U0):
+    """displacement inherited by the nodes built now (program convention, independent of the numbering): a new node
+    restrained by a support in any translation inherits nothing; every other new node takes, from each source it reaches
+    through members built now without passing another source, that source's rigid motion carried to it (translation +
+    rotation × arm; through bars the translation only), weighted by the inverse distance along those members. Sources:
+    the nodes built before and the supported new nodes (rest, 0). One built neighbour: the tangent of a cantilever; a
+    segment from a cantilever tip to a support or a closure between two tips: linear between the two ends."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    nn = len(m.X)
+    new = np.asarray(new, int)
+    on_sup = sup.reshape(nn, 6)[:, :3].any(axis=1)
+    rest = [int(n) for n in new if on_sup[n]]
+    free_new = [int(n) for n in new if not on_sup[n]]
+    if not free_new:
+        return
     Ut = U + U0 * np.repeat(node_was, 6)
     edges = [(i, j, True) for (i, j, *_), on in zip(m.beams, on_b) if on]
     edges += [(int(i), int(j), True) for (i, j), on in zip(ln, on_l) if on]
     edges += [(i, j, False) for (i, j, *_), on in zip(m.trusses, on_t) if on]
-    todo = set(int(n) for n in new)
-    while todo:
-        hit = False
-        for i, j, rigid in edges:
+    is_new = np.zeros(nn, bool)
+    is_new[free_new] = True
+    # a source reaches the new nodes only through a member to one of them
+    near = {a for i, j, _ in edges for a, b in ((i, j), (j, i)) if is_new[b] and not is_new[a]}
+    built = sorted(n for n in near if node_was[n])
+    if not built:
+        return  # standing on supports only: nothing inherited
+    sources = built + sorted(n for n in near if n in set(rest))
+    num = np.zeros((nn, 6))
+    den_t, den_r = np.zeros(nn), np.zeros(nn)
+    for s in sources:
+        # graph of the free new nodes and this one source
+        r, c, wgt, rigid = [], [], [], False
+        for i, j, rg in edges:
             for a, b in ((i, j), (j, i)):
-                if b in todo and have[a]:
-                    ua = Ut[6 * a:6 * a + 6]
-                    u = np.zeros(6)
-                    u[:3] = ua[:3] + (np.cross(ua[3:], m.X[b] - m.X[a]) if rigid else 0.0)
-                    u[3:] = ua[3:] if rigid else 0.0
-                    U0[6 * b:6 * b + 6] = u
-                    Ut[6 * b:6 * b + 6] = u
-                    have[b] = True
-                    todo.discard(b)
-                    hit = True
-        if not hit:
-            break  # the rest stand on new supports: nothing inherited
+                if is_new[b] and (is_new[a] or a == s):
+                    r.append(a), c.append(b), wgt.append(max(np.linalg.norm(m.X[a] - m.X[b]), 1e-9))
+                    rigid |= rg and a == s
+        if not any(a == s for a in r):
+            continue
+        d = dijkstra(coo_matrix((wgt, (r, c)), shape=(nn, nn)).tocsr(), indices=s)
+        reach = np.where(np.isfinite(d) & is_new)[0]
+        if not len(reach):
+            continue
+        if s in rest:
+            u_s, rot = np.zeros(6), False
+        else:
+            u_s, rot = Ut[6 * s:6 * s + 6], rigid
+        wt = 1.0 / np.maximum(d[reach], 1e-9)
+        arm = m.X[reach] - m.X[s]
+        tr = u_s[:3][None, :] + (np.cross(u_s[3:][None, :], arm) if rot else 0.0)
+        num[reach, :3] += wt[:, None] * tr
+        den_t[reach] += wt
+        if s not in rest and rot:
+            num[reach, 3:] += wt[:, None] * u_s[3:][None, :]
+            den_r[reach] += wt
+    for n in free_new:
+        if den_t[n] > 0:
+            U0[6 * n:6 * n + 3] = num[n, :3] / den_t[n]
+        if den_r[n] > 0:
+            U0[6 * n + 3:6 * n + 6] = num[n, 3:] / den_r[n]
