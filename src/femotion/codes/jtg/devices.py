@@ -8,19 +8,20 @@ Units: mm, mm², MPa; forces kN; stiffness kN/mm; temperatures °C; angles rad. 
 conventions: docs/codes/JTG_3362-2018.md (chapter on 8.6–8.8). The braking force itself is JTG D60-2015 4.3.5
 (jtg.braking_force).
 
-Parameters of JT/T 4-2019 (laminated bearings) that the program takes as defaults, from its text: Ge = 1.0 MPa
-("一般取值 1.0", 5.4.7), Ee = 5.4 Ge S² with the shape factor S of 5.4.7 (S within 5 … 12), tan α ≤ 0.5 without and
-≤ 0.7 with braking (5.4.5), 2.5 mm top and bottom cover and 5 mm side cover (figures 1, 2); Eb = 2000 MPa from the
-commentary to 8.7.3 of JTG 3362-2018. The average compressive stress limit σc, the friction coefficients μ (bearing
-on concrete or steel) and μf (PTFE on stainless steel) and the yield strength of the plates must be given.
+Parameters of JT/T 4-2019 (laminated bearings) that the program takes as defaults, from its text: σc = 10 MPa, 8 MPa
+when S < 7 (5.4.1); Eb = 2000 MPa (5.4.3; also the commentary to 8.7.3 of JTG 3362-2018); μ = 0.3 on concrete, 0.2 on
+steel (5.4.4); tan α ≤ 0.5 without and ≤ 0.7 with braking (5.4.5); Ge = 1.0 MPa ("一般取值 1.0") and Ee = 5.4 Ge S² with
+the shape factor S (within 5 … 12) of 5.4.7; covers 2.5 mm (top, bottom) and 5 mm (sides), rubber layers between plates
+≥ 5 mm (5.3.1.2); plates Q235C or better (5.3.2.1), fy = 235 MPa. The friction coefficient μf of PTFE on stainless
+steel has no design value in JT/T 4-2019 (table 6 has only the test limit 0.03) and must be given.
 
     from femotion.codes import jtg
     from femotion.codes.jtg import devices as dv
     b = dv.Laminated(300, 400, t1=8, n=4, ts=3)                                # 300 × 400, te = 37 mm
     mv = dv.movements(15_000, T_set=(10, 20), zone="cold", concrete="C50", RH=75, h=250, t0=60, sigma_pc=8.0)
-    for chk in dv.laminated_bearing(b, 850, sigma_c=10.0, dl=mv.bearing_shear(), Fbk=20, theta=0.003, fy_plate=235):
+    for chk in dv.laminated_bearing(b, 850, dl=mv.bearing_shear(), Fbk=20, theta=0.003):  # σc by JT/T 4-2019 5.4.1
         print(chk)
-    dv.laminated_sliding(b, mu=0.3, RGk=600, RQk=250, dl=mv.bearing_shear(), Fbk=20)
+    dv.laminated_sliding(b, RGk=600, RQk=250, dl=mv.bearing_shear(), Fbk=20)              # μ = 0.3 on concrete
     jm = dv.movements(30_000, T_set=(10, 20), zone="cold", concrete="C50", RH=75, h=250, t0=90, sigma_pc=8.0,
                       brake=dv.braking_movement(20, b))
     dv.expansion_joint(jm, C=80, beta=1.3, Bmin=20)                              # C ≥ C⁺ + C⁻, installation width
@@ -39,15 +40,22 @@ from .rc import Check
 from .temperature import effective_temperature
 
 # JT/T 4-2019 (公路桥梁板式橡胶支座)
+SIGMA_C = (10.0, 8.0)  # MPa, average compressive stress in service; the second when S < 7 (5.4.1)
+SIGMA_C_S = 7.0  # shape factor below which σc is 8 MPa (5.4.1)
 GE_DEFAULT = 1.0  # MPa, shear modulus Ge, "generally 1.0" (5.4.7)
-EB_DEFAULT = 2000.0  # MPa, bulk modulus of the rubber (JTG 3362-2018 commentary to 8.7.3, after US and European codes)
+EB_DEFAULT = 2000.0  # MPa, bulk modulus of the rubber (5.4.3; JTG 3362-2018 commentary to 8.7.3)
+MU = {"concrete": 0.3, "steel": 0.2}  # friction of a laminated bearing on its contact face (5.4.4)
+FY_PLATE = 235.0  # MPa, plates of Q235C or better (5.3.2.1)
+T1_MIN = 5.0  # mm, rubber between two plates (5.3.1.2)
 TAN_ALPHA = (0.5, 0.7)  # limits of the shear angle tan α without / with braking (5.4.5)
 SHAPE_FACTOR_RANGE = (5.0, 12.0)  # S for E = 5.4 G S² (5.4.7)
 COVER_MIN, EDGE_MIN, PLATE_MIN = 2.5, 5.0, 2.0  # mm, 8.7.3 item 4 (and JT/T 4-2019 figures 1, 2)
 K_P = 1.3  # stress correction factor of the plates (8.7.3-10)
 JOINT_BETA = (1.2, 1.4)  # amplification β of the joint movements (8.8.2)
 ALPHA_C = 1e-5  # 1/°C, concrete of the beam (8.8.2-1, -2; D60 table 4.3.12-1)
-RUBBERS = {"CR": (-25.0, 60.0), "EPDM": (-40.0, 60.0), "NR": (-40.0, 60.0)}  # site air temperatures (9.7.2)
+ALPHA_S = 12e-6  # 1/°C, steel (D60 table 4.3.12-1): steel bridges ("steel deck", "concrete deck" of table 4.3.12-2)
+RUBBERS = {"CR": (-25.0, 60.0), "EPDM": (-40.0, 60.0), "NR": (-40.0, 60.0)}  # site air temperatures (9.7.2; JT/T 4-2019
+#                                                                                4.1.2 has CR and NR only)
 BEARING_KINDS = ("laminated", "ptfe", "pot", "spherical")  # 9.7.1
 JOINT_KINDS = ("modular", "finger", "seamless")  # 9.7.7 (模数式、梳齿板式、无缝式)
 
@@ -209,6 +217,11 @@ class Laminated:
         return self.te + (self.n + 1) * self.ts
 
 
+def sigma_c_limit(b: Laminated) -> float:
+    """average compressive stress limit σc of JT/T 4-2019 5.4.1: 10 MPa, 8 MPa when the shape factor S < 7"""
+    return SIGMA_C[1] if b.S < SIGMA_C_S else SIGMA_C[0]
+
+
 def slope_shear(b: Laminated, R: float, slope: float) -> float:
     """shear deformation (mm) from the component of the reaction R (kN) along a grade `slope` (tan) of the soffit or the
     cap under the bearing (8.7.3: Δl for soffits up to 1 %, Δt for cross slopes up to 2 %): R sin(atan slope) / k"""
@@ -221,41 +234,48 @@ def braking_movement(Fk: float, b: Laminated) -> float:
     return Fk / b.k
 
 
-def laminated_bearing(b: Laminated, Rck: float, *, sigma_c: float, dl: float, fy_plate: float, Fbk: float | None = None,
-                      dl_brake: float | None = None, slope: float = 0.0, slope_t: float = 0.0,
+def laminated_bearing(b: Laminated, Rck: float, *, dl: float, sigma_c: float | None = None, fy_plate: float = FY_PLATE,
+                      Fbk: float | None = None, dl_brake: float | None = None, slope: float = 0.0, slope_t: float = 0.0,
                       theta: float = 0.0) -> list[Check]:
     """selection of a laminated elastomeric bearing (8.7.3), one bearing, serviceability (commentary). Rck: design
-    reaction (kN), the characteristic combination of the vertical loads with impact (8.7.1 item 3). sigma_c: σc of
-    JT/T 4 (MPa). dl: shear deformation without braking (mm): temperature, shrinkage, creep and other longitudinal
+    reaction (kN), the characteristic combination of the vertical loads with impact (8.7.1 item 3). sigma_c: σc (MPa),
+    default JT/T 4-2019 5.4.1 (10 MPa, 8 MPa when S < 7, sigma_c_limit); a larger value given fails (the code takes σc
+    from JT/T 4). dl: shear deformation without braking (mm): temperature, shrinkage, creep and other longitudinal
     forces at characteristic values (Movements.bearing_shear). Braking: Fbk (kN) given to this bearing (Fbk te / (Ge
     Ag)) or dl_brake (mm). slope: grade of the soffit the bearing sits under (≤ 1 %): Rck along it adds to Δl and atan
     slope to θ; slope_t: cross slope of the cap the bearing is parallel to (≤ 2 %): Δt. theta: rotation at the top of
-    the bearing from the deflection of the superstructure (rad). fy_plate: yield strength of the plates (MPa), σs =
-    0.65 fy. Returns the checks:
+    the bearing from the deflection of the superstructure (rad). fy_plate: yield strength of the plates (MPa), default
+    235 (Q235C or better, JT/T 4-2019 5.3.2.1), σs = 0.65 fy. Returns the checks:
       area 8.7.3-1 (Ae ≥ Rck/σc); shear 8.7.3-2 / -4 (te ≥ 2 Δl, with Δt: 2 √(Δl² + Δt²)) and, with braking, 8.7.3-3 /
       -5 (1.43); stability 8.7.3-6 / -7 (la/10 ≤ te ≤ la/5, la the short side or the diameter); compression 8.7.3-8,
       -9 (θ la/2 ≤ δc,m ≤ 0.07 te); plates 8.7.3-10 (ts ≥ Kp Rck (tes,u + tes,l) / (Ae σs), Kp = 1.3, the plate
       between two inner layers, or a cover and a layer when n = 1). Detailing (warnings): plates ≥ 2 mm, side cover
-      ≥ 5 mm, top and bottom cover ≥ 2.5 mm (8.7.3 item 4)."""
+      ≥ 5 mm, top and bottom cover ≥ 2.5 mm (8.7.3 item 4), rubber between plates ≥ 5 mm (JT/T 4-2019 5.3.1.2).
+    Rck ≥ 5000 kN is outside JT/T 4-2019 (its parameters): a warning."""
     out = []
-    notes = []
-    if Rck >= 5000:
-        notes.append("JT/T 4-2019 covers laminated bearings below 5000 kN")
     # 1 area
+    sc = sigma_c_limit(b)
+    sigma = sc if sigma_c is None else sigma_c
     sig = Rck * 1e3 / b.Ae
-    out.append(Check("bearing area (8.7.3-1)", sig, sigma_c, "MPa", "JTG 3362-2018 8.7.3-1",
-                     {"Ae": b.Ae, "Rck": Rck, "Ae_required": Rck * 1e3 / sigma_c}, list(notes), limit_check=True,
-                     symbol="Rck/Ae"))
+    ar = Check("bearing area (8.7.3-1)", sig, sigma, "MPa", "JTG 3362-2018 8.7.3-1",
+               {"Ae": b.Ae, "Rck": Rck, "Ae_required": Rck * 1e3 / sigma, "sigma_c_jtt4": sc, "S": b.S},
+               limit_check=True, symbol="Rck/Ae")
+    if sigma > sc + 1e-9:
+        ar.failed.append(f"σc = {sigma:g} MPa above {sc:g} MPa of JT/T 4-2019 5.4.1 (S = {b.S:.2f})")
+    if Rck >= 5000:
+        ar.warnings.append("Rck ≥ 5000 kN: outside JT/T 4-2019 (bearings below 5000 kN), whose σc, Ee, Eb, μ are used")
+    out.append(ar)
     # 2 rubber thickness for shear
     d_slope = slope_shear(b, Rck, slope)
     d_l = dl + d_slope
     d_t = slope_shear(b, Rck, slope_t)
-    geo = []
+    geo_l, geo_t = [], []
     if abs(slope) > 0.01 + 1e-12:
-        geo.append(f"soffit grade {abs(slope):.2%} > 1 %: 8.7.3 counts a bearing directly under a grade up to 1 %; "
-                   "level the seat (9.7.4)")
+        geo_l.append(f"soffit grade {abs(slope):.2%} > 1 %: 8.7.3 counts a bearing directly under a grade up to 1 %; "
+                     "level the seat (9.7.4)")
     if abs(slope_t) > 0.02 + 1e-12:
-        geo.append(f"cross slope {abs(slope_t):.2%} > 2 %: 8.7.3 counts a bearing on a cross slope up to 2 %")
+        geo_t.append(f"cross slope {abs(slope_t):.2%} > 2 %: 8.7.3 counts a bearing on a cross slope up to 2 %")
+    geo = geo_l + geo_t
     eq = ("8.7.3-4", "8.7.3-5") if slope_t else ("8.7.3-2", "8.7.3-3")
     d = {"dl": d_l, "dl_slope": d_slope, "dt": d_t, "te": b.te, "tan_alpha": math.hypot(d_l, d_t) / b.te}
     out.append(Check(f"rubber thickness, shear without braking ({eq[0]})", 2 * math.hypot(d_l, d_t), b.te, "mm",
@@ -278,7 +298,7 @@ def laminated_bearing(b: Laminated, Rck: float, *, sigma_c: float, dl: float, fy
     delta = Rck * 1e3 * b.te / (b.Ae * b.Ee) + Rck * 1e3 * b.te / (b.Ae * b.Eb)
     cd = Check("compression of the bearing (8.7.3-8, -9)", delta, 0.07 * b.te, "mm", "JTG 3362-2018 8.7.3-9",
                {"delta_cm": delta, "theta": th, "uplift_limit": th * la / 2, "S": b.S, "Ee": b.Ee, "Eb": b.Eb},
-               failed=list(geo[:1]), limit_check=True, symbol="δc,m")
+               failed=list(geo_l), limit_check=True, symbol="δc,m")
     if delta < th * la / 2 - 1e-12:
         cd.failed.append(f"δc,m = {delta:.3f} mm < θ la/2 = {th * la / 2:.3f} mm: the bearing lifts off at one edge")
     lo, hi = SHAPE_FACTOR_RANGE
@@ -301,25 +321,38 @@ def laminated_bearing(b: Laminated, Rck: float, *, sigma_c: float, dl: float, fy
         pl.warnings.append(f"side cover of the plates {b.edge:g} mm < {EDGE_MIN:g} mm (8.7.3 item 4)")
     if b.cover < COVER_MIN - 1e-9:
         pl.warnings.append(f"top / bottom cover {b.cover:g} mm < {COVER_MIN:g} mm (8.7.3 item 4)")
+    if b.t1 < T1_MIN - 1e-9:
+        pl.warnings.append(f"rubber layers {b.t1:g} mm < {T1_MIN:g} mm between plates (JT/T 4-2019 5.3.1.2)")
     out.append(pl)
     return out
 
 
-def laminated_sliding(b: Laminated, *, mu: float, RGk: float, dl: float, RQk: float = 0.0,
-                      Fbk: float | None = None) -> list[Check]:
-    """sliding of a laminated bearing (8.7.4), in service. mu: friction of the bearing on its contact faces (JT/T 4);
-    RGk: reaction from self-weight (kN); RQk: reaction from the vehicle load with impact (kN, characteristic); dl: Δl
-    of 8.7.3 without the braking part (mm; add slope_shear for a sloped soffit). Without braking: μ RGk ≥ 1.4 Ge Ag
-    Δl/te (8.7.4-1); with braking Fbk (kN, given to this bearing): μ Rck ≥ 1.4 Ge Ag Δl/te + Fbk (8.7.4-2), Rck = RGk +
-    0.5 RQk."""
+def laminated_sliding(b: Laminated, *, RGk: float, dl: float, RQk: float = 0.0, Fbk: float | None = None,
+                      mu: float | None = None, contact: str = "concrete", slope: float = 0.0,
+                      R_slope: float | None = None) -> list[Check]:
+    """sliding of a laminated bearing (8.7.4), in service. mu: friction of the bearing on its contact face, default by
+    `contact` from JT/T 4-2019 5.4.4: 0.3 on concrete, 0.2 on steel (measured values may be given). RGk: reaction from
+    self-weight (kN); RQk: reaction from the vehicle load with impact (kN, characteristic); dl: Δl of 8.7.3 without the
+    braking part (mm); slope: grade of the soffit (≤ 1 %), adds slope_shear with the reaction of 8.7.3, R_slope
+    (default RGk + RQk), as laminated_bearing does. Without braking: μ RGk ≥ 1.4 Ge Ag Δl/te (8.7.4-1); with braking
+    Fbk (kN, given to this bearing): μ Rck ≥ 1.4 Ge Ag Δl/te + Fbk (8.7.4-2), Rck = RGk + 0.5 RQk."""
+    if mu is None:
+        if contact not in MU:
+            raise ValueError(f"contact {contact!r}: one of {', '.join(MU)}, or pass mu")
+        mu = MU[contact]
+    d_slope = slope_shear(b, RGk + RQk if R_slope is None else R_slope, slope)
+    dl = dl + d_slope
     H = 1.4 * b.G * b.Ag * dl / b.te / 1e3
-    d = {"H_shear": H, "Ag": b.Ag, "te": b.te, "Ge": b.G}
+    d = {"H_shear": H, "Ag": b.Ag, "te": b.te, "Ge": b.G, "mu": mu, "dl": dl, "dl_slope": d_slope}
     out = [Check("sliding without braking (8.7.4-1)", H, mu * RGk, "kN", "JTG 3362-2018 8.7.4-1", d | {"R": RGk},
                  limit_check=True, symbol="1.4GeAgΔl/te")]
     if Fbk is not None:
         Rck = RGk + 0.5 * RQk
         out.append(Check("sliding with braking (8.7.4-2)", H + Fbk, mu * Rck, "kN", "JTG 3362-2018 8.7.4-2",
                          d | {"R": Rck, "Fbk": Fbk}, limit_check=True, symbol="1.4GeAgΔl/te + Fbk"))
+    if abs(slope) > 0.01 + 1e-12:
+        for chk in out:
+            chk.failed.append(f"soffit grade {abs(slope):.2%} > 1 % (8.7.3; level the seat, 9.7.4)")
     return out
 
 
@@ -376,21 +409,26 @@ class Movements:
 
 
 def movements(l: float, *, T_set, T_max: float | None = None, T_min: float | None = None, zone: str | None = None,
-              structure: str = "concrete", south: bool = False, alpha: float = ALPHA_C, concrete=None,
+              structure: str = "concrete", south: bool = False, alpha: float | None = None, concrete=None,
               RH: float | None = None, h: float | None = None, t0: float | None = None, tu: float | None = None,
               ts: float = 3.0, method: str = "table", fly_ash: float | None = None, eps_cs: float | None = None,
-              phi: float | None = None, sigma_pc: float = 0.0, elastic: bool = False, brake: float = 0.0,
+              phi: float | None = None, sigma_pc: float | None = None, elastic: bool = False, brake: float = 0.0,
               theta: float = 0.0, y: float = 0.0) -> Movements:
     """movements of the beam at a joint or a bearing (8.8.2 items 1–4; 8.7.1 item 5). l (mm): the beam length that
     moves the joint or bearing, from the point that does not move (stationary_point for continuous decks on flexible
     supports). T_set: (lower, upper) installation temperature (or one value); T_max, T_min: the highest and lowest
     effective temperatures, or from D60 table 4.3.12-2 by zone, structure, south (temperature.effective_temperature).
-    Δlt⁺ = α l (Tmax − Tset,l), Δlt⁻ = α l (Tset,u − Tmin), α = 1e-5 for concrete (8.8.2), EXPANSION["steel"] for steel.
+    Δlt⁺ = α l (Tmax − Tset,l), Δlt⁻ = α l (Tset,u − Tmin); α default 1e-5 for concrete bridges (8.8.2), 1.2e-5 for the
+    steel bridges of table 4.3.12-2 (structure "steel deck" or "concrete deck", D60 table 4.3.12-1).
+    Concrete bridges (structure="concrete") must state the shrinkage and the precompression: concrete (appendix C) or
+    eps_cs (0 for none), and sigma_pc (0 for reinforced concrete); a ValueError otherwise, so that neither drops out of
+    C⁻ unnoticed. Steel bridges take them as 0 unless given.
     Shrinkage Δls⁻ = εcs(tu, t0) l and creep Δlc⁻ = σpc / Ec φ(tu, t0) l (Ec of table 3.1.5) from appendix C
     (prestress.shrinkage_strain, creep_coefficient; concrete, RH %, notional size h mm, t0 the age at installation, d),
     or eps_cs, phi given; tu default t0 + 3650 d (program convention: the "final" values of commentary tables C-1, C-2
-    run 10 years). sigma_pc: precompression at the centroid after the losses of that stage (MPa; mid-span and quarter
-    points of simple spans, several sections of continuous ones). elastic=True: also σpc / Ec l (prestress applied with
+    run 10 years; for shrinkage table C-1 takes ts + 3650 d, t0 + 3650 is about 1 % more). sigma_pc: precompression
+    at the centroid after the losses of that stage (MPa; mid-span and quarter points of simple spans, several sections
+    of continuous ones). elastic=True: also σpc / Ec l (prestress applied with
     the beam on the bearing, 8.7.1 item 5-3). brake (mm): braking_movement. theta, y: end rotation (rad) and the depth
     from the centroid to the bearing (mm) → θ y (8.7.1 item 5-2)."""
     lo, hi = (T_set, T_set) if np.ndim(T_set) == 0 else T_set
@@ -406,6 +444,15 @@ def movements(l: float, *, T_set, T_max: float | None = None, T_min: float | Non
     if not T_min <= lo <= hi <= T_max:
         raise ValueError(f"installation range {lo:g} … {hi:g} °C outside the effective temperatures {T_min:g} … "
                          f"{T_max:g} °C")
+    steel = structure in ("steel deck", "concrete deck")
+    if alpha is None:
+        alpha = ALPHA_S if steel else ALPHA_C
+    if not steel:
+        if concrete is None and eps_cs is None:
+            raise ValueError("a concrete bridge: pass concrete (appendix C shrinkage) or eps_cs (0 for none), 8.8.2-3")
+        if sigma_pc is None:
+            raise ValueError("a concrete bridge: pass sigma_pc (0 for reinforced concrete), 8.8.2-4")
+    sigma_pc = 0.0 if sigma_pc is None else sigma_pc
     d = {"T_max": T_max, "T_min": T_min, "T_set": (lo, hi), "alpha": alpha}
     t_plus = alpha * l * (T_max - lo)
     t_minus = alpha * l * (hi - T_min)
@@ -422,7 +469,7 @@ def movements(l: float, *, T_set, T_max: float | None = None, T_min: float | Non
             eps_cs = shrinkage_strain(c, RH, h, tu, t0, ts, method)
         else:
             eps_cs = 0.0
-            notes.append("no shrinkage (no concrete given)")
+            notes.append("no shrinkage (steel bridge, no concrete given)")
     Ec = c.Ec if c is not None else None
     if sigma_pc:
         if Ec is None:
