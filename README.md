@@ -131,6 +131,7 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | `femotion.post` | principal stresses, stress trajectories, stiffness-matrix patterns | — |
 | `femotion.result` | the `fem-result/1` file | — |
 | `femotion.io` | other formats: read / write meshes, export results (VTU, ParaView `.pvd` collections) | meshio |
+| `femotion.viz` | engineering drawings and charts as plain SVG: shown in Jupyter, saved as .svg or as an HTML page | — |
 | `femotion.models` | ready-made illustrative structures (a 500 m cable-stayed bridge) | — |
 | `femotion.frame.influence` | influence lines of every section from one factorisation, lane-load and axle-train envelopes, exact section forces under distributed loads | own (linear) |
 | `femotion.frame.prestress` | tendons on frame models: equivalent loads, total, primary and secondary effects | own (linear) |

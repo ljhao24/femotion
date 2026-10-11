@@ -14,6 +14,7 @@ and all of them share the same mesh type and the same result file:
     dynamics     modal superposition (step release, ground motion, moving loads)
     result       the fem-result/1 file format (docs/result-format.md), read by the JS packages
     io           other formats through meshio: read / write meshes, export results for ParaView (extra "io")
+    viz          engineering drawings and charts as plain SVG (Jupyter, .svg, HTML pages), no plotting library
     models/      ready-made illustrative structures
     codes/       design-code checks: Chinese highway bridge codes (codes.jtg: JTG D60-2015, JTG 3362-2018)
 
