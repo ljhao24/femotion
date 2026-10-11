@@ -2,7 +2,7 @@
 
 Units: section dimensions and bar positions in mm, bar areas in mm², stresses in MPa; design forces in kN and kN·m (as
 they come out of the frame solver). Every check takes the design effect Sd from the combination and γ0, and verifies
-γ0 Sd ≤ R. Clauses and the review against the official text: docs/jtg.md.
+γ0 Sd ≤ R. Clauses, formulas and tables: docs/codes/JTG_3362-2018.md.
 
 A section is a stack of pieces along its depth (z measured down from the top fibre): rectangles (solid or holes) and
 circles, so rectangles, T, I and box girders, solid and hollow piers are all covered; bars are (area, depth) points.
@@ -100,6 +100,12 @@ class RCSection:
     def __post_init__(self):
         self.bars = np.asarray(self.bars, float).reshape(-1, 2)
 
+    def material_rules(self) -> list[str]:
+        """3.1.2: reinforced concrete at least C25, and at least C30 with bars of characteristic strength ≥ 400 MPa"""
+        if self.steel.fsk >= 400 and self.concrete.grade < 30:
+            return [f"C{self.concrete.grade} with {self.steel.name}: at least C30 for bars of 400 MPa and above (3.1.2)"]
+        return []
+
     # geometry
     def part(self, x):
         a = q = 0.0
@@ -142,10 +148,21 @@ class RCSection:
         bars[:, 1] = self.h - bars[:, 1]
         return RCSection(self.concrete, self.steel, [p.flipped(self.h) for p in self.pieces], bars, self.h, self.ring, self.kind)
 
+    def edge_masks(self):
+        """(As, A's) as boolean masks over the bars: the rows next to the bottom (tension) face and the top (compressed)
+        face, i.e. bars within min(0.1 h, 150 mm) of the outermost bar on that side of the gross centroid. Bars between
+        them (side bars, web bars) belong to neither. Program convention for "one side" (9.1.12) and As, A's (5.2, 5.3)."""
+        d = self.bars[:, 1]
+        tol = min(0.1 * self.h, 150.0)
+        below, above = d > self.zg, d <= self.zg
+        bot = below & (d >= d[below].max() - tol) if below.any() else below
+        top = above & (d <= d[above].min() + tol) if above.any() else above
+        return bot, top
+
     def groups(self):
-        """(tension bars, compression bars) for sagging: bars below / above the gross centroid"""
-        lo = self.bars[:, 1] > self.zg
-        return self.bars[lo], self.bars[~lo]
+        """(As, A's): bars of the tension-face rows and of the compressed-face rows for sagging (edge_masks)"""
+        bot, top = self.edge_masks()
+        return self.bars[bot], self.bars[top]
 
     def h0(self):
         t, _ = self.groups()
@@ -155,8 +172,24 @@ class RCSection:
 
     # forces for a block depth x (compression +, moment about the gross centroid, sagging +), in N and N·mm
     def stresses(self, x):
+        """bar stresses (tension +) for a block depth x. Every bar first by 5.1.5-1 within −fsd' … fsd (5.1.3-1). For
+        sections with bars on two faces (not circles) the edge rows then follow the code's formulas: As takes fsd while
+        ξ = x/h0 ≤ ξb (5.2.2-2, 5.3.4: σs = fsd), A's takes −fsd' once x ≥ 2as' (5.2.2-1, 5.3.4-1). Side and web bars
+        keep 5.1.5-1."""
         c, s = self.concrete, self.steel
-        return np.clip(c.eps_cu * s.Es * (c.beta * self.bars[:, 1] / x - 1), -s.fsd_c, s.fsd)
+        sig = np.clip(c.eps_cu * s.Es * (c.beta * self.bars[:, 1] / x - 1), -s.fsd_c, s.fsd)
+        if self.kind not in ("circle", "annulus"):
+            bot, top = self.edge_masks()
+            if top.any() and x >= 2 * np.average(self.bars[top, 1], weights=self.bars[top, 0]):
+                sig[top] = -s.fsd_c
+            if bot.any():
+                h0 = np.average(self.bars[bot, 1], weights=self.bars[bot, 0])
+                try:
+                    if x <= xi_b(c, s) * h0:
+                        sig[bot] = s.fsd
+                except ValueError:  # no ξb in table 5.2.1 (C75, C80): the checks themselves raise
+                    pass
+        return sig
 
     def forces(self, x):
         a, q = self.part(min(x, self.h))
@@ -291,50 +324,71 @@ def flexure(sec: RCSection, Md: float, gamma0: float = 1.0) -> Check:
             chk.failed.append(f"tension reinforcement ratio {rho:.4%} < minimum {rmin:.4%}")
     if gamma0 * abs(Md) > 0 and chk.resistance <= 0:
         chk.failed.append("no flexural resistance")
+    chk.failed += s.material_rules()
     return chk
 
 
 # ── shear ───────────────────────────────────────────────────────────────────
-def shear(sec: RCSection, Vd: float, stirrups, *, gamma0: float = 1.0, hogging: bool = False, alpha1: float = 1.0,
-          alpha3: float | None = None, bent=(), slab: bool = False) -> Check:
+def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogging: bool = False, alpha1: float = 1.0,
+          alpha3: float | None = None, bent=(), slab: bool = False, stirrup_steel: str | Rebar | None = None) -> Check:
     """inclined-section shear resistance of a beam (5.2.9), with the upper limit on the section (5.2.11), the threshold
-    below which detailing stirrups suffice (5.2.12) and the minimum stirrup ratio (9.3.12).
+    below which detailing stirrups suffice (5.2.12) and the stirrup rules of 9.3.12 (ratio, diameter ≥ 8 mm, spacing
+    ≤ h/2 and ≤ 400 mm). Take Vd at the sections listed in 5.2.8 (e.g. h/2 from the support centre).
     stirrups: (legs, diameter mm, spacing mm); bent: rows of (total area mm², angle in degrees) of bent-up bars in the
-    section. alpha1: 1.0 for simply supported beams and positive moment regions, 0.9 next to the intermediate supports of
-    continuous beams and cantilevers. alpha3: 1.1 when a flange is in compression (default for T / I / box sections in
-    sagging), else 1.0. hogging: the tension face is the top (h0 and ρ from the top bars). slab: 5.2.12 threshold × 1.25."""
+    section. alpha1: 1.0 for simply supported beams and near end supports of continuous beams, 0.9 near intermediate
+    supports of continuous beams and cantilevers. alpha3: 1.1 when a flange is in compression (default for T / I / box
+    sections whose compressed face has a flange: sagging for T, I and box, hogging for I and box), else 1.0.
+    hogging: the tension face is the top (h0 and ρ from the top bars). stirrup_steel: grade of the stirrups when it
+    differs from the longitudinal bars (fsv and the minimum stirrup ratio follow it).
+    slab=True with stirrups=None: a slab without stirrups, checked against the 5.2.12 threshold × 1.25 only."""
     s = sec.flipped() if hogging else sec
     if s.kind in ("circle", "annulus"):
         raise NotImplementedError("shear of circular sections is not implemented")
     c, st = s.concrete, s.steel
     b, h0 = s.web(), s.h0()
     t, _ = s.groups()
+    alpha2 = 1.0  # no prestress
+    vmin = 0.50e-3 * alpha2 * c.ftd * b * h0
+    if stirrups is None:
+        if not slab:
+            raise ValueError("beams need stirrups (9.3.12); stirrups=None only for slabs (slab=True)")
+        vslab = 1.25 * vmin
+        chk = Check("shear (slab without stirrups)", gamma0 * Vd, vslab, "kN", "JTG 3362-2018 5.2.12",
+                    {"b": b, "h0": h0, "V_detailing": vslab})
+        chk.failed += s.material_rules()
+        return chk
+    sst = st if stirrup_steel is None else (stirrup_steel if isinstance(stirrup_steel, Rebar) else _rebar(stirrup_steel))
     legs, dia, sv = stirrups
     Asv = legs * math.pi * dia * dia / 4
     rho_sv = Asv / (sv * b)
     P = min(100 * t[:, 0].sum() / (b * h0), 2.5)
     a3 = alpha3 if alpha3 is not None else (1.1 if (s.kind in ("tee", "box") and s.width(0.01 * s.h) > b * 1.01) else 1.0)
-    alpha2 = 1.0  # no prestress
-    Vcs = alpha1 * alpha2 * a3 * 0.45e-3 * b * h0 * math.sqrt((2 + 0.6 * P) * math.sqrt(c.fcuk) * rho_sv * st.fsv)
+    Vcs = alpha1 * alpha2 * a3 * 0.45e-3 * b * h0 * math.sqrt((2 + 0.6 * P) * math.sqrt(c.fcuk) * rho_sv * sst.fsv)
     Vsb = sum(0.75e-3 * st.fsd * A * math.sin(math.radians(th)) for A, th in bent)
     chk = Check("shear" + (" (hogging side)" if hogging else ""), gamma0 * Vd, Vcs + Vsb, "kN", "JTG 3362-2018 5.2.9",
-                {"b": b, "h0": h0, "P": P, "rho_sv": rho_sv, "alpha1": alpha1, "alpha3": a3, "Vcs": Vcs, "Vsb": Vsb})
+                {"b": b, "h0": h0, "P": P, "rho_sv": rho_sv, "alpha1": alpha1, "alpha2": alpha2, "alpha3": a3,
+                 "Vcs": Vcs, "Vsb": Vsb, "fsv": sst.fsv})
     vmax = 0.51e-3 * math.sqrt(c.fcuk) * b * h0
-    chk.details["V_section_max"] = vmax
+    chk.details.update(V_section_max=vmax, V_detailing=vmin)
     if gamma0 * abs(Vd) > vmax:
         chk.failed.append(f"section too small: γ0Vd > 0.51e-3 √fcu,k b h0 = {vmax:.0f} kN (5.2.11)")
-    vmin = 0.50e-3 * alpha2 * c.ftd * b * h0 * (1.25 if slab else 1.0)
-    chk.details["V_detailing"] = vmin
     if gamma0 * abs(Vd) <= vmin:
-        chk.notes.append(f"γ0Vd ≤ {vmin:.0f} kN: detailing stirrups suffice (5.2.12)")
-    if rho_sv < st.rho_sv_min:
-        chk.failed.append(f"stirrup ratio {rho_sv:.4%} < minimum {st.rho_sv_min:.2%} (9.3.12)")
+        chk.notes.append(f"γ0Vd ≤ {vmin:.0f} kN: detailing stirrups per 9.3.12 suffice (5.2.12)")
+    if rho_sv < sst.rho_sv_min:
+        chk.failed.append(f"stirrup ratio {rho_sv:.4%} < minimum {sst.rho_sv_min:.2%} (9.3.12)")
+    if dia < 8:
+        chk.failed.append(f"stirrup diameter {dia} mm < 8 mm (9.3.12)")
+    smax = min(s.h / 2, 400.0)
+    if sv > smax:
+        chk.failed.append(f"stirrup spacing {sv} mm > {smax:.0f} mm (h/2 and 400 mm, 9.3.12)")
+    chk.failed += s.material_rules()
     return chk
 
 
 # ── compression ─────────────────────────────────────────────────────────────
 def _min_compression_steel(sec: RCSection, chk: Check):
-    """9.1.12 item 1: all longitudinal bars ≥ 0.5 % of the gross section (0.6 % from C50), one side ≥ 0.2 %"""
+    """9.1.12 item 1: all longitudinal bars ≥ 0.5 % of the gross section (0.6 % from C50), one side (the edge rows,
+    RCSection.edge_masks) ≥ 0.2 %"""
     A = sec.area
     tot = sec.bars[:, 0].sum() / A
     need = 0.006 if sec.concrete.grade >= 50 else 0.005
@@ -403,6 +457,7 @@ def axial(sec: RCSection, Nd: float, l0: float | None = None, *, gamma0: float =
     Nu = 0.9 * phi * (c.fcd * A + st.fsd_c * As) / 1e3
     chk = Check("axial compression", gamma0 * Nd, Nu, "kN", "JTG 3362-2018 5.3.1", {"phi": phi, "rho": As / sec.area})
     _min_compression_steel(sec, chk)
+    chk.failed += sec.material_rules()
     return chk
 
 
@@ -469,6 +524,7 @@ def eccentric(sec: RCSection, Nd: float, Md: float, l0: float | None = None, *, 
     if e0 > e0_raw:
         chk.notes.append(f"e0 = {e0_raw:.1f} mm raised to the minimum {e0:.1f} mm (5.3.9)")
     _min_compression_steel(s, chk)
+    chk.failed += s.material_rules()
     n_bars = len(s.bars)
     code_ok = s.kind == "circle" and n_bars >= 8
     m = method if method != "auto" else ("code" if code_ok else "strain")

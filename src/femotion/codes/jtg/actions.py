@@ -1,6 +1,6 @@
 """Highway traffic actions and the ultimate-limit-state combination of JTG D60-2015.
 
-Units: kN, m, Hz. Clauses (docs/jtg.md): 4.1.5 (basic combination), 4.3.1 (lane and vehicle loads, design lanes, transverse
+Units: kN, m, Hz. Clauses (docs/codes/JTG_D60-2015.md): 4.1.5 (basic combination), 4.3.1 (lane and vehicle loads, design lanes, transverse
 and longitudinal reduction), 4.3.2 (impact factor); γ0 by design safety class (4.1.5).
 
     from femotion.codes import jtg
@@ -56,6 +56,13 @@ def simple_beam_frequency(L: float, EI: float, m: float) -> float:
     return math.pi / (2 * L * L) * math.sqrt(EI / m)
 
 
+def continuous_beam_frequencies(L: float, EI: float, m: float) -> tuple[float, float]:
+    """estimated frequencies of a continuous beam (commentary to 4.3.2, eqs. 4-5, 4-6): f1 = 13.616 / (2π L²) √(EI / m)
+    for positive moments and shear, f2 = 23.651 / (2π L²) √(EI / m) for negative moments. L: computed span (m)"""
+    s = math.sqrt(EI / m) / (2 * math.pi * L * L)
+    return 13.616 * s, 23.651 * s
+
+
 def design_lanes(width: float, two_way: bool = True) -> int:
     """number of design lanes from the carriageway width (m), table 4.3.1-4 (two-way below 6.0 m the table is blank;
     1 is returned)"""
@@ -92,14 +99,18 @@ def longitudinal_reduction(L0: float) -> float:
 class LiveLoad:
     """traffic on a spine (single-girder) model: lane load × (1 + μ) × lanes × transverse reduction × longitudinal
     reduction × distribution. For one girder of a multi-girder deck pass lanes=1, transverse=1 and the girder's lateral
-    distribution factor as `distribution` (the factor already counts the lanes)."""
+    distribution factor as `distribution` (the factor already counts the lanes).
+    L0: computed span for Pk (table 4.3.1-2); L_max: largest computed span of the structure for the longitudinal
+    reduction (4.3.1 item 8), default L0. The two-lane floor (4.3.1 item 7) applies with the default transverse factor
+    only. vehicle_effects use the same factor; for local loading pass lanes=1, transverse=1."""
     L0: float
     grade: str = "I"
     lanes: int = 1
     mu: float = 0.0
     distribution: float = 1.0
     transverse: float | None = None  # default: table 4.3.1-5 for `lanes`
-    longitudinal: float | None = None  # default: table 4.3.1-6 for L0
+    longitudinal: float | None = None  # default: table 4.3.1-6 for L_max
+    L_max: float | None = None
 
     def factor(self) -> float:
         """multiplier on one lane's effect. With more than two lanes the loaded lanes are never taken below two lanes'
@@ -110,7 +121,8 @@ class LiveLoad:
                 lanes = max(lanes, 2 * transverse_reduction(2))
         else:
             lanes = self.lanes * self.transverse
-        lo = longitudinal_reduction(self.L0) if self.longitudinal is None else self.longitudinal
+        L = self.L0 if self.L_max is None else self.L_max
+        lo = longitudinal_reduction(L) if self.longitudinal is None else self.longitudinal
         return (1 + self.mu) * lanes * lo * self.distribution
 
     def effects(self, il, comp: str):
@@ -130,25 +142,32 @@ class LiveLoad:
 
 def basic_combination(G, Q, others=(), *, gamma_G: tuple[float, float] = (1.2, 1.0), gamma_Q: float | None = None,
                       vehicle: bool = False, gamma_others=1.4, psi_c: float = 0.75):
-    """basic combination (基本组合) of the ultimate limit state, without γ0 (apply γ0 in the check: γ0 Sd ≤ R).
+    """basic combination (基本组合, 4.1.5-1) of the ultimate limit state, effects added linearly, without γ0 (apply γ0 in
+    the check: γ0 Sd ≤ R). Returns (max, min) design effects.
 
-    G: permanent effects (array, or a list of arrays summed: self-weight, superimposed dead load);
+    G: permanent effects. An array; or a list whose items are arrays (all with gamma_G) or (array, (γ unfavourable,
+    γ favourable)) pairs with their own factors from table 4.1.5-2 (e.g. earth pressure (1.4, 1.0)). For each permanent
+    action and each extreme the unfavourable factor applies where its effect has the sign of that extreme, else the
+    favourable one. gamma_G default (1.2, 1.0): concrete and masonry self-weight.
     Q: (max, min) of the leading variable action, normally traffic (when another variable action's effect exceeds the
-    traffic effect it replaces traffic as the leading action, 4.1.5: pass it as Q and traffic in others);
-    others: list of (max, min) of the other variable actions (crowd, …), each × γQj × ψc. gamma_G: (unfavourable, favourable) = (1.2, 1.0) for concrete self-weight;
-    the favourable factor is used where the permanent effect has the opposite sign to the extreme sought.
+    traffic effect it replaces traffic as the leading action, 4.1.5: pass it as Q and traffic in others).
+    others: list of (max, min) of the other variable actions (crowd, …), each × γQj × ψc.
+    Variable actions only count where unfavourable (4.1.4 item 2): positive parts of the max effects, negative parts
+    of the min effects.
     gamma_Q: 1.4 for the lane load, 1.8 for the vehicle load (vehicle=True). gamma_others: one value or one per action;
-    1.4 in general, 1.1 for wind.
-    Returns (max, min) design effects."""
-    if isinstance(G, (list, tuple)) and len(G) and np.ndim(G[0]) > 0:
-        G = np.sum([np.asarray(g, float) for g in G], axis=0)
-    G = np.asarray(G, float)
+    1.4 in general, 1.1 for wind. psi_c 0.75. γL (design-life adjustment) is 1.0 throughout."""
+    items = G if isinstance(G, (list, tuple)) and len(G) and (np.ndim(G[0]) > 0 or isinstance(G[0], tuple)) else [G]
+    hi = lo = 0.0
+    for it in items:
+        g, (gu, gf) = (it if isinstance(it, tuple) else (it, gamma_G))
+        g = np.asarray(g, float)
+        hi = hi + np.where(g > 0, gu, gf) * g
+        lo = lo + np.where(g < 0, gu, gf) * g
     gq = gamma_Q if gamma_Q is not None else (1.8 if vehicle else 1.4)
-    gu, gf = gamma_G
     go = np.broadcast_to(np.asarray(gamma_others, float), (len(others),))
-    hi = np.where(G > 0, gu, gf) * G + gq * np.asarray(Q[0], float)
-    lo = np.where(G < 0, gu, gf) * G + gq * np.asarray(Q[1], float)
+    hi = hi + gq * np.maximum(np.asarray(Q[0], float), 0.0)
+    lo = lo + gq * np.minimum(np.asarray(Q[1], float), 0.0)
     for g_j, (qmax, qmin) in zip(go, others):
-        hi = hi + psi_c * g_j * np.asarray(qmax, float)
-        lo = lo + psi_c * g_j * np.asarray(qmin, float)
+        hi = hi + psi_c * g_j * np.maximum(np.asarray(qmax, float), 0.0)
+        lo = lo + psi_c * g_j * np.minimum(np.asarray(qmin, float), 0.0)
     return hi, lo

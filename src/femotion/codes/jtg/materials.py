@@ -1,7 +1,7 @@
 """Material strengths of JTG 3362-2018 (reinforced concrete only; prestressing steel is not covered yet).
 
 Units: MPa. Tables 3.1.3, 3.1.4, 3.1.5 (concrete), 3.2.2, 3.2.3-1, 3.2.4 (reinforcement), 5.1.4 (β), 5.1.5 (εcu),
-5.2.1 (ξb); checked against the official text (docs/jtg.md).
+5.2.1 (ξb); checked against the official text (docs/codes/JTG_3362-2018.md).
 """
 from __future__ import annotations
 

@@ -65,8 +65,8 @@ for k in range(0, len(secs), 8):
 print("\nchecks")
 k_span = int(np.argmax(Mmax))
 k_pier = int(np.argmin(Mmin))
-k_end = 0
-k_pierV = int(np.argmax(np.maximum(np.abs(Vmax), np.abs(Vmin))))
+k_end = int(np.argmin(np.abs(x - span_sec.h / 2000)))  # JTG 3362 5.2.8: h/2 from the end support centre
+k_pierV = int(np.argmax(np.maximum(np.abs(Vmax), np.abs(Vmin))))  # at the pier itself (5.2.8 allows the diaphragm edge)
 near_pier = lambda k: abs(x[k] - L) < 0.3 * L  # pier reinforcement over 0.3 L each side
 results = [
     (x[k_span], jtg.flexure(span_sec, Mmax[k_span], gamma0)),

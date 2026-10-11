@@ -132,7 +132,7 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | `femotion.io` | other formats: read / write meshes, export results (VTU, ParaView `.pvd` collections) | meshio |
 | `femotion.models` | ready-made illustrative structures (a 500 m cable-stayed bridge) | — |
 | `femotion.frame.influence` | influence lines of every section from one factorisation, lane-load and axle-train envelopes, exact section forces under distributed loads | own (linear) |
-| `femotion.codes.jtg` | Chinese highway bridge codes: traffic actions and combinations (JTG D60-2015), ultimate-limit-state resistance of reinforced-concrete sections (JTG 3362-2018); alpha, see [docs/jtg.md](docs/jtg.md) | — |
+| `femotion.codes.jtg` | Chinese highway bridge codes: traffic actions and combinations (JTG D60-2015), ultimate-limit-state resistance of reinforced-concrete sections (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
 
 ### Which frame solver?
 
@@ -157,7 +157,8 @@ print(jtg.flexure(sec, Mmax.max()))      # flexure: γ0Sd = …, R = …, ratio 
 ```
 
 Reinforced concrete only for now (no prestress, no serviceability). Values and formulas have been checked clause by
-clause against the official texts, see [docs/jtg.md](docs/jtg.md). `examples/jtg_rc_girder.py` checks a two-span continuous girder.
+clause against the official texts. [docs/codes/](docs/codes/) has one file per code (in Chinese) with every clause,
+formula, table and parameter the program uses, page references and the function using each. `examples/jtg_rc_girder.py` checks a two-span continuous girder.
 
 ## Validation
 

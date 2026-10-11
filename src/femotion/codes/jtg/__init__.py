@@ -15,7 +15,8 @@ Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_gir
 
 Prestressed concrete, serviceability (crack width, deflection, stresses), torsion and local bearing are not covered.
 """
-from .actions import (GAMMA_0, VEHICLE_AXLES, VEHICLE_SPACINGS, LiveLoad, basic_combination, design_lanes,  # noqa: F401
+from .actions import (GAMMA_0, VEHICLE_AXLES, VEHICLE_SPACINGS, LiveLoad, basic_combination,  # noqa: F401
+                      continuous_beam_frequencies, design_lanes,
                       impact_factor, lane_load, longitudinal_reduction, simple_beam_frequency, transverse_reduction)
 from .materials import Concrete, Rebar, concrete, rebar, xi_b  # noqa: F401
 from .rc import (Check, RCSection, axial, box, circle, eccentric, eta_factor, flexure, rect, shear,  # noqa: F401
