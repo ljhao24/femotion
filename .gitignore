@@ -7,3 +7,8 @@ dist/
 node_modules/
 .venv/
 .DS_Store
+
+# output of the examples when run from the repository root
+/*.html
+/*.pdf
+/*.svg
