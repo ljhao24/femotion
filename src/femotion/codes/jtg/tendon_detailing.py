@@ -106,13 +106,15 @@ def girder_detailing(sec: RCSection | None = None, *, kind: str | None = None, h
                      stirrup_d: float | None = None, ribbed: bool | None = None, stirrup_spacing: float | None = None,
                      end_spacing: float | None = None, end_closed: bool | None = None, end_length: float | None = None,
                      bulb_d: float | None = None, bulb_spacing: float | None = None, bulb_closed: bool | None = None,
-                     vertical_spacing: float | None = None, pc_class: str | None = None) -> Check:
+                     vertical_spacing: float | None = None, pc_class: str | None = None,
+                     hogging: bool = False) -> Check:
     """stirrups and vertical prestress of prestressed concrete girders (9.4.1) and the mixed reinforcement of partially
     prestressed ones (9.4.2). kind: "tee" (T and I girders) or "box" (default from sec); h: girder depth (default
     sec.h). Web stirrups: ribbed bars, diameter ≥ 10 mm (T, I) or 12 mm (box), spacing ≤ 200 mm (should); within one
     girder depth from the support centre (end_length ≥ h) closed stirrups at ≤ 120 mm; the bottom bulb of T and I
     girders: closed stirrups ≥ 8 mm at ≤ 200 mm; vertical prestressing bars at 500–1000 mm along the girder (should).
-    pc_class "A" or "B" (partially prestressed): with sec, the tension face needs ordinary bars (9.4.2)."""
+    pc_class "A" or "B" (partially prestressed): with sec, the tension face needs ordinary bars (9.4.2): the bottom
+    rows (edge_masks), or with hogging=True (over interior supports) the top rows."""
     R = _Rules("prestressed girder detailing (9.4.1, 9.4.2)", "JTG 3362-2018 9.4.1, 9.4.2")
     if kind is None and sec is not None and sec.kind in ("tee", "box"):
         kind = sec.kind
@@ -139,10 +141,12 @@ def girder_detailing(sec: RCSection | None = None, *, kind: str | None = None, h
         R.min("vertical prestressing bar spacing (lower end)", vertical_spacing, lo, "9.4.1", should=True)
         R.max("vertical prestressing bar spacing (upper end)", vertical_spacing, hi, "9.4.1", should=True)
     if pc_class in ("A", "B") and sec is not None:
-        bot, _ = sec.edge_masks()
-        R.flag("mixed reinforcement", bool(sec.bars[bot, 0].sum() > 0),
-               "partially prestressed member without ordinary bars at the tension face: 9.4.2 asks for mixed "
-               "reinforcement", "9.4.2")
+        bot, top = sec.edge_masks()
+        face = top if hogging else bot
+        side = "top" if hogging else "bottom"
+        R.flag("mixed reinforcement", bool(sec.bars[face, 0].sum() > 0),
+               f"partially prestressed member without ordinary bars at the tension face ({side}): 9.4.2 asks for "
+               "mixed reinforcement", "9.4.2")
         R.note("9.4.2: the tension-face bars preferably ribbed, of small diameter, closely spaced (not checked)")
     return R.report()
 
@@ -314,10 +318,10 @@ def duct_detailing(sec: RCSection | None = None, *, ds: float | None = None, d_i
     Straight ducts: clear spacing ≥ 40 mm and ≥ 0.6 ds (should); corrugated metal or plastic ducts and iron-sheet ducts
     may be stacked two high in straight runs (stacked: the number touching one above the other; curved=True for a
     curved run). Inner duct area ≥ 2 × tendon area: with d_inner and Ap, or for every tendon row of sec (its duct
-    diameter taken as the inner one unless d_inner is given). Radius ≥ curve_radius_min(kind, d) (kind default from
-    sec, d: the strand's wire diameter or the bar diameter). Straight length behind the anchor ≥ anchor_straight_min(
-    F_break) (should). Grout strength ≥ 50 MPa. Curved ducts (9.4.9 item 2): curved_spacing; their cover: 9.4.8,
-    curved_duct_detailing."""
+    diameter, normally the outer one, taken as the inner one unless d_inner is given; a note says so).
+    Radius ≥ curve_radius_min(kind, d) (kind default from sec, d: the strand's wire diameter or the bar diameter).
+    Straight length behind the anchor ≥ anchor_straight_min(F_break) (should). Grout strength ≥ 50 MPa. Curved ducts
+    (9.4.9 item 2): curved_spacing; their cover: 9.4.8, curved_duct_detailing."""
     R = _Rules("duct detailing (9.4.9–9.4.12)", "JTG 3362-2018 9.4.9–9.4.12")
     if sec is not None and sec.pretensioned:
         R.note("pretensioned member: no ducts (9.4.9–9.4.12 are for post-tensioned members)")
@@ -339,7 +343,8 @@ def duct_detailing(sec: RCSection | None = None, *, ds: float | None = None, d_i
             R.min(f"tendon row {i} (depth {z:.0f} mm): inner duct area / tendon area", (dd or duct) / a,
                   DUCT_AREA_RATIO, "9.4.9 item 3", unit="")
         if d_inner is None:
-            R.note("9.4.9 item 3: the section's duct diameter taken as the inner diameter")
+            R.note("9.4.9 item 3: the section's duct diameter taken as the inner diameter; it is normally the outer "
+                   "one (deducted for the net section), which overstates the inner area: pass d_inner")
     else:
         R.skip("inner duct area (give d_inner and Ap, or sec)", "9.4.9 item 3")
     k = kind if kind is not None else (sec.tendon.kind if sec is not None and sec.has_internal else None)
@@ -382,16 +387,18 @@ def _local_zone(R: _Rules, plate, layers, spiral_length, trumpet_length, cl: str
 def end_zone_detailing(*, plate: str | None = None, layers: int | None = None, spiral_length: float | None = None,
                        trumpet_length: float | None = None, rho_v: float | None = None,
                        stirrup_spacing: float | None = None, closed: bool | None = None, e: float | None = None,
-                       h: float | None = None, end_bars_to_edge: bool | None = None, seal=None,
-                       member=None) -> Check:
+                       h: float | None = None, end_bars_to_edge: bool | None = None,
+                       spalling_bars: bool | None = None, seal=None, member=None,
+                       seal_bars: bool | None = None) -> Check:
     """the end anchorage zone of a post-tensioned member (9.4.6, 9.4.13, 9.4.18). plate: "trumpet" (anchor plate with a
     trumpet, required at end anchorages by 9.4.6) or "flat". Local zone (9.4.18 item 1): flat plates ≥ 4 mesh layers or
     spiral turns (layers); trumpet plates a spiral at least as long as the trumpet (spiral_length, trumpet_length);
     ρv of 5.7.2 ≥ 0.5 % (9.4.6; bearing.spiral_ratio, mesh_ratio). General zone (item 2): closed stirrups against the
-    bursting force at ≤ 120 mm. End face (item 3): bars against spalling; with a large-eccentricity anchorage (e, h:
-    γ = 2e/h > 1/3, the force outside the kern, 8.2.5) the end-face bars bent and run on to the longitudinal tension
-    edge (should; end_bars_to_edge). seal, member: strength classes of the sealing concrete and of the member,
-    seal ≥ 0.8 member and ≥ C30 (9.4.13). The zones (8.2.1 notes): anchorage_zone."""
+    bursting force at ≤ 120 mm. End face (item 3): bars against spalling (spalling_bars); with a large-eccentricity
+    anchorage (e, h: γ = 2e/h > 1/3, the force outside the kern, 8.2.5) the end-face bars bent and run on to the
+    longitudinal tension edge (should; end_bars_to_edge). Anchors left in the member (9.4.13): bars round them tied to
+    the member before sealing (seal_bars); seal, member: strength classes of the sealing concrete and of the member,
+    seal ≥ 0.8 member and ≥ C30. The zones (8.2.1 notes): anchorage_zone."""
     R = _Rules("end anchorage zone detailing (9.4.6, 9.4.13, 9.4.18)", "JTG 3362-2018 9.4.6, 9.4.13, 9.4.18")
     R.flag("trumpet anchor plate", None if plate is None else plate == "trumpet",
            "flat anchor plate at an end anchorage: 9.4.6 asks for plates with a trumpet", "9.4.6")
@@ -408,8 +415,10 @@ def end_zone_detailing(*, plate: str | None = None, layers: int | None = None, s
                    "9.4.18 item 3", should=True)
     else:
         R.skip("large-eccentricity anchorage (give e and h)", "9.4.18 item 3")
-    R.note("9.4.18 item 3: the end face needs bars against the spalling force (8.2.3, 8.2.4; amount by regions."
-           "tie_check)")
+    R.flag("bars against spalling at the end face", spalling_bars, "no bars against the spalling force at the end "
+           "face", "9.4.18 item 3")
+    R.flag("bars round the sealed anchors", seal_bars, "no bars round the anchors tying the sealing concrete to the "
+           "member", "9.4.13")
     if seal is not None and member is not None:
         R.min("sealing concrete class", _grade(seal), max(SEAL_RATIO * _grade(member), SEAL_MIN), "9.4.13", unit="MPa")
     else:
@@ -418,19 +427,26 @@ def end_zone_detailing(*, plate: str | None = None, layers: int | None = None, s
 
 
 def anchorage_zone(h: float, *, bf: float = 0.0, plate=None, factor: float = 1.0) -> dict:
-    """extent of the anchorage zone at a member end (8.2.1 notes, figure 8-2): across the whole end section; along the
-    member factor × max(h, b'f), factor 1.0–1.2 (h: depth, b'f: flange width); the local zone 1.2 × the longer side of
-    the plate (plate = (a1, a2)) deep, over the bearing area of figure 5.7.1; the general zone the rest. Returns
-    {"length", "local_length", "general": (from, to)} (mm from the end face). Program convention for the ties of
-    8.2.1: the bursting steel As counts the closed stirrups of the general zone, from the end of the local zone to the
-    end of the zone (zone_steel); the transverse stress right under the plate is compression (commentary figure 8-3)."""
+    """extent of the anchorage zone at a member end (8.2.1 notes, figure 8-2) and the ranges in which the ties of 8.2.1
+    count their bars (mm from the end face). The zone: across the whole end section, along the member factor ×
+    max(h, b'f), factor 1.0–1.2 (h: depth, b'f: flange width); the local zone 1.2 × the longer side of the plate
+    (plate = (a1, a2)) deep, over the bearing area of figure 5.7.1; the general zone the rest.
+    Program convention for counting As (8.2.1 sends As to "the bars within the ranges of 9.4.18 and 9.4.20", and 9.4.18
+    gives none): "web" = (end of the local zone, factor × h) for the ties in the plane of the web, the bursting force of
+    8.2.2 and the edge tension of 8.2.5. The commentary to 8.2.2 treats the web of a T or box girder as a rectangular
+    plate of depth h, whose own zone by note 1 is (1.0–1.2) h; the bursting tension lies within about h of the end (the
+    transverse stress under the plate is compression, commentary figure 8-3b; the commentary to 9.4.7 puts the tension
+    within about 3/4 h), so the web's stirrups farther than h from the end carry none of it. "flange" = (0, the zone's
+    length) for the spread of the force into the flanges (the transverse spalling of the slabs, commentary figure
+    8-7b). Returns {"length", "length_range", "local_length", "web", "flange"} ("web" None without the plate)."""
     if not 1.0 <= factor <= 1.2:
         raise ValueError("8.2.1 note 1: the zone length is 1.0–1.2 × max(h, b'f)")
     L = factor * max(h, bf)
-    out = {"length": L, "length_range": (max(h, bf), 1.2 * max(h, bf)), "local_length": None, "general": None}
+    out = {"length": L, "length_range": (max(h, bf), 1.2 * max(h, bf)), "local_length": None, "web": None,
+           "flange": (0.0, L)}
     if plate is not None:
         loc = 1.2 * max(plate)
-        out.update(local_length=loc, general=(loc, L))
+        out.update(local_length=loc, web=(loc, factor * h))
     return out
 
 
@@ -453,18 +469,22 @@ BLISTER_BAR_LENGTH = 1500.0  # longitudinal bars against tie-back and local bend
 BLISTER_BAR_HALF_WIDTH = 1.5  # × the plate width, either side of the tendon axis (9.4.20 items 3, 4, should)
 
 
-def blister_zones(hb: float, a: float, t: float, *, R: float | None = None, alpha: float | None = None) -> dict:
+def blister_zones(hb: float, a: float, t: float, *, R: float | None = None, deviation: float | None = None,
+                  width: float | None = None, L: float | None = None) -> dict:
     """zones of the reinforcement of a triangular anchor blister (9.4.20, figure 9.4.20, commentary figure 9-3).
     Along the wall plate: x from the line where the anchor face meets the wall, positive ahead of the anchor face (under
     the blister, the way the anchorage force acts); across it: y from the tendon axis. hb: blister height at the anchor
-    face (figure 9.4.20 h); a: plate width; t: wall thickness; R, alpha: the tendon's radius and deviation (degrees).
+    face (figure 9.4.20 h); a: plate width; t: wall thickness; R, deviation: the tendon's radius and the angle it turns
+    through in its curve (degrees); width, L: the blister's width and length.
     "bursting": the least extent of the stirrups along the tendon from the anchor face, 1.2 hb (item 1);
     "tie_back": inner-edge bars, x ∈ [−750, 750] at least, |y| ≤ 1.5 a (item 3); "bending": outer-edge bars,
-    x ∈ [t − 750, t + 750] at least, |y| ≤ 1.5 a (item 4); "radial": the curved length R α (item 5) or None."""
+    x ∈ [t − 750, t + 750] at least, |y| ≤ 1.5 a (item 4); "radial": the curved length R × deviation (item 5);
+    "zone": the blister's anchorage zone of 8.2.1 note 1, (across 3 × width, along L + 2t). None where not given."""
     half = BLISTER_BAR_LENGTH / 2
     return {"bursting": BLISTER_STIRRUP_EXTENT * hb, "tie_back": (-half, half), "bending": (t - half, t + half),
             "half_width": BLISTER_BAR_HALF_WIDTH * a,
-            "radial": None if R is None or alpha is None else R * math.radians(alpha)}
+            "radial": None if R is None or deviation is None else R * math.radians(deviation),
+            "zone": None if width is None or L is None else (3 * width, L + 2 * t)}
 
 
 def blister_detailing(*, hb: float | None = None, a: float | None = None, t: float | None = None,
@@ -511,8 +531,9 @@ def blister_detailing(*, hb: float | None = None, a: float | None = None, t: flo
         Rr.min(f"{lab}: end", ext[1], c + half, cl, should=True)
     Rr.max("longitudinal bars counted either side of the tendon axis", bar_half_width,
            None if a is None else BLISTER_BAR_HALF_WIDTH * a, "9.4.20 items 3, 4", should=True)
+    turn = deviation if deviation is not None else alpha  # the curve's turn: the deviation, else the anchor angle
     Rr.min("radial reinforcement extent", radial_extent,
-           None if R is None or alpha is None else R * math.radians(deviation if deviation is not None else alpha),
+           None if R is None or turn is None else blister_zones(0.0, 0.0, 0.0, R=R, deviation=turn)["radial"],
            "9.4.20 item 5", should=True)
     Rr.note("9.4.20 item 2: end-face stirrups of the blister run on to the outer face of the wall (not checked)")
     return Rr.report()
@@ -525,6 +546,7 @@ SHEAR_KEY_EXTENT = 0.75  # web keys over ≥ 0.75 of the girder depth (should)
 SHEAR_KEY_WIDTH = 0.75  # key width across the web ≈ 0.75 of the web width (should, a target)
 SHEAR_KEY_HEIGHT_MIN = 35.0  # and > 2 × the largest aggregate
 SHEAR_KEY_RATIO = 0.5  # key height / mean width = 1 : 2
+SHEAR_KEY_RATIO_TOL = 0.05  # program convention: within 5 % of 1 : 2
 
 
 def segmental_detailing(*, end_mesh_d: float | None = None, wet_joint: float | None = None, wet_grade=None,
@@ -535,7 +557,7 @@ def segmental_detailing(*, end_mesh_d: float | None = None, wet_joint: float | N
     """precast segmental structures (9.4.17): segment ends meshes of bars ≥ 10 mm (item 1); cast-in-place wet joints
     ≥ 60 mm wide, concrete not below the segments' class (item 2); web shear keys over ≥ 75 % of the girder depth
     (should) and ≈ 75 % of the web width across (a target: a note); key height > 2 × the largest aggregate and
-    ≥ 35 mm; key height : mean width = 1 : 2 (item 3)."""
+    ≥ 35 mm; key height : mean width = 1 : 2 (item 3; program convention: within 5 %)."""
     R = _Rules("precast segmental detailing (9.4.17)", "JTG 3362-2018 9.4.17")
     R.min("segment end mesh bar diameter", end_mesh_d, SEGMENT_END_MESH_D_MIN, "9.4.17 item 1")
     R.min("wet joint width", wet_joint, WET_JOINT_WIDTH_MIN, "9.4.17 item 2")
@@ -553,7 +575,7 @@ def segmental_detailing(*, end_mesh_d: float | None = None, wet_joint: float | N
     if key_height is not None and key_mean_width is not None:
         r = key_height / key_mean_width
         R.chk.details["key height / mean width"] = r
-        if abs(r - SHEAR_KEY_RATIO) > 1e-6:
+        if abs(r / SHEAR_KEY_RATIO - 1) > SHEAR_KEY_RATIO_TOL:
             R.chk.warnings.append(f"shear key height / mean width {r:.3f}: 9.4.17 takes 1 : 2 (9.4.17 item 3)")
     R.note("9.4.17 item 2: epoxy joints evenly coated and pressed until cured (not checked)")
     return R.report()

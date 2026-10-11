@@ -74,7 +74,9 @@ def dense_anchors(y, a) -> list[list[int]]:
     plate width are dense; a chain of such neighbours is one group (figure 8.2.2b). y: anchor centres along the depth
     (mm); a: plate widths, one value or one per anchor (two different neighbours: the wider plate, program convention).
     Returns lists of anchor indices in order of y; a separate anchor is a group of its own. (The commentary: AASHTO LRFD
-    groups anchors closer than 1.5 a; the code widens it to 2 a.)"""
+    groups anchors closer than 1.5 a; the code widens it to 2 a.) y is one-dimensional: the anchors of one plane, i.e.
+    one web (8.2.2 works in the web's plane, commentary p210); call it once per web, anchors in different webs at the
+    same height are not neighbours."""
     y = np.asarray(y, float).reshape(-1)
     a = np.broadcast_to(np.asarray(a, float), y.shape)
     order = [int(i) for i in np.argsort(y, kind="stable")]
@@ -91,7 +93,7 @@ def bursting_force_anchors(Pd, y, a, h: float, *, yc: float, angle=0.0) -> tuple
     """bursting force of the anchors on one end face (8.2.2): dense anchors (dense_anchors) as one force, their resultant,
     with a = the distance between the outer edges of the two outermost plates (item 2, note 2); separate anchors each on
     their own; the largest governs (item 3). Pd: design anchorage forces (kN, one per anchor, anchor_force); y: anchor
-    centres from the top of the end section (mm); a: plate widths; h: depth of the end section; yc: depth of the
+    centres from the top of the end section (mm), the anchors of one web (dense_anchors); a: plate widths; h: depth of the end section; yc: depth of the
     centroid of the member's section (T girders and boxes: of the whole girder, commentary to 8.2.2); angle: each
     tendon's inclination at the anchor, degrees, positive where the force line (from the anchor into the member) runs
     down. A group's resultant: the vector sum of its forces, acting at the force-weighted depth of their horizontal

@@ -316,25 +316,29 @@ r_tendon = tdet.curve_radius(L * 1e3, 1000.0)  # 9.3.14-2: about L²/8f for the 
 duct_r = tdet.duct_detailing(s_mid, ds=97, d_inner=90, Ap=Ap1, clear=50, stacked=1, d=5.0, radius=r_tendon,
                              straight_length=1000, F_break=9 * 260.7, grout=50)
 print("  " + str(duct_r))
-# 9.4.8 at mid-span: 1.2 × the force after friction and anchor set (no anchorage-ring loss with this anchor); the
-# sagging curve presses up into the web, so the cover that matters is the side cover in the 200 mm web, out of the plane
+# 9.4.8 at mid-span: 1.2 × the force after friction and anchor set (no anchorage-ring loss with this anchor). The
+# sagging curve presses up, into the girder, so the cover that matters is out of the plane: taken at the 200 mm web
+# where the tendons rise (in the 800 mm bulb at mid-span it is much larger; on the safe side). 9.4.9 item 2: the ducts
+# in the curve 60 mm clear of each other in its plane and out of it
 Pd_c = 1.2 * (s_con - l1[n // 2] - l2[n // 2]) * Ap1 / 1e3
 cover_web = (geo["b"] - 97) / 2
 print("  " + str(tdet.curved_duct_detailing(Pd_c, r_tendon, 0.9 * c.fcuk, 97, c_out=cover_web, cover_min=97 / 2)) +
       f"  (r = {r_tendon / 1e3:.1f} m, Cout = {tdet.curved_cover(Pd_c, r_tendon, 0.9 * c.fcuk, 97)[1]:.0f} mm: "
       "the 9.1.1 cover, half the duct, governs)")
+print("  " + str(tdet.curved_spacing(Pd_c, r_tendon, 0.9 * c.fcuk, 97, clear_in=60, clear_out=60)))
 print("  " + str(tdet.end_zone_detailing(plate="trumpet", spiral_length=6 * 50, trumpet_length=250,
                                          rho_v=brg.spiral_ratio(113.1, 250, 50), stirrup_spacing=100, closed=True,
-                                         e=0.0, h=geo["h"], seal="C40", member=c)))
-# 8.2: the four anchors at 450 mm (< 2 × 230 mm: dense) around the centroid act as one group; the bursting steel is the
-# closed stirrups of the general zone, from the end of the local zone (1.2 × 230 mm) to max(h, b'f) (8.2.1, program
-# convention), here φ12 two legs at 100 mm from 50 mm
+                                         e=0.0, h=geo["h"], spalling_bars=True, seal="C40", member=c,
+                                         seal_bars=True)))
+# 8.2: the four anchors at 450 mm (< 2 × 230 mm: dense) in the web act as one group; the bursting steel is the closed
+# stirrups in the web's plane from the end of the local zone (1.2 × 230 mm) to h (the web as a rectangular plate, 8.2.1
+# note 1 and the commentary to 8.2.2; program convention), here φ12 two legs at 100 mm from 50 mm
 y_anc = gross.zg + np.array([-675.0, -225.0, 225.0, 675.0])
 Tb_g, db_g, grp = regions.bursting_force_anchors(Pd, y_anc, 230.0, geo["h"], yc=gross.zg,
                                                   angle=math.degrees(math.atan(slope[0])))
 zone = tdet.anchorage_zone(geo["h"], bf=geo["bf"], plate=(230, 230))
-As_b = tdet.zone_steel(np.arange(50, 2000, 100), 2 * 113.1, *zone["general"])
-g0, z0_, z1_ = grp[0], *zone["general"]
+As_b = tdet.zone_steel(np.arange(50, 2000, 100), 2 * 113.1, *zone["web"])
+g0, z0_, z1_ = grp[0], *zone["web"]
 print(f"  anchors: {len(grp)} dense group(s), a = {g0['a']:.0f} mm, α = {g0['alpha']:.1f}°: Tb,d = {Tb_g:.0f} kN at "
-      f"{db_g:.0f} mm (8.2.2); general zone {z0_:.0f}–{z1_:.0f} mm")
-print("  " + str(regions.tie_check(Tb_g, As=As_b, gamma0=gamma0, name="bursting steel in the general zone")))
+      f"{db_g:.0f} mm (8.2.2); bursting steel counted {z0_:.0f}–{z1_:.0f} mm from the end")
+print("  " + str(regions.tie_check(Tb_g, As=As_b, gamma0=gamma0, name="bursting steel in the web")))
