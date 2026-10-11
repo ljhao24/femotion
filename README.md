@@ -136,7 +136,7 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 | `femotion.frame.prestress` | tendons on frame models: equivalent loads, total, primary and secondary effects | own (linear) |
 | `femotion.frame.thermal` | imposed strains and curvatures (temperature, shrinkage) on frame models: secondary effects | own (linear) |
 | `femotion.frame.stages` | construction stages (members, supports, links, loads, tendons added and removed) and linear creep and shrinkage step by step in time: section forces, reactions, displacements since each node was built | own (linear) |
-| `femotion.codes.jtg` | Chinese highway bridge codes: traffic, crowd and temperature actions and combinations (JTG D60-2015); effective flange widths, ultimate-limit-state resistance of reinforced and prestressed concrete sections (flexure, shear, compression, torsion, local compression), prestress losses, crack resistance with temperature gradients, crack width, deflection and stress checks, composite flexural members, strut-and-tie models, anchorage zones, diaphragms, cap beams and pile caps (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
+| `femotion.codes.jtg` | Chinese highway bridge codes: traffic, crowd and temperature actions and combinations (JTG D60-2015); effective flange widths, ultimate-limit-state resistance of reinforced and prestressed concrete sections with internal and external tendons (flexure, shear, compression, tension, torsion, local compression, punching), prestress losses, crack resistance with temperature gradients, crack width, deflection and stress checks, composite flexural members, deck slabs, box girders across the bridge, creep secondary effects, strut-and-tie models, anchorage zones, diaphragms, cap beams and pile caps (JTG 3362-2018); alpha, see [docs/codes/](docs/codes/) | — |
 
 ### Which frame solver?
 
@@ -164,17 +164,24 @@ k = Ms.argmax()
 print(jtg.crack_width(sec, Ms[k], Ml[k], env="I"))   # crack width: Wcr = … mm, limit 0.200 mm, ratio …
 ```
 
-Reinforced and prestressed (bonded internal tendons) concrete: ultimate limit state (including torsion and local
-compression), serviceability (crack resistance of prestressed members with the temperature gradient, crack width,
-stiffness and deflection), stresses in service and in construction stages, composite girders (precast girder + deck),
-and the disturbed regions of chapter 8 and appendix B (strut-and-tie models, anchorage zones, cap beams, pile caps).
-`examples/jtg_pc_girder.py` runs a post-tensioned continuous girder from tendon profile and losses to the secondary
-moments of prestress and temperature and the ultimate, serviceability, stress and anchorage-zone checks;
-`examples/jtg_composite_girder.py` a precast girder with its deck slab; `examples/jtg_staged_girder.py` precast girders
-made continuous, stage by stage with creep and shrinkage of appendix C to ten years (creep secondary moments, pre-camber); `examples/jtg_substructure.py` a pier cap and
-pile caps. Values and formulas have been checked clause by
-clause against the official texts. [docs/codes/](docs/codes/) has one file per code (in Chinese) with every clause,
-formula, table and parameter the program uses, page references and the function using each. `examples/jtg_rc_girder.py` checks a two-span continuous girder.
+Reinforced and prestressed concrete (bonded internal tendons, pretensioned or post-tensioned, and external tendons):
+ultimate limit state (flexure, shear including circular sections, compression including spiral columns, bars over the
+web, biaxial bending and the effective lengths of appendix E, tension members, torsion, local compression, punching),
+serviceability (crack resistance with the temperature gradient, crack width including class B members under axial
+force, stiffness and deflection), stresses in service and in construction stages, composite girders (precast girder +
+deck), deck slabs (wheel load distribution widths, slabs between ribs and cantilevers), box girders across the bridge
+(closed transverse frames, shear flow, in-plane principal stresses), creep secondary effects and construction stages
+(`femotion.frame.stages`), and the disturbed regions of chapter 8 and appendix B (strut-and-tie models, anchorage zones,
+cap beams, pile caps). Examples: `examples/jtg_rc_girder.py` a two-span continuous girder; `examples/jtg_pc_girder.py` a
+post-tensioned continuous girder from tendon profile and losses to the secondary moments of prestress and temperature
+and the ultimate, serviceability, stress and anchorage-zone checks; `examples/jtg_external_girder.py` a box girder with
+external tendons; `examples/jtg_composite_girder.py` a precast girder with its deck slab; `examples/jtg_staged_girder.py`
+precast girders made continuous, stage by stage with creep and shrinkage of appendix C to ten years (creep secondary
+moments, pre-camber); `examples/jtg_box_transverse.py` the deck slab of a box girder across the bridge;
+`examples/jtg_substructure.py` a pier cap, pile caps, piles and columns. Values and formulas have been checked clause
+by clause against the official texts. [docs/codes/](docs/codes/) has one file per code (in Chinese) with every clause,
+formula, table and parameter the program uses, page references and the function using each, and lists what is not
+covered.
 
 ## Validation
 
