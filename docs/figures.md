@@ -35,6 +35,8 @@ page = viz.html(["<h2>Flexure</h2>", fig, viz.stack([elevation, shear_chart])], 
   opens in a browser, Inkscape or a word processor.
 - **HTML page**: `fig.save("x.html")` for one figure; `viz.html(parts, title=…, css=…)` for a page of figures, stacks
   and HTML strings in order. The SVGs scale down with the page (`max-width: 100%`).
+- **Calculation report**: `femotion.report` puts figures and stacks into a numbered report (图 n-k, captions,
+  cross-references) with the checks of `femotion.codes.jtg.report`, printable to A4 ([report.md](report.md)).
 
 ## Program conventions
 

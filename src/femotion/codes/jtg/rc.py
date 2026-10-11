@@ -997,6 +997,10 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
                 {"b": b, "h0": h0, "P": P, "rho_sv": rho_sv, "alpha1": alpha1, "alpha2": alpha2, "alpha3": a3,
                  "Vcs": Vcs, "Vsb": Vsb, "Vpb": Vpb, "Vpb_ex": Vpb_ex, "fsv": sst.fsv, "rho_pv": rho_pv}, notes,
                 section=sec, hogging=hogging)
+    # the inputs behind the values above, for calculation reports (femotion.codes.jtg.report)
+    chk.details.update(As=float(t[:, 0].sum()), Ap=float(Ap), Asv=Asv, sv=sv, legs=legs, dia=dia,
+                       rho_sv_provided=rho_prov, fpv=fpv, bent=[tuple(r) for r in bent],
+                       bent_tendons=[tuple(r) for r in bent_tendons], bent_external=[tuple(r) for r in bent_external])
     vmax = 0.51e-3 * math.sqrt(c.fcuk) * b * h0
     chk.details.update(V_section_max=vmax, V_detailing=vmin)
     if gamma0 * abs(Vd) > vmax:
@@ -1058,18 +1062,24 @@ def stability_factor(l0: float, *, b: float | None = None, d: float | None = Non
 
 
 def _phi_of(sec: RCSection, l0, b_min, i_min):
+    return _phi_info(sec, l0, b_min, i_min)[0]
+
+
+def _phi_info(sec: RCSection, l0, b_min, i_min):
+    """(φ, the slenderness's kind "b", "d" or "i" or None, its dimension mm) of table 5.3.1"""
     if l0 is None or l0 == 0:
-        return 1.0
+        return 1.0, None, None
     if b_min is not None:
-        return stability_factor(l0, b=b_min)
+        return stability_factor(l0, b=b_min), "b", b_min
     if i_min is not None:
-        return stability_factor(l0, i=i_min)
+        return stability_factor(l0, i=i_min), "i", i_min
     if sec.kind == "circle":
-        return stability_factor(l0, d=sec.h)
+        return stability_factor(l0, d=sec.h), "d", sec.h
     if sec.kind == "rect":
-        return stability_factor(l0, b=min(sec.pieces[0].b, sec.h))
+        bb = min(sec.pieces[0].b, sec.h)
+        return stability_factor(l0, b=bb), "b", bb
     if sec.kind == "annulus":
-        return stability_factor(l0, i=sec.i)  # symmetric: i is the same about every axis
+        return stability_factor(l0, i=sec.i), "i", sec.i  # symmetric: i is the same about every axis
     raise ValueError("table 5.3.1 needs the least radius of gyration: pass i_min (mm) or b_min for this section")
 
 
@@ -1086,10 +1096,11 @@ def axial(sec: RCSection, Nd: float, l0: float | None = None, *, gamma0: float =
     As = sec.bars[:, 0].sum()
     if As / A > 0.03:
         A -= As
-    phi = _phi_of(sec, l0, b_min, i_min)
+    phi, by, dim = _phi_info(sec, l0, b_min, i_min)
     Nu = 0.9 * phi * (c.fcd * A + st.fsd_c * As) / 1e3
     chk = Check("axial compression", gamma0 * Nd, Nu, "kN", "JTG 3362-2018 5.3.1", {"phi": phi, "rho": As / sec.area},
                 section=sec)
+    chk.details.update(l0=l0, slenderness_by=by, slenderness_dim=dim, A_used=A, As=As)  # for calculation reports
     _min_compression_steel(sec, chk)
     chk.warnings += sec.material_rules()
     return chk
@@ -1167,6 +1178,7 @@ def eccentric(sec: RCSection, Nd: float, Md: float, l0: float | None = None, *, 
     e = eta * e0
     chk = Check("eccentric compression", gamma0 * Nd, 0.0, "kN", "JTG 3362-2018 5.3.4–5.3.9",
                 {"e0_from_forces": e0_raw, "e0": e0, "eta": eta, "e": e, "h0": h0}, section=sec, hogging=Md < 0)
+    chk.details.update(l0=l0, Nd=Nd, Md=Md)  # inputs, for calculation reports
     if e0 > e0_raw:
         chk.notes.append(f"e0 = {e0_raw:.1f} mm raised to the minimum {e0:.1f} mm (5.3.9)")
     _min_compression_steel(s, chk)
