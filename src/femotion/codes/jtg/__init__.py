@@ -1,9 +1,13 @@
 """Chinese highway bridge codes.
 
     actions    JTG D60-2015: lane and vehicle loads, impact factor, design lanes, reduction factors, basic combination
-    materials  JTG 3362-2018: concrete C25–C80, reinforcing steel, ξb
-    rc         JTG 3362-2018: ultimate-limit-state resistance of reinforced-concrete sections (flexure, shear, axial and
-               eccentric compression) on rectangles, T / I / box girders, solid and hollow circles
+    materials  JTG 3362-2018: concrete C25–C80, reinforcing and prestressing steel, ξb, σcon limits
+    rc         JTG 3362-2018: ultimate-limit-state resistance of reinforced and prestressed concrete sections (flexure,
+               shear, axial and eccentric compression) on rectangles, T / I / box girders, solid and hollow circles;
+               cracking moment and minimum reinforcement of prestressed members
+    prestress  JTG 3362-2018: prestress losses (friction, anchorage set with reverse friction, temperature,
+               elastic shortening, relaxation, creep and shrinkage with Appendix C), σpe, σp0; anchorage and
+               transfer lengths of pretensioned tendons
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
 
@@ -13,11 +17,13 @@ Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_gir
     Mmax, Mmin = jtg.basic_combination(G, Q)
     jtg.flexure(section, Mmax[k], gamma0=1.0)
 
-Prestressed concrete, serviceability (crack width, deflection, stresses), torsion and local bearing are not covered.
+Secondary effects of prestress on statically indeterminate structures: femotion.frame.prestress. External and unbonded
+tendons, serviceability (crack resistance, crack width, deflection, stresses), torsion and local bearing are not covered.
 """
 from .actions import (GAMMA_0, VEHICLE_AXLES, VEHICLE_SPACINGS, LiveLoad, basic_combination,  # noqa: F401
                       continuous_beam_frequencies, design_lanes,
                       impact_factor, lane_load, longitudinal_reduction, simple_beam_frequency, transverse_reduction)
-from .materials import Concrete, Rebar, concrete, rebar, xi_b  # noqa: F401
-from .rc import (Check, RCSection, axial, box, circle, eccentric, eta_factor, flexure, rect, shear,  # noqa: F401
+from . import prestress  # noqa: F401
+from .materials import Concrete, Rebar, Tendon, concrete, rebar, tendon, xi_b  # noqa: F401
+from .rc import (Check, RCSection, axial, box, circle, cracking_moment, eccentric, eta_factor, flexure, rect, shear,  # noqa: F401
                  stability_factor, tee)

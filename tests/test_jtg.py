@@ -330,3 +330,14 @@ def test_stirrup_steel_grade():
     assert r.details["fsv"] == 250.0
     assert any("0.14" in f for f in r.failed)
     assert not jtg.shear(s, 100.0, (2, 8, 250)).failed  # HRB400 stirrups: 0.11 % suffices
+
+
+def test_singly_reinforced_alternative_keeps_inner_tension_rows():
+    """5.2.4 with x < 2as': the singly reinforced alternative keeps every tension row (here two rows 200 mm apart, beyond
+    the edge-row tolerance), as 5.2.2 counts all the tension reinforcement"""
+    a25 = 5 * A25
+    s = jtg.tee(300, 1500, 2000, 200, concrete="C40", bars=[(a25, 1450), (a25, 1250)], top=[(6, 20, 50)])
+    r = jtg.flexure(s, 1.0)
+    assert r.details["x"] < 100
+    x1 = 330 * 2 * a25 / (18.4 * 2000)
+    assert r.details["M_singly_reinforced"] == pytest.approx(330 * a25 * ((1450 - x1 / 2) + (1250 - x1 / 2)) / 1e6, rel=1e-9)
