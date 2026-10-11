@@ -30,8 +30,8 @@ pip install "femotion[sections]"     # + sectionproperties：任意形状截面�
 pip install "femotion[all]"
 ```
 
-Linux 上 gmsh 需要几个系统库，Python 3.10 / 3.11 上的 OpenSeesPy（Linux 版 3.7）还需要 BLAS 和 LAPACK：
-`sudo apt install libglu1-mesa libxcursor1 libxft2 libxinerama1 libblas3 liblapack3`（Debian / Ubuntu）。
+需要 Python 3.12 及以上、NumPy 2.0 及以上、SciPy 1.13 及以上（可选依赖的最低版本见 `pyproject.toml`）。Linux 上 gmsh 和 OpenSeesPy
+需要几个系统库：`sudo apt install libglu1-mesa libxcursor1 libxft2 libxinerama1 libblas3 liblapack3`（Debian / Ubuntu，与 CI 相同）。
 
 ## 和其他软件交换
 

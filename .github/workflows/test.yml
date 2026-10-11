@@ -17,9 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # the declared lower bounds must really work
-          - {os: ubuntu-latest, python: "3.10", resolution: lowest-direct, extras: ""}
-          - {os: ubuntu-latest, python: "3.10", resolution: lowest-direct, extras: all}
+          # the declared lower bounds must really work: core alone (NumPy 2.0, SciPy 1.13) and with every extra (some
+          # extras need newer NumPy / SciPy than the core does)
+          - {os: ubuntu-latest, python: "3.12", resolution: lowest-direct, extras: ""}
+          - {os: ubuntu-latest, python: "3.12", resolution: lowest-direct, extras: all}
           # newest releases of everything
           - {os: ubuntu-latest, python: "3.13", resolution: highest, extras: all}
           - {os: windows-latest, python: "3.12", resolution: highest, extras: all}
@@ -28,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      - name: system libraries (gmsh; OpenSeesPy's Linux build before Python 3.12)
+      - name: system libraries (gmsh, OpenSeesPy)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libglu1-mesa libxcursor1 libxft2 libxinerama1 libblas3 liblapack3
       - name: install

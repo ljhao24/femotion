@@ -35,8 +35,9 @@ pip install "femotion[sections]"     # + sectionproperties: cross-sections of an
 pip install "femotion[all]"
 ```
 
-On Linux, gmsh's wheel needs a few system libraries, and OpenSeesPy on Python 3.10 / 3.11 (its 3.7 Linux build) needs
-BLAS and LAPACK: `sudo apt install libglu1-mesa libxcursor1 libxft2 libxinerama1 libblas3 liblapack3` (Debian / Ubuntu).
+Requires Python 3.12 or newer, NumPy 2.0 and SciPy 1.13 or newer (the extras state their own minimums). On Linux, gmsh
+and OpenSeesPy need a few system libraries: `sudo apt install libglu1-mesa libxcursor1 libxft2 libxinerama1 libblas3
+liblapack3` (Debian / Ubuntu, as on the CI).
 
 ## Quick tour
 
