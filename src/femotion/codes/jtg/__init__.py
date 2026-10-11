@@ -44,6 +44,9 @@
     detailing    JTG 3362-2018 4.5, 9.1, 9.2.5–9.2.8, 9.3: durability (environment classes, minimum concrete classes),
                  cover, bundles, anchorage, hooks, splices, clear spacing, web side bars, stirrups, cut-off and bent-up
                  bars, curved soffits, girder slabs, diaphragms, composite and hinged slabs, composite beams
+    charts       charts along a girder for calculation reports (SVG, femotion.viz): moment envelope and resisting
+                 moment diagram, shear envelope with the inclined sections, utilisation, edge stresses, deflection,
+                 crack width, stacked on one x axis
 
 Typical use on a frame model (spine of a girder bridge), see examples/jtg_rc_girder.py:
 
@@ -102,6 +105,7 @@ from .temperature import (EFFECTIVE_TEMPERATURE, EXPANSION, NEGATIVE_GRADIENT, P
                           effective_temperature, temperature_gradient, thermal_stresses)
 from .torsion import compatibility_torque, torsion, torsion_flange, torsion_moduli  # noqa: F401
 from . import devices  # noqa: F401
+from . import charts  # noqa: F401
 from .actions import braking_force  # noqa: F401
 from .devices import (Laminated, Movements, expansion_joint, hinge_compression, hinge_contact_width,  # noqa: F401
                       hinge_transverse, installation_width, laminated_bearing, laminated_sliding, movements,

@@ -269,7 +269,7 @@ def shear_search(x, Vd, Md, section, stirrups, *, gamma0: float = 1.0, supports=
                 V0 = Vf(xs_)
                 lim = 0.51e-3 * math.sqrt(s0.concrete.fcuk) * bw * h0
                 res.limits.append(Check(f"section limit at the end support x = {xs_:g}", gamma0 * V0, lim, "kN",
-                                        "JTG 3362-2018 5.2.11", {"b": bw, "h0": h0, "V0d": V0},
+                                        "JTG 3362-2018 5.2.11", {"b": bw, "h0": h0, "V0d": V0, "x": xs_},
                                         ["the shear at the support centre (V0d), b and h0 of the support section "
                                          "(program convention, the near-end-support segment of 5.2.11)"]))
 
