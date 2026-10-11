@@ -356,8 +356,9 @@ def crack_width(sec: RCSection, Ms: float, Ml: float, *, N: float = 0.0, Nl: flo
     l0) on Ms only and for compression members, N at the gross centroid (ys); C3 0.9 compression, 1.1 tension. Not
     cracked while the tension face stays compressed under the frequent combination (σst ≤ σpc, with N): no e0/h ≤ 0.55
     exemption. Ap + As: the steel below the gross centroid and below the neutral axis of the cracked section (appendix J
-    under Np0 + N and the moment); none there (the axis below all the bonded steel): Wcr = 0. Known steps and
-    non-monotony of these conventions: docs/codes/JTG_3362-2018.md 7.4.
+    under Np0 + N and the moment); none there (the axis below all the bonded steel): the steel below the gross centroid
+    (program convention, as before this rule; notes). Known steps and non-monotony of these conventions:
+    docs/codes/JTG_3362-2018.md 7.4.
     As: reinforced concrete the tension-face rows (RCSection.edge_masks). d: the equivalent diameter of those bars
     (override d=…, e.g. for bundled bars dse = √n d; × 1.3 for welded cages, 9.3.11); c: cover of the outermost tension
     row, at most 50 (override c=…); ρte = As / Ate within 0.01 … 0.1, Ate = 2 as b with b the width at the tension face.
@@ -462,9 +463,14 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
         bot, pb = s.bars[:, 1] > cut, s.tendons[:, 1] > cut
         As, Ap = s.bars[bot, 0].sum(), s.tendons[pb, 0].sum()
         At = As + Ap
-        if At <= 0:
-            return skip(f"decompressed, but the neutral axis of the cracked section (x = {r['x']:.0f} mm, appendix J) "
-                        "lies below all the bonded steel: no steel in the tension zone, no crack opening at the steel")
+        if At <= 0:  # the axis below all the bonded steel: the steel below the centroid (program convention, safe side)
+            bot, pb = s.bars[:, 1] > s.zg, s.tendons[:, 1] > s.zg
+            As, Ap = s.bars[bot, 0].sum(), s.tendons[pb, 0].sum()
+            At = As + Ap
+            if At <= 0:
+                raise ValueError("class B: no bonded steel below the centroid on the tension side (6.4.4-11)")
+            notes.append(f"the neutral axis of the cracked section (x = {r['x']:.0f} mm, appendix J) lies below all the "
+                         "bonded steel: the steel below the centroid taken as As, Ap (program convention, on the safe side)")
         h0 = (np.r_[s.bars[bot, 0], s.tendons[pb, 0]] * np.r_[s.bars[bot, 1], s.tendons[pb, 1]]).sum() / At
         ep = h0 - zN
         M = k * (eta * Ms + M_p2) * 1e6

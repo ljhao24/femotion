@@ -180,12 +180,28 @@ def test_class_b_tension_zone_below_the_cracked_axis():
         assert r.details["h0"] == pytest.approx(sum(a * z for a, z in sel) / sum(a for a, _ in sel), rel=1e-12)
         if N:
             assert 680 < x < 800
-    # decompressed at the face, but the axis of the cracked section below every row: no steel in the tension zone
+    # decompressed at the face, but the axis of the cracked section below every row (Ms 940 … 1000): no steel in the
+    # tension zone, the steel below the centroid instead (the rule before the axis was used: tendon 1100 + bars 1150,
+    # not A'p at 120), with a note; Wcr varies smoothly there. Between the tendon and the bars (Ms ≈ 1030) only the bars
+    # are in the tension zone: the documented upward step; from Ms ≈ 1060 the tendon is back in
     s3 = jtg.rect(500, 1200, concrete="C50", bottom=[(4, 20, 50)],
                   tendons=[(1390, 1100, 1100, 90), (278, 120, 1150, 70)], sigma_pe=[1000.0, 1050.0])
-    r = jtg.crack_width(s3, 950.0, 700.0, pc_class="B", tendon_bundles=BUNDLES)
-    assert r.demand == 0.0 and "below all the bonded steel" in r.notes[0]
-    assert jtg.crack_width(s3, 1300.0, 900.0, pc_class="B", tendon_bundles=BUNDLES).demand > 0
+    As = 4 * math.pi * 100
+    w = {}
+    for M in (950.0, 955.0, 1000.0, 1030.0, 1060.0):
+        r = jtg.crack_width(s3, M, 700.0, pc_class="B", tendon_bundles=BUNDLES)
+        w[M] = r.demand
+        if M <= 1000:
+            assert r.details["x"] > 1150 and "below all the bonded steel" in r.notes[0]
+            assert r.details["h0"] == pytest.approx((1390 * 1100 + As * 1150) / (1390 + As), rel=1e-12)
+        else:
+            assert not r.notes and r.details["x"] < 1150
+    assert 0 < w[950.0] and w[955.0] == pytest.approx(w[950.0], rel=1e-2)
+    assert jtg.crack_width(s3, 1030.0, 700.0, pc_class="B", tendon_bundles=BUNDLES).details["h0"] == pytest.approx(1150)
+    assert w[1030.0] > 1.5 * max(w[1000.0], w[1060.0])
+    s_g = _pc_rect().replace(bars=np.zeros((0, 2)), bar_d=np.zeros(0), tendons=np.array([[1112.0, 300.0, 1150.0, 5000.0]]))
+    with pytest.raises(ValueError, match="below the centroid"):  # no bonded steel below the centroid at all
+        jtg.crack_width(s_g, 300.0, 200.0, pc_class="B", d=15.2, c=40.0)
 
 
 def _web_bars():
