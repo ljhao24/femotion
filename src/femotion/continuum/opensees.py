@@ -551,6 +551,7 @@ class Step:
     Rn: np.ndarray
     cell: dict | None = None
     bar: dict | None = None
+    dowel: dict | None = None
 
 
 @dataclass
@@ -618,6 +619,12 @@ class OpsSolid:
         self._tie: dict[int, tuple] = {}  # extra node → (cell, 4 solid nodes) of its embedding
         self.bars: list[dict] = []
         self._segs: list[tuple] = []  # (node i, node j, bar)
+        self.dowels: list[dict] = []
+        self._dsegs: list[tuple] = []  # (node i, node j, dowel)
+        self._dkey: dict = {}  # coordinates → dowel node (6 dof)
+        self._six: set[int] = set()  # extra nodes with 6 dof (dowels)
+        self._rot: set[int] = set()  # dowel nodes whose rotation is tied to the solid's
+        self._links: dict[int, int] = {}  # bar node → dowel node it is pinned to (equal translations)
         # supports
         self.fixed: dict[int, list[int]] = {}
         self._springs: list[tuple] = []  # (node, (kx, ky, kz))
@@ -666,25 +673,48 @@ class OpsSolid:
         return self.mesh.nearest(p)
 
     # ── reinforcement ────────────────────────────────────────────────────
-    def _node_at(self, p, outside: str) -> int:
-        p = np.asarray(p, float)
+    def _key(self, p):
         tol = 1e-7 * self.scale
-        n = self.mesh.nearest(p)
-        if np.linalg.norm(self.mesh.points[n] - p) <= tol:
-            return n
-        key = tuple(np.round(p / tol).astype(np.int64))
+        return tuple(np.round(np.asarray(p, float) / tol).astype(np.int64))
+
+    def _new_node(self, p, tie) -> int:
+        j = self.N + len(self._bxyz)
+        self._bxyz.append(np.asarray(p, float))
+        if tie is not None:
+            self._tie[j] = tie
+        return j
+
+    def _node_at(self, p, outside: str) -> int:
+        """the node of a bar point: pinned to a dowel node there, else a mesh node there, else a node of another bar
+        there, else a new node tied to the solid (or free, outside it)"""
+        p = np.asarray(p, float)
+        key = self._key(p)
         if key in self._bkey:
             return self._bkey[key]
-        j = self.N + len(self._bxyz)
+        if key in self._dkey:  # a strip or tendon ending on an anchor: its own node, pinned to the dowel's
+            j = self._new_node(p, None)
+            self._links[j] = self._dkey[key]
+            self._bkey[key] = j
+            return j
+        n = self.mesh.nearest(p)
+        if np.linalg.norm(self.mesh.points[n] - p) <= 1e-7 * self.scale:
+            self._bkey[key] = n
+            return n
         tie = self.loc.tet_for_embedding(p)
         if tie is None and outside != "free":
             raise ValueError(f"bar point {p.tolist()} lies outside the solid (pass outside='free' for a node held only "
                              "by other bars, springs or supports)")
-        self._bxyz.append(p)
+        j = self._new_node(p, tie)
         self._bkey[key] = j
-        if tie is not None:
-            self._tie[j] = tie
         return j
+
+    @staticmethod
+    def _subdivide(P: np.ndarray, seg: float) -> np.ndarray:
+        pts = [P[0]]
+        for a, b in zip(P[:-1], P[1:]):
+            n = max(1, int(math.ceil(np.linalg.norm(b - a) / seg - 1e-9)))
+            pts += [a + (b - a) * t for t in np.linspace(0, 1, n + 1)[1:]]
+        return np.array(pts)
 
     def bar(self, points, area: float, material: tuple, *, bond: bool = True, prestress: float = 0.0,
             seg: float | None = None, name: str | None = None, outside: str = "error") -> int:
@@ -701,12 +731,7 @@ class OpsSolid:
         if len(P) < 2:
             raise ValueError("a bar needs at least two points")
         if bond:
-            seg = seg or 0.5 * float(np.median(self.h))
-            pts = [P[0]]
-            for a, b in zip(P[:-1], P[1:]):
-                n = max(1, int(math.ceil(np.linalg.norm(b - a) / seg - 1e-9)))
-                pts += [a + (b - a) * t for t in np.linspace(0, 1, n + 1)[1:]]
-            P = np.array(pts)
+            P = self._subdivide(P, seg or 0.5 * float(np.median(self.h)))
         ids = [self._node_at(p, outside) for p in P]
         b = len(self.bars)
         segs = []
@@ -718,6 +743,50 @@ class OpsSolid:
         self.bars.append(dict(name=name or f"bar{b}", nodes=ids, points=P, s=s, area=float(area), material=material,
                               prestress=float(prestress), bond=bond, segs=np.array(segs, np.int64)))
         return b
+
+    def dowel(self, points, *, d: float | None = None, E: float | None = None, nu: float = 0.3, section=None,
+              fiber=None, seg: float | None = None, rot: bool = False, name: str | None = None) -> int:
+        """an anchor bolt, dowel or stud as beam elements along the polyline `points`: it carries axial force, shear and
+        bending, so a force on its head reaches the concrete along the embedded length (dowel action), not at one point.
+        Section: a solid circle of diameter d and Young's modulus E (shear modulus E / 2(1 + ν)), or section=(E, A, Iy,
+        Iz, G, J); fiber=femotion.frame.opensees.Fiber for a yielding anchor (forceBeamColumn, 5 Lobatto points).
+        Cut into elements of at most `seg` (default half the median crack band); every node inside the solid is tied to
+        it in translation (the dowel bears on the concrete and bends on its own); rot=True also ties its rotation to the
+        rotation of the solid (a fully bonded stiff insert). Nodes outside the solid (a head standing proud of the
+        surface) stay free. Bars whose points coincide with dowel nodes are pinned to them (define the dowels first): a
+        prestressed strip anchored on the bolt heads. Returns the dowel's index."""
+        if self.built:
+            raise RuntimeError("the OpenSees model is already built: add dowels before the first analysis")
+        P = np.asarray(points, float).reshape(-1, 3)
+        if section is None:
+            if d is None or E is None:
+                raise ValueError("dowel: give d and E (solid circle) or section=(E, A, Iy, Iz, G, J)")
+            A, I = math.pi * d**2 / 4, math.pi * d**4 / 64
+            section = (E, A, I, I, E / (2 * (1 + nu)), 2 * I)
+        P = self._subdivide(P, seg or 0.5 * float(np.median(self.h)))
+        ids = []
+        for p in P:
+            key = self._key(p)
+            if key in self._bkey:
+                raise ValueError("a dowel point coincides with a node of a bar defined earlier: define dowels first")
+            if key in self._dkey:
+                ids.append(self._dkey[key])
+                continue
+            j = self._new_node(p, self.loc.tet_for_embedding(p))
+            self._six.add(j)
+            if rot:
+                self._rot.add(j)
+            self._dkey[key] = j
+            ids.append(j)
+        k = len(self.dowels)
+        segs = []
+        for i, j in zip(ids[:-1], ids[1:]):
+            segs.append(len(self._dsegs))
+            self._dsegs.append((i, j, k))
+        s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+        self.dowels.append(dict(name=name or f"dowel{k}", nodes=ids, points=P, s=s, section=tuple(map(float, section)),
+                                fiber=fiber, segs=np.array(segs, np.int64)))
+        return k
 
     # ── supports ─────────────────────────────────────────────────────────
     def fix(self, where, comps=(0, 1, 2), nodes=None):
@@ -872,7 +941,13 @@ class OpsSolid:
         ops.model("basic", "-ndm", 3, "-ndf", 3)
         P = self.points
         for n, p in enumerate(P):
-            ops.node(n + 1, *map(float, p))
+            if n not in self._six:
+                ops.node(n + 1, *map(float, p))
+        if self._six:
+            ops.model("basic", "-ndm", 3, "-ndf", 6)
+            for n in sorted(self._six):
+                ops.node(n + 1, *map(float, P[n]))
+            ops.model("basic", "-ndm", 3, "-ndf", 3)
         # solid materials: one per (material, crack-band bin)
         self.ops_mat = np.zeros(self.nc, np.int64)
         self.h_used = self.h.copy()
@@ -938,24 +1013,56 @@ class OpsSolid:
             tag_e += 1
             ops.element("Truss", tag_e, i + 1, j + 1, self.bars[bi]["area"], self.bars[bi]["ops_mat"])
             self.seg_tag[s] = tag_e
+        # dowels: beam elements on 6-dof nodes (frame elements need the 6-dof model builder)
+        self.dseg_tag = np.zeros(len(self._dsegs), np.int64)
+        transf: dict = {}
+        sec_tag: dict = {}
+        if self._dsegs:
+            ops.model("basic", "-ndm", 3, "-ndf", 6)
+        for s_, (i, j, k) in enumerate(self._dsegs):
+            dw = self.dowels[k]
+            ax = P[j] - P[i]
+            ax = ax / np.linalg.norm(ax)
+            ref = np.array([0.0, 0.0, 1.0]) if abs(ax[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+            vz = np.cross(ax, np.cross(ref, ax))
+            vz /= np.linalg.norm(vz)
+            key = tuple(np.round(vz, 9))
+            if key not in transf:
+                transf[key] = 200 + len(transf)
+                ops.geomTransf("Linear", transf[key], *map(float, vz))
+            tag_e += 1
+            if dw["fiber"] is not None:
+                from ..frame.opensees import OpsFrame
+
+                if k not in sec_tag:
+                    sec_tag[k] = OpsFrame._section(self, dw["fiber"], 300 + k)
+                    ops.beamIntegration("Lobatto", 300 + k, sec_tag[k], 5)
+                ops.element("forceBeamColumn", tag_e, i + 1, j + 1, transf[key], 300 + k)
+            else:
+                E_, A_, Iy, Iz, G_, J_ = dw["section"]
+                ops.element("elasticBeamColumn", tag_e, i + 1, j + 1, A_, E_, G_, J_, Iy, Iz, transf[key])
+            self.dseg_tag[s_] = tag_e
+        if self._dsegs:
+            ops.model("basic", "-ndm", 3, "-ndf", 3)
         # embedding ties (4th retained node as a string: see the module docstring)
         K = self.penalty * self.E_ref
-        used = {n for i, j, _ in self._segs for n in (i, j)}
+        used = {n for i, j, _ in self._segs for n in (i, j)} | {n for i, j, _ in self._dsegs for n in (i, j)}
         for j, (cell, nd) in self._tie.items():
-            if j not in used:
+            if j not in used or j in self._links:
                 continue
             tag_e += 1
             ops.element("ASDEmbeddedNodeElement", tag_e, j + 1, int(nd[0]) + 1, int(nd[1]) + 1, int(nd[2]) + 1,
-                        str(int(nd[3]) + 1), "-K", float(K))
+                        str(int(nd[3]) + 1), *(["-rot"] if j in self._rot else []), "-K", float(K))
+        for j, dn in self._links.items():
+            ops.equalDOF(dn + 1, j + 1, 1, 2, 3)
         free = [j for j in range(self.N, self.n_nodes) if j not in self._tie]
         # supports, springs, ties
         self._next_node, self._next_ele, self._next_mat = self.n_nodes, tag_e, mt
         for n, f in self.fixed.items():
-            ops.fix(n + 1, *f)
+            ops.fix(n + 1, *f, *([0, 0, 0] if n in self._six else []))
             self._react.setdefault(n, []).append((n + 1, np.array(f, float)))
         for n, k in self._springs:
-            g = self._ground(n, [a for a in range(3) if k[a]], [k[a] for a in range(3) if k[a]])
-            ops.fix(g, 1, 1, 1)
+            self._ground(n, [a for a in range(3) if k[a]], [k[a] for a in range(3) if k[a]])
         for m, slaves, comps in self._ties:
             for n in slaves:
                 ops.equalDOF(m + 1, n + 1, *[c + 1 for c in comps])
@@ -970,12 +1077,19 @@ class OpsSolid:
         """nodes that carry reactions: fixed components, springs, imposed displacements"""
         return np.array(sorted(self._react), np.int64)
 
-    def _ground(self, n: int, comps, ks) -> int:
-        """a ground node at node n joined to it by springs ks in comps (zeroLength); registered as a reaction source"""
+    def _ground(self, n: int, comps, ks, fixed=(0, 1, 2)) -> int:
+        """a ground node at node n joined to it by springs ks in comps (zeroLength), fixed in `fixed` (and in rotation for
+        dowel nodes); registered as a reaction source"""
         ops = self.ops
         self._next_node += 1
         g = self._next_node
+        six = n in self._six
+        if six:
+            ops.model("basic", "-ndm", 3, "-ndf", 6)
         ops.node(g, *map(float, self.points[n]))
+        if six:
+            ops.model("basic", "-ndm", 3, "-ndf", 3)
+        ops.fix(g, *[int(c in fixed) for c in range(3)], *([1, 1, 1] if six else []))
         mats = []
         for k in ks:
             self._next_mat += 1
@@ -1000,7 +1114,7 @@ class OpsSolid:
             if F.shape[0] < self.n_nodes:
                 F = np.vstack([F, np.zeros((self.n_nodes - F.shape[0], 3))])
             for n in np.flatnonzero(np.abs(F).max(axis=1) > 0):
-                ops.load(int(n) + 1, *map(float, F[n]))
+                ops.load(int(n) + 1, *map(float, F[n]), *([0.0] * 3 if n in self._six else []))
         for g, comps, vals in (imposed or ()):
             for c, v in zip(comps, vals):
                 ops.sp(g, c + 1, float(v))
@@ -1024,9 +1138,7 @@ class OpsSolid:
             if n in self.fixed and any(self.fixed[n][c] for c in comps):
                 raise ValueError(f"node {n} is fixed in an imposed component")
             self._driven.add(n)
-            g = self._ground(n, comps, [k] * len(comps))
-            free = [c for c in range(3) if c not in comps]
-            self.ops.fix(g, *[1 if c in free else 0 for c in range(3)])
+            g = self._ground(n, comps, [k] * len(comps), fixed=[c for c in range(3) if c not in comps])
             out.append((g, comps, u[comps]))
         return out
 
@@ -1168,15 +1280,15 @@ class OpsSolid:
     # ── reading results ──────────────────────────────────────────────────
     def _snapshot(self, stage: str, k: int, lam: float, record: bool) -> Step:
         ops = self.ops
-        U = np.array([ops.nodeDisp(n + 1) for n in range(self.n_nodes)])
+        U = np.array([ops.nodeDisp(n + 1)[:3] for n in range(self.n_nodes)])
         ops.reactions()
         sup = self.supported
         R = np.zeros((len(sup), 3))
         for i, n in enumerate(sup):  # reactions on the fixed components, of springs and of displacement drivers
             for tag, mask in self._react[int(n)]:
-                R[i] += np.asarray(ops.nodeReaction(tag), float) * mask
-        cell, bar = self._read_fields() if record else (None, None)
-        return Step(stage, k, float(lam), U, R, sup, cell, bar)
+                R[i] += np.asarray(ops.nodeReaction(tag)[:3], float) * mask
+        cell, bar, dowel = self._read_fields() if record else (None, None, None)
+        return Step(stage, k, float(lam), U, R, sup, cell, bar, dowel)
 
     def _read_fields(self) -> tuple[dict, dict]:
         """cell averages over the integration points: stress, strain (engineering shear, order xx yy zz xy yz zx),
@@ -1228,7 +1340,11 @@ class OpsSolid:
             dL[s] = ops.eleResponse(int(self.seg_tag[s]), "basicDeformation")[0]
         L0, A = self._seg_geometry()
         bar = dict(N=N, stress=N / A, strain=dL / L0)
-        return cell, bar
+        nd = len(self._dsegs)
+        lf = np.array([ops.eleResponse(int(t), "localForce") for t in self.dseg_tag]).reshape(nd, 12)
+        dowel = dict(local=lf, N=lf[:, 6], V=np.hypot(lf[:, 1], lf[:, 2]),
+                     M=np.maximum(np.hypot(lf[:, 4], lf[:, 5]), np.hypot(lf[:, 10], lf[:, 11])))
+        return cell, bar, dowel
 
     def _seg_geometry(self) -> tuple[np.ndarray, np.ndarray]:
         P = self.points
@@ -1290,6 +1406,19 @@ class OpsSolid:
         if len(segs) and len(b["points"]) > 2:  # along a polyline: project on the arc length
             s = np.array([self._arc(b, m) for m in mids])
         return dict(s=s, x=mids, N=h.bar["N"][segs], stress=h.bar["stress"][segs], strain=h.bar["strain"][segs])
+
+    def dowel_results(self, dowel: int, step=-1) -> dict:
+        """forces along one dowel per element: s (distance of element midpoints from its first point), N (axial,
+        tension +), V (resultant shear), M (largest resultant bending moment at the element ends), local (the 12 local end
+        forces of OpenSees)"""
+        h = self._rec(step)
+        d = self.dowels[dowel]
+        segs = d["segs"]
+        P = self.points
+        mids = np.array([0.5 * (P[self._dsegs[k][0]] + P[self._dsegs[k][1]]) for k in segs])
+        s = np.array([self._arc(d, m) for m in mids])
+        return dict(s=s, x=mids, N=h.dowel["N"][segs], V=h.dowel["V"][segs], M=h.dowel["M"][segs],
+                    local=h.dowel["local"][segs])
 
     @staticmethod
     def _arc(b, x):
@@ -1402,24 +1531,29 @@ class OpsSolid:
     def result_mesh(self) -> Mesh:
         """solid cells and bar segments (line2) on all model nodes; cell fields of to_result are in this order"""
         cells = {k: c for k, c in self.cell_conn()}
-        if self._segs:
-            cells["line2"] = np.array([(i, j) for i, j, _ in self._segs], np.int64)
+        lines = [(i, j) for i, j, _ in self._segs] + [(i, j) for i, j, _ in self._dsegs]
+        if lines:
+            cells["line2"] = np.array(lines, np.int64)
         cg = {g: dict(d) for g, d in self.mesh.cell_groups.items()}
         for b in self.bars:
             if len(b["segs"]):
                 cg[b["name"]] = {"line2": b["segs"]}
+        for d in self.dowels:
+            cg[d["name"]] = {"line2": len(self._segs) + d["segs"]}
         return Mesh(self.points, cells, dict(self.mesh.point_groups), cg)
 
     def to_result(self, steps=None, meta: dict | None = None):
         """fem-result/1 Result of the recorded steps (or the given history indices), one frame each: node field u; cell
         fields crack_width, crack_strain, crack_normal (3), cracked (0/1), stress (6, xx yy zz xy yz zx), s1 (largest
-        principal stress) on solid cells, bar_stress and bar_force on bar segments (0 on the other kind). meta carries
-        t (frame number), lam and stage per frame"""
+        principal stress) on solid cells, bar_stress and bar_force on bar segments, dowel_N, dowel_V, dowel_M on dowel
+        elements (0 on the other kinds; line2 cells are the bar segments, then the dowel elements). meta carries t
+        (frame number), lam and stage per frame"""
         from ..result import Result
 
         idx = self.recorded() if steps is None else list(steps)
         hs = [self._rec(i) for i in idx]
-        nseg = len(self._segs)
+        nb, nd = len(self._segs), len(self._dsegs)
+        nseg = nb + nd
         r = Result(self.result_mesh(), dict(meta or {}, t=list(range(len(idx))), lam=[h.lam for h in hs],
                                             stage=[h.stage for h in hs], format_note="femotion.continuum.opensees"))
         r.field("u", np.array([h.U for h in hs]), frames=True, label="displacement")
@@ -1433,7 +1567,10 @@ class OpsSolid:
             return np.array(out)
 
         def barf(key):
-            return np.array([np.concatenate([np.zeros(self.nc), h.bar[key]]) for h in hs])
+            return np.array([np.concatenate([np.zeros(self.nc), h.bar[key], np.zeros(nd)]) for h in hs])
+
+        def dowf(key):
+            return np.array([np.concatenate([np.zeros(self.nc + nb), h.dowel[key]]) for h in hs])
 
         r.field("crack_width", cellf("width"), loc="cell", frames=True, label="crack width (ε_cr·h)")
         r.field("crack_strain", cellf("crack_strain"), loc="cell", frames=True, label="crack opening strain")
@@ -1441,9 +1578,13 @@ class OpsSolid:
         r.field("cracked", cellf("cracked"), loc="cell", frames=True, label="cracked", dtype="u8")
         r.field("stress", cellf("stress"), loc="cell", frames=True, label="stress xx yy zz xy yz zx")
         r.field("s1", cellf("stress", principal_max), loc="cell", frames=True, label="largest principal stress")
-        if nseg:
+        if nb:
             r.field("bar_stress", barf("stress"), loc="cell", frames=True, label="bar stress")
             r.field("bar_force", barf("N"), loc="cell", frames=True, label="bar axial force")
+        if nd:
+            r.field("dowel_N", dowf("N"), loc="cell", frames=True, label="dowel axial force")
+            r.field("dowel_V", dowf("V"), loc="cell", frames=True, label="dowel shear")
+            r.field("dowel_M", dowf("M"), loc="cell", frames=True, label="dowel bending moment")
         return r
 
     def export(self, path, steps=None) -> list:
@@ -1469,6 +1610,8 @@ class OpsSolid:
             d[f"cell/{key}"] = np.array([self.history[i].cell[key] for i in rec])
         for key in self.history[rec[0]].bar:
             d[f"bar/{key}"] = np.array([self.history[i].bar[key] for i in rec])
+        for key in self.history[rec[0]].dowel:
+            d[f"dowel/{key}"] = np.array([self.history[i].dowel[key] for i in rec])
         np.savez_compressed(path, **d)
         return path
 

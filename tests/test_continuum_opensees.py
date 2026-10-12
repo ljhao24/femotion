@@ -250,6 +250,60 @@ def test_unbonded_tendon_equals_its_anchor_forces():
     assert np.abs(S - Se).max() < 1e-5 * np.abs(Se).max()
 
 
+# ── dowels (anchors) ──────────────────────────────────────────────────────
+@pytest.mark.parametrize("rot", [True, False])
+def test_dowel_cantilever_from_a_rigid_block(rot):
+    """an anchor set 0.3 deep into a (practically) rigid block, standing 0.5 proud, loaded at its head: with its
+    rotation tied to the solid it is a clamped cantilever, δ = Pa³/3EI exactly; tied in translation only, the embedded
+    part bends between the tied nodes (spacing s) and the head moves by about s/a more; shear and moment at the surface
+    are P and Pa"""
+    m = structured.box(1.0, 1.0, 1.0, 4, 4, 4)
+    Es, d, P, a, seg = 2e8, 0.02, 1.0, 0.5, 0.05
+    s = OpsSolid(m, ElasticIso(2e14, 0.2))
+    k = s.dowel([(0.51, 0.52, 0.7), (0.51, 0.52, 1.0 + a)], d=d, E=Es, rot=rot, seg=seg)
+    s.fix(lambda x: np.isclose(x[2], 0))
+    tip = s.dowels[k]["nodes"][-1]
+    s.static(s.nodal_force(None, (P, 0, 0), nodes=[tip]))
+    d_cl = P * a**3 / (3 * Es * np.pi * d**4 / 64)
+    ratio = s.history[-1].U[tip, 0] / d_cl
+    assert ratio == pytest.approx(1.0, rel=1e-6) if rot else 1.0 < ratio < 1.0 + 1.2 * seg / a
+    r = s.dowel_results(k)
+    above = r["x"][:, 2] > 1.0
+    assert np.allclose(r["V"][above], P) and r["M"][above].max() == pytest.approx(P * a)
+
+
+def test_strip_on_dowel_anchors():
+    """a prestressed FRP strip under the soffit between two bolt heads 10 mm below the surface: the strip force is the
+    shear in both bolts at their heads, the support reactions vanish (self-equilibrated), the force fades along the
+    embedded length, and the bolts bend (dowel action) — the strip loses force as the heads deflect towards each other"""
+    m = structured.box(2.0, 0.4, 0.6, 20, 4, 6)
+    s = OpsSolid(m, ConcreteDamage.from_strength(38e3, units="kN-m"))
+    k1 = s.dowel([(0.3, 0.2, -0.01), (0.3, 0.2, 0.15)], d=0.016, E=2e8)
+    k2 = s.dowel([(1.7, 0.2, -0.01), (1.7, 0.2, 0.15)], d=0.016, E=2e8)
+    Ap, s0 = 50 * 1.4e-6, 0.4 * 2.8e6
+    s.bar([(0.3, 0.2, -0.01), (1.7, 0.2, -0.01)], area=Ap, material=frp_strip(), prestress=s0, bond=False, outside="free")
+    s.fix(None, nodes=[s.nearest((1.0, 0, 0.6))])
+    s.fix(None, nodes=[s.nearest((1.0, 0.4, 0.6))], comps=(0, 2))
+    s.fix(None, nodes=[s.nearest((0, 0.2, 0.6))], comps=(1, 2))
+    st = s.static(None, steps=2)
+    assert st.converged
+    N = s.history[-1].bar["N"][0]
+    i, j, _ = s._segs[0]
+    eps = (s.history[-1].U[j, 0] - s.history[-1].U[i, 0]) / 1.4
+    assert N == pytest.approx(Ap * (s0 + 1.65e8 * eps), rel=1e-6) and eps < 0  # σ = σ0 + E ε: the heads came closer
+    for k in (k1, k2):
+        r = s.dowel_results(k)
+        assert r["V"][0] == pytest.approx(N, rel=1e-6)  # head element: all of the strip force
+        assert r["V"][-1] < 0.1 * N
+    assert np.abs(s.reaction()).max() < 1e-6 * N
+
+
+def frp_strip():
+    from femotion.continuum.opensees import frp
+
+    return frp(1.65e8, 0.016)
+
+
 # ── supports, ties, sub-models ────────────────────────────────────────────
 def test_winkler_support_and_reactions():
     """a block on a distributed spring support under uniform pressure settles by q / k; the spring forces are reported
@@ -372,3 +426,25 @@ def test_rc_beam_service_response():
     assert 0.4 < cr["max_width"] / w_jtg < 1.2
     xs = sorted(cc["s"] for cc in cr["cracks"] if cc["width"] > 0.05)
     assert len(xs) >= 3 and 80 < np.median(np.diff(xs)) < 250
+
+
+def test_export_and_save(tmp_path):
+    """fem-result/1 with the bars as line2 cells, a ParaView series, and the numpy archive"""
+    pytest.importorskip("meshio")
+    from femotion.result import read
+
+    m = structured.box(1.0, 0.2, 0.2, 5, 1, 1)
+    s = OpsSolid(m, ConcreteDamage.from_strength(38e3, units="kN-m"))
+    s.bar([(0.0, 0.1, 0.05), (1.0, 0.1, 0.05)], area=2e-4, material=steel(4.5e5, 2e8))
+    s.fix(lambda x: np.isclose(x[0], 0))
+    s.static(s.traction(lambda x: np.isclose(x[0], 1.0), (0, 0, -10.0)), steps=3)
+    r = s.to_result()
+    assert r.mesh.cells["line2"].shape == (len(s._segs), 2) and len(r.meta["t"]) == 4  # initial + 3 steps
+    path = r.write(tmp_path, "beam", verbose=False)
+    back = read(path)
+    assert back["fields"]["u"].shape == (4, s.n_nodes, 3)
+    assert back["fields"]["crack_width"].shape == (4, s.nc + len(s._segs))
+    files = s.export(tmp_path / "beam.pvd")
+    assert files[0].suffix == ".pvd" and len(files) == 5
+    npz = np.load(s.save_npz(tmp_path / "beam.npz"))
+    assert npz["U"].shape == (4, s.n_nodes, 3) and npz["cell/width"].shape == (4, s.nc)
