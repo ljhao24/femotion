@@ -234,11 +234,12 @@ def cylinder(xs, d: float, R: float, *, ring: float = 0.0, m: int = 8, first: fl
                                                           ring > 0))
 
 
-def hoop_normals(mesh: Mesh, bars, cells=None) -> np.ndarray:
+def hoop_normals(mesh: Mesh, bars, centroids=None) -> np.ndarray:
     """per hexahedron the hoop direction (0, −sin θ, cos θ) about the nearest bar axis (bars: [(y, z, …)], along x): the
-    crack normal of radial splitting cracks, for OpsSolid(band=("projected", hoop_normals(...)))"""
+    crack normal of radial splitting cracks, for OpsSolid(band=("projected", hoop_normals(...))). centroids: points
+    (n, 3) to use instead of the cell centroids"""
     B = np.asarray(bars, float).reshape(-1, 3)[:, :2]
-    c = mesh.points[mesh.cells["hex8"]].mean(axis=1) if cells is None else cells
+    c = mesh.points[mesh.cells["hex8"]].mean(axis=1) if centroids is None else np.asarray(centroids, float)
     d = c[:, None, 1:] - B[None]
     k = np.argmin(np.linalg.norm(d, axis=2), axis=1)
     v = d[np.arange(len(c)), k]

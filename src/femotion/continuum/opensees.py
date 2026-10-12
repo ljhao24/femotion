@@ -369,18 +369,26 @@ class BondSlip:
 
     @classmethod
     def mc2010(cls, fcm: float, *, units: str = "N-mm", failure: str = "pull-out", good: bool = True,
-               confined: bool = False, clear_rib: float | None = None, n: int = 4) -> "BondSlip":
+               confined: bool = False, clear_rib: float | None = None, n: int = 5) -> "BondSlip":
         """fib Model Code 2010, 6.1.1, table 6.1-1, ribbed bars before yielding: τ = τmax (s/s1)^0.4 up to s1 (sampled at
-        n points), τmax to s2, linear to τbf at s3. failure="pull-out" (confined concrete): τmax = 2.5 √fcm (good bond) or
-        1.25 √fcm, s1 = 1.0 / 1.8 mm, s2 = 2.0 / 3.6 mm, s3 = clear rib spacing (default 5 mm), τbf = 0.4 τmax.
-        failure="splitting": τmax = 7.0 (fcm/20)^0.25 (good, unconfined), 8.0 (good, with stirrups: confined=True), 5.0 /
-        5.5 (other bond conditions); s1 = the pull-out slip at that τmax, s2 = s1; unconfined: s3 = 1.2 s1, τbf = 0; with
-        stirrups: s3 = 0.5 × clear rib spacing, τbf = 0.4 τmax"""
+        n points), τmax to s2, linear to τbf at s3.
+        failure="pull-out": the bar pulls out of well-confined concrete — MC2010 ties it to a cover of at least 5 φ and a
+        clear spacing of at least 10 φ, or to heavy confinement; τmax = 2.5 √fcm (good bond) or 1.25 √fcm, s1 = 1.0 /
+        1.8 mm, s2 = 2.0 / 3.6 mm, s3 = clear rib spacing, τbf = 0.4 τmax.
+        failure="splitting": the cover splits first — every bar with a smaller cover or spacing (most slabs and the
+        cover zone of beams): τmax = 7.0 (fcm/20)^0.25 (good bond, no stirrups), 8.0 (good, with stirrups:
+        confined=True), 5.0 / 5.5 (other bond conditions); s1 = the pull-out slip at that τmax, s2 = s1; without
+        stirrups s3 = 1.2 s1 and τbf = 0, with stirrups s3 = 0.5 × clear rib spacing and τbf = 0.4 τmax.
+        good=True: good bond conditions (bars in the lower part of the pour, MC2010 6.1.3.2); clear_rib: the clear distance
+        between the bar's ribs (needed for pull-out and for splitting with stirrups; from the bar's rib geometry)"""
         if units not in UNITS:
             raise ValueError(f"units: one of {', '.join(UNITS)}")
         ks, kl = UNITS[units][0], UNITS[units][1] / UNITS[units][0]  # MPa per unit stress; mm per unit length
         f = fcm * ks
-        cr = 5.0 if clear_rib is None else clear_rib * kl
+        needs = failure == "pull-out" or (failure == "splitting" and confined)
+        if needs and clear_rib is None:
+            raise ValueError("give clear_rib, the clear distance between the bar's ribs (s3 of MC2010 table 6.1-1)")
+        cr = None if clear_rib is None else clear_rib * kl
         tpo, s1po, s2po = (2.5 * math.sqrt(f), 1.0, 2.0) if good else (1.25 * math.sqrt(f), 1.8, 3.6)
         if failure == "pull-out":
             tmax, s1, s2, s3, tbf = tpo, s1po, s2po, cr, 0.4 * tpo
@@ -911,11 +919,10 @@ class OpsSolid:
             ids = [self._new_node(p, None) for p in P]
             L = np.linalg.norm(np.diff(P, axis=0), axis=1)
             trib = np.zeros(len(P))  # bonded length per node: the inside parts of the half segments next to it
-            q = (np.arange(16) + 0.5) / 16
             for k in range(len(L)):
-                ins = np.array([self.loc.find(P[k] + t * (P[k + 1] - P[k])) is not None for t in q])
-                trib[k] += L[k] / 16 * ins[:8].sum()
-                trib[k + 1] += L[k] / 16 * ins[8:].sum()
+                lo, hi = self._inside_parts(P[k], P[k + 1])
+                trib[k] += L[k] * lo
+                trib[k + 1] += L[k] * hi
             T = np.diff(P, axis=0) / L[:, None]
             tan = np.r_[T[:1], T[:-1] + T[1:], T[-1:]]
             tan /= np.linalg.norm(tan, axis=1)[:, None]
@@ -960,6 +967,30 @@ class OpsSolid:
                               bonds=np.array(bonds if slip else [], np.int64), perimeter=per if slip else None,
                               free_strain=bool(alpha != 0) if free_strain is None else bool(free_strain)))
         return b
+
+    def _inside_parts(self, a, b, n: int = 16) -> tuple[float, float]:
+        """the shares of the segment a–b that lie inside the solid in its first and its second half: sampled at n + 1
+        points, the crossings of the surface found by bisection"""
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        inside = lambda t: self.loc.find(a + t * (b - a)) is not None  # noqa: E731
+        ts = np.linspace(0.0, 1.0, n + 1)
+        flags = [inside(t) for t in ts]
+        cuts = [0.0]
+        for t0, t1, f0, f1 in zip(ts[:-1], ts[1:], flags[:-1], flags[1:]):
+            if f0 != f1:
+                lo_, hi_ = t0, t1
+                for _ in range(40):
+                    mid = 0.5 * (lo_ + hi_)
+                    lo_, hi_ = (mid, hi_) if inside(mid) == f0 else (lo_, mid)
+                cuts.append(0.5 * (lo_ + hi_))
+        cuts.append(1.0)
+        first = second = 0.0
+        for t0, t1 in zip(cuts[:-1], cuts[1:]):
+            if not inside(0.5 * (t0 + t1)):
+                continue
+            first += max(0.0, min(t1, 0.5) - t0)
+            second += max(0.0, t1 - max(t0, 0.5))
+        return first, second
 
     def _anchor_at(self, p, outside: str):
         """the point of the solid a bond spring holds: a mesh node there, else a node tied to the cell (shared by the bond

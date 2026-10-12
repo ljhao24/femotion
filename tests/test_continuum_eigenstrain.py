@@ -260,14 +260,28 @@ def test_bond_slip_pullout_capacity():
     F = np.zeros((s.n_nodes, 3))
     F[end, 0] = 1.0
     assert s.push(F, end, 0, 1.0, steps=10).converged
-    assert max(h.lam for h in s.history) == pytest.approx(tau * math.pi * d * L, rel=1e-9)
+    assert max(h.lam for h in s.history) == pytest.approx(tau * math.pi * d * L, rel=1e-8)  # (point location tolerance)
     r = s.bar_results(bi)["bond"]
     assert np.allclose(r["tau"], tau) and np.all(r["slip"] > 0.5)
-    mc = BondSlip.mc2010(38.0)
-    assert max(mc.tau) == pytest.approx(2.5 * math.sqrt(38.0)) and mc.s[3] == pytest.approx(1.0)
-    assert mc.tau[0] == pytest.approx(2.5 * math.sqrt(38.0) * (1 / 16) ** 0.4) and mc.tau[-1] == pytest.approx(0.4 * max(mc.tau))
+    mc = BondSlip.mc2010(38.0, clear_rib=7.0)
+    assert max(mc.tau) == pytest.approx(2.5 * math.sqrt(38.0)) and mc.s[4] == pytest.approx(1.0) and mc.s[-1] == 7.0
+    assert mc.tau[0] == pytest.approx(2.5 * math.sqrt(38.0) * (1 / 25) ** 0.4) and mc.tau[-1] == pytest.approx(0.4 * max(mc.tau))
+    with pytest.raises(ValueError, match="clear_rib"):
+        BondSlip.mc2010(38.0)
     sp = BondSlip.mc2010(38.0, failure="splitting")
     assert max(sp.tau) == pytest.approx(7.0 * (38 / 20) ** 0.25) and sp.tau[-1] < 1e-2 * max(sp.tau)
+
+
+def test_bonded_length_of_a_bar_entering_the_solid():
+    """a bar that enters the solid between two of its nodes (from 47.3 mm outside) is bonded over exactly the length
+    inside: the surface crossing is found by bisection"""
+    L, d, tau = 200.0, 12.0, 4.0
+    m = structured.box(L, 100, 100, 20, 4, 4)
+    s = OpsSolid(m, ElasticIso(30e3, 0.2))
+    s.fix(lambda x: np.isclose(x[0], L))
+    bi = s.bar([(-47.3, 50, 50), (L, 50, 50)], math.pi * d * d / 4, elastic(2e5),
+               bond=BondSlip.rigid_plastic(tau, 0.005), outside="free")
+    assert sum(s._bonds[k]["L"] for k in s.bars[bi]["bonds"]) == pytest.approx(L, rel=1e-8)
 
 
 def test_restrained_shrinkage_tie_crack_spacing():
@@ -354,7 +368,7 @@ def test_corrosion_conversions():
     assert alonso_1998(25, 12) == pytest.approx((7.53 + 9.32 * 25 / 12) * 1e-3)
     assert gbt51355_2019(25, 12, 30, corner=True) == pytest.approx(0.012 * 25 / 12 + 0.00084 * 30 + 0.018)
     assert gbt51355_2019(25, 12, 30) == pytest.approx(0.015 * (25 / 12) ** 1.55 + 0.0014 * 30 + 0.016)
-    lw = liu_weyers_1998(25, 12, 2.9, 33550, d0=0.0)  # rust/steel volume (1/α)/(ρr/ρs) = 3.82: depth × (n − 1) = ds
+    lw = liu_weyers_1998(25, 12, 2.9, 33550, d0=0.0, creep=0.0)  # rust/steel volume (1/α)/(ρr/ρs) = 3.82: depth × (n − 1) = ds
     assert free_expansion(lw["depth"], 12, n=1 / 0.57 / (3600 / 7850)) == pytest.approx(lw["expansion"], rel=1e-3)
     em = el_maaddawy_soudki_2007(25, 12, 2.9, 33550, creep=0.0, delta0=0.0)  # the same cylinder, volume ratio ≈ 3.2
     assert free_expansion(em["depth"], 12, n=2 / 0.622) == pytest.approx(lw["expansion"], rel=0.03)
@@ -472,7 +486,7 @@ def test_rust_cracks_the_cover_like_a_plastic_ring():
     assert 0.95 * tp["plastic"] < p.max() < tp["plastic"] and p.max() > 2 * tp["partly_cracked"]
     ks = int(np.argmax(surf))
     assert np.any(surf) and p[ks] > 0.98 * p.max() and p[-1] > 0.98 * p.max()
-    lw = liu_weyers_1998(c, d, conc.ft, conc.E, nu=conc.nu, d0=0.0)
+    lw = liu_weyers_1998(c, d, conc.ft, conc.E, nu=conc.nu, d0=0.0, creep=0.0)
     assert lw["pressure"] == pytest.approx(tp["plastic"]) and 1.8 < u[ks] / lw["expansion"] < 2.4
 
 

@@ -203,14 +203,16 @@ def alonso_1998(c: float, d: float) -> float:
     return (7.53 + 9.32 * c / d) * 1e-3
 
 
-def liu_weyers_1998(c: float, d: float, ft: float, Ec: float, nu: float = 0.18, d0: float = 0.0125, creep: float = 0.0,
+def liu_weyers_1998(c: float, d: float, ft: float, Ec: float, nu: float = 0.18, d0: float = 0.0125, creep: float = 2.0,
                     alpha: float = 0.57, rust_density: float = 3600 / 7850) -> dict:
     """critical rust of Liu & Weyers (1998, ACI Materials Journal 95(6):675–681; Liu 1996, PhD thesis, Virginia Tech,
     5.6): the rust first fills a porous zone d0 around the bar (12.5 μm), then presses on a thick-walled elastic
     cylinder (inner radius a = d/2 + d0, outer b = a + c, modulus Ec / (1 + creep)) until the pressure reaches the
-    plastic ring's 2 c ft / (d + 2 d0). Lengths in mm. Returns the radial expansion ds beyond the porous zone, the steel
-    mass loss and the corrosion depth; alpha: mass of the steel per mass of its rust (0.523 Fe(OH)3, 0.622 Fe(OH)2),
-    rust_density: of the rust relative to steel"""
+    plastic ring's 2 c ft / (d + 2 d0). Defaults as in the original: creep coefficient 2.0 (the rust builds up over
+    years), ν = 0.18, d0 = 12.5 μm (some secondary sources print it as 4.9 mils = 124 μm, a slip for 0.49 mils); pass
+    creep=0 to compare with a short-term analysis. Lengths in mm. Returns the radial expansion ds beyond the porous zone,
+    the steel mass loss and the corrosion depth; alpha: mass of the steel per mass of its rust (0.523 Fe(OH)3, 0.622
+    Fe(OH)2), rust_density: of the rust relative to steel"""
     a = d / 2 + d0
     b = a + c
     E = Ec / (1 + creep)
@@ -224,7 +226,9 @@ def el_maaddawy_soudki_2007(c: float, d: float, fct: float, Ec: float, nu: float
     """critical steel mass loss of El Maaddawy & Soudki (2007, Cement & Concrete Composites 29:168–175, eq. 12–19): a
     thick-walled cylinder (wall = the cover c, modulus Ec / (1 + creep), creep coefficient 2.35 in the paper) around a
     porous zone delta0 (10–20 μm), rust of half the steel's density (volume ratio ≈ 3.2), cracking at the plastic
-    pressure 2 c fct / d. Lengths in mm. Returns the mass loss (fraction), depth and pressure"""
+    pressure 2 c fct / d. Defaults as in the original (creep 2.35 after CSA A23.3-94, ν = 0.18, δ0 = 10 μm, the lower of
+    its 10–20 μm); pass creep=0 to compare with a short-term analysis. Lengths in mm. Returns the mass loss (fraction),
+    depth and pressure"""
     E = Ec / (1 + creep)
     Dp = d + 2 * delta0
     psi = Dp * Dp / (2 * c * (c + Dp))
@@ -233,10 +237,13 @@ def el_maaddawy_soudki_2007(c: float, d: float, fct: float, Ec: float, nu: float
 
 
 def gbt51355_2019(c: float, d: float, fcu: float, corner: bool = False) -> float:
-    """corrosion depth (mm) at which the cover cracks from corrosion, GB/T 51355-2019 (assessment of the durability of
-    existing concrete structures), appendix C.0.4: corner bars of beams and columns 0.012 c/d + 0.00084 fcu + 0.018;
-    bars of walls and slabs away from corners 0.015 (c/d)^1.55 + 0.0014 fcu + 0.016 (c, d in mm, fcu the in-situ cube
-    strength in MPa); natural corrosion, cracks of about 0.1 mm according to its drafters"""
+    """corrosion depth (mm) at which the cover cracks from corrosion, as given for GB/T 51355-2019 (assessment of the
+    durability of existing concrete structures), appendix C.0.4: corner bars of beams and columns 0.012 c/d + 0.00084 fcu
+    + 0.018; bars of walls and slabs away from corners 0.015 (c/d)^1.55 + 0.0014 fcu + 0.016 (c, d in mm, fcu in MPa).
+    COEFFICIENTS TO BE CHECKED AGAINST THE ORIGINAL TEXT: they were taken from a reading of the standard that could not
+    be repeated; whether it distinguishes plain and ribbed bars (related formulas of the same research, e.g. DB33/T
+    1128-2016, do), which fcu is meant (in-situ estimate or characteristic) and which crack defines "cracking" are still
+    to be confirmed"""
     if corner:
         return 0.012 * c / d + 0.00084 * fcu + 0.018
     return 0.015 * (c / d) ** 1.55 + 0.0014 * fcu + 0.016
