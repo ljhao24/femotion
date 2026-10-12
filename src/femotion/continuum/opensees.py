@@ -61,6 +61,8 @@ _HEX_SIGNS = np.array([[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, 
 # a hexahedron (VTK order) as six tetrahedra around its 0-6 diagonal
 HEX_TETS = np.array([(0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6), (0, 7, 4, 6), (0, 4, 5, 6), (0, 5, 1, 6)])
 _G2 = np.array([-1.0, 1.0]) / math.sqrt(3.0)
+# integration points of stdBrick / bbarBrick in their order: point 4i + 2j + k at (g_i, g_j, g_k)
+_GAUSS8 = np.array([[a, b, c] for a in _G2 for b in _G2 for c in _G2])
 
 
 def _ops():
@@ -78,10 +80,12 @@ def _registry() -> list:
 # ── materials ────────────────────────────────────────────────────────────
 @dataclass
 class ElasticIso:
-    """isotropic linear elasticity (nDMaterial ElasticIsotropic)"""
+    """isotropic linear elasticity (nDMaterial ElasticIsotropic); alpha: coefficient of thermal expansion (per degree,
+    used by OpsSolid.thermal)"""
     E: float
     nu: float
     rho: float = 0.0
+    alpha: float = 0.0
 
 
 @dataclass
@@ -90,24 +94,26 @@ class ElasticOrtho:
     E = (Ex, Ey, Ez), nu = (νxy, νyz, νzx), G = (Gxy, Gyz, Gzx), where νij is the contraction along j under stress along i
     (so νzx is the contraction along x under stress along z, = ν13·E3/E1 in the notation of
     femotion.continuum.Orthotropic, whose nu = (ν12, ν13, ν23) and G = (G12, G13, G23)). OpsSolid also takes
-    femotion.continuum.Isotropic and Orthotropic (material axes along the global ones) and converts them"""
+    femotion.continuum.Isotropic and Orthotropic (material axes along the global ones) and converts them.
+    alpha = (αx, αy, αz): coefficients of thermal expansion (per degree, used by OpsSolid.thermal)"""
     E: tuple
     nu: tuple
     G: tuple
     rho: float = 0.0
+    alpha: tuple = (0.0, 0.0, 0.0)
 
 
 def _native(m):
     """materials of femotion.continuum (Isotropic, Orthotropic with axes along the global ones) as OpenSees ones"""
     if isinstance(m, Isotropic):
-        return ElasticIso(m.E, m.nu)
+        return ElasticIso(m.E, m.nu, alpha=m.alpha)
     if isinstance(m, Orthotropic):
         if not np.allclose(np.abs(m.axes), np.eye(3), atol=1e-9):
             raise ValueError("Orthotropic with rotated axes: OpenSees' ElasticOrthotropic works in the global axes only")
         E1, E2, E3 = m.E
         n12, n13, n23 = m.nu
         G12, G13, G23 = m.G
-        return ElasticOrtho(E=(E1, E2, E3), nu=(n12, n23, n13 * E3 / E1), G=(G12, G23, G13))
+        return ElasticOrtho(E=(E1, E2, E3), nu=(n12, n23, n13 * E3 / E1), G=(G12, G23, G13), alpha=tuple(m.alpha))
     return m
 
 
@@ -128,7 +134,9 @@ class ConcreteDamage:
     the error is of the order of one step, so use steps small enough that a step changes the cracking little (≈ 100+ to
     failure). implex=False: implicit secant iterations, exact at convergence but slow and fragile once cracks spread;
     tangent: numerical tangent instead of the secant (implicit only); crack_planes: (nct, ncc, smoothing angle °) for anisotropic
-    (multi-directional) cracking; Kc, cdf, eta: ASDConcrete3D parameters (triaxial shape, dilatancy, viscosity)."""
+    (multi-directional) cracking; Kc, cdf, eta: ASDConcrete3D parameters (triaxial shape, dilatancy, viscosity).
+    alpha: coefficient of thermal expansion per degree (OpsSolid.thermal), 1e-5 as in JTG D60-2015 4.3.12 and
+    EN 1992-1-1 3.1.3(5)."""
     E: float
     nu: float
     ft: float
@@ -148,6 +156,7 @@ class ConcreteDamage:
     Kc: float = 2.0 / 3.0
     cdf: float = 0.0
     eta: float = 0.0
+    alpha: float = 1.0e-5
 
     @classmethod
     def from_strength(cls, fc: float, ft: float | None = None, E: float | None = None, nu: float = 0.2,
@@ -318,6 +327,76 @@ def frp(E: float, eps_u: float) -> tuple:
     """fibre-reinforced polymer strip or bar: linear elastic, ruptures (stress → 0 for good) beyond eps_u (tension or
     compression)"""
     return ("FRP", float(E), float(eps_u))
+
+
+@dataclass
+class BondSlip:
+    """bond stress – slip law τ(s) of a bar in concrete for bar(..., bond=BondSlip(...)): the envelope through the points
+    (s_i, τ_i), s > 0 increasing (up to 7; τ stays at the last value beyond), the same in both directions; unloading
+    and reloading as OpenSees' HystereticSM (Mazzoni 2023) with its defaults. Lengths and stresses in the model's units.
+    plastic: an elastic – perfectly plastic law instead (ElasticPP: τ_1 reached at s_1, then constant), whose unloading
+    is elastic — the rigid-plastic bond of the tension chord model when s_1 is small."""
+    s: tuple
+    tau: tuple
+    plastic: bool = False
+
+    def __post_init__(self):
+        s, t = np.asarray(self.s, float), np.asarray(self.tau, float)
+        if len(s) != len(t) or not 1 <= len(s) <= 7 or np.any(np.diff(s) <= 0) or s[0] <= 0:
+            raise ValueError("BondSlip: 1 to 7 points with slips s > 0 increasing")
+        if self.plastic and len(s) != 1:
+            raise ValueError("BondSlip(plastic=True): one point (s_1, τ_1)")
+
+    @classmethod
+    def rigid_plastic(cls, tau: float, s_el: float) -> "BondSlip":
+        """constant bond stress tau once the slip exceeds s_el (keep s_el small against the expected slips): the bond of
+        the tension chord model (Marti et al. 1998: τ_b0 = 2 f_ct before the steel yields)"""
+        return cls((float(s_el),), (float(tau),), plastic=True)
+
+    @classmethod
+    def mc2010(cls, fcm: float, *, units: str = "N-mm", failure: str = "pull-out", good: bool = True,
+               confined: bool = False, clear_rib: float | None = None, n: int = 4) -> "BondSlip":
+        """fib Model Code 2010, 6.1.1, table 6.1-1, ribbed bars before yielding: τ = τmax (s/s1)^0.4 up to s1 (sampled at
+        n points), τmax to s2, linear to τbf at s3. failure="pull-out" (confined concrete): τmax = 2.5 √fcm (good bond) or
+        1.25 √fcm, s1 = 1.0 / 1.8 mm, s2 = 2.0 / 3.6 mm, s3 = clear rib spacing (default 5 mm), τbf = 0.4 τmax.
+        failure="splitting": τmax = 7.0 (fcm/20)^0.25 (good, unconfined), 8.0 (good, with stirrups: confined=True), 5.0 /
+        5.5 (other bond conditions); s1 = the pull-out slip at that τmax, s2 = s1; unconfined: s3 = 1.2 s1, τbf = 0; with
+        stirrups: s3 = 0.5 × clear rib spacing, τbf = 0.4 τmax"""
+        if units not in UNITS:
+            raise ValueError(f"units: one of {', '.join(UNITS)}")
+        ks, kl = UNITS[units][0], UNITS[units][1] / UNITS[units][0]  # MPa per unit stress; mm per unit length
+        f = fcm * ks
+        cr = 5.0 if clear_rib is None else clear_rib * kl
+        tpo, s1po, s2po = (2.5 * math.sqrt(f), 1.0, 2.0) if good else (1.25 * math.sqrt(f), 1.8, 3.6)
+        if failure == "pull-out":
+            tmax, s1, s2, s3, tbf = tpo, s1po, s2po, cr, 0.4 * tpo
+        elif failure == "splitting":
+            c = {(True, False): 7.0, (True, True): 8.0, (False, False): 5.0, (False, True): 5.5}[(good, confined)]
+            tmax = c * (f / 20.0) ** 0.25
+            s1 = s1po * (tmax / tpo) ** (1 / 0.4)
+            s2 = s1
+            s3, tbf = (0.5 * cr, 0.4 * tmax) if confined else (1.2 * s1, 0.0)
+        else:
+            raise ValueError("failure: 'pull-out' or 'splitting'")
+        ss = [s1 * (k / n) ** 2 for k in range(1, n + 1)]
+        tt = [tmax * (x / s1) ** 0.4 for x in ss]
+        if s2 > s1:
+            ss.append(s2)
+            tt.append(tmax)
+        s3 = max(s3, ss[-1] * 1.001)
+        ss.append(s3)
+        tt.append(max(tbf, 1e-3 * tmax))
+        return cls(tuple(x / kl for x in ss), tuple(x / ks for x in tt))
+
+    def ops_material(self, ops, tag: int, scale: float) -> int:
+        """the uniaxial force – slip material of one bond spring: τ × scale (perimeter × tributary length)"""
+        s, t = np.asarray(self.s, float), np.asarray(self.tau, float) * scale
+        if self.plastic:
+            ops.uniaxialMaterial("ElasticPP", tag, float(t[0] / s[0]), float(s[0]))
+            return tag
+        env = [v for a, b in zip(t, s) for v in (float(a), float(b))]
+        ops.uniaxialMaterial("HystereticSM", tag, "-posEnv", *env, "-negEnv", *[-v for v in env])
+        return tag
 
 
 # ── geometry: shape functions, point location ─────────────────────────────
@@ -566,6 +645,50 @@ class Stage:
     change: float = 0.0  # hold stages: displacement change of the last step / of the whole stage
 
 
+VOIGT = ("11", "22", "33", "12", "23", "13")  # OpenSees' strain order = femotion's (xx, yy, zz, xy, yz, zx)
+
+
+@dataclass
+class Eigenstrain:
+    """an initial (free, eigen-) strain that a stage adds: shrinkage, temperature, swelling, rust. Per cell and integration
+    point (cells (m,), values (m, 8, 6): Voigt order xx yy zz xy yz zx, engineering shear; a tetrahedron uses slot 0) and
+    per bar segment (segs (k,), seg_values (k,): along the bar). Made by OpsSolid.initial_strain / shrinkage / thermal /
+    bar_strain; combine with + and scale with a number. The material sees σ = f(ε − ε0): OpenSees' InitStrain wrapper
+    (nDMaterial InitStrain, uniaxialMaterial InitStrainMaterial) around every material, so cracked and crushed concrete
+    and yielding bars respond to the free strain as they do to a load"""
+    cells: np.ndarray
+    values: np.ndarray
+    segs: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
+    seg_values: np.ndarray = field(default_factory=lambda: np.zeros(0))
+
+    @staticmethod
+    def _merge(ia, va, ib, vb):
+        ids = np.union1d(ia, ib).astype(np.int64)
+        out = np.zeros((len(ids),) + (va.shape[1:] if len(va) else vb.shape[1:]))
+        np.add.at(out, np.searchsorted(ids, ia), va)
+        np.add.at(out, np.searchsorted(ids, ib), vb)
+        return ids, out
+
+    def __add__(self, other: "Eigenstrain") -> "Eigenstrain":
+        c, v = self._merge(self.cells, self.values.reshape(-1, 8, 6), other.cells, other.values.reshape(-1, 8, 6))
+        s, w = self._merge(self.segs, self.seg_values, other.segs, other.seg_values)
+        return Eigenstrain(c, v, s, w)
+
+    def __mul__(self, k: float) -> "Eigenstrain":
+        return Eigenstrain(self.cells, self.values * float(k), self.segs, self.seg_values * float(k))
+
+    __rmul__ = __mul__
+
+    def __neg__(self) -> "Eigenstrain":
+        return self * -1.0
+
+    def cell_mean(self, nc: int) -> np.ndarray:
+        """(nc, 6): the cell averages over the integration points (zero for cells it does not touch)"""
+        out = np.zeros((nc, 6))
+        out[self.cells] = self.values.mean(axis=1)
+        return out
+
+
 # ── model ────────────────────────────────────────────────────────────────
 class OpsSolid:
     """femotion Mesh (hex8 and / or tet4) → OpenSees solid model, built when the first analysis starts.
@@ -643,6 +766,8 @@ class OpsSolid:
         self._rot: set[int] = set()  # dowel nodes whose rotation is tied to the solid's
         self._links: dict[int, int] = {}  # bar node → dowel node it is pinned to (equal translations)
         self._sliders: list[tuple] = []  # (tendon node, anchor node, sliding direction) at deviators of unbonded bars
+        self._bonds: list[dict] = []  # bond springs of bars with a bond-slip law: anchor, node, t, L, bar, s
+        self._akey: dict = {}  # coordinates → anchor node of bond springs
         # supports
         self.fixed: dict[int, list[int]] = {}
         self._springs: list[tuple] = []  # (node, (kx, ky, kz))
@@ -657,6 +782,9 @@ class OpsSolid:
         self.stages: list[Stage] = []
         self._pat = self._ts = 0
         self.h_clipped = 0
+        self._e0 = self._e0b = None  # committed free strains: (nc, 8, 6) per integration point, (n_segments,)
+        self._eig = None  # the free strain of the running stage
+        self._ptag = 0
 
     # ── geometry helpers ─────────────────────────────────────────────────
     @property
@@ -728,7 +856,8 @@ class OpsSolid:
         return j
 
     def bar(self, points, area: float, material: tuple, *, bond: bool = True, prestress: float = 0.0,
-            seg: float | None = None, name: str | None = None, outside: str = "error", slide: bool = True) -> int:
+            seg: float | None = None, name: str | None = None, outside: str = "error", slide: bool = True,
+            alpha: float = 0.0, perimeter: float | None = None) -> int:
         """a reinforcing bar, tendon, anchor or strip along the polyline `points` (n, 3); returns its index.
         material: uniaxial material tuple (steel, elastic, elastic_pp, frp, or any ("OpenSeesType", *params)).
         bond=True: perfectly bonded, cut into segments of at most `seg` (default half the median crack band) with every
@@ -740,13 +869,43 @@ class OpsSolid:
         from the first analysis step, balanced by the solid (elastic shortening included): a pretensioned bonded tendon,
         or an unbonded one; a post-tensioned tendon grouted afterwards is not modelled. Points that coincide with mesh
         nodes or with nodes of other bars share them (a strip ending on an anchor head); outside="free" allows points
-        outside the solid (they must then be held by other members, springs or supports)."""
+        outside the solid (they must then be held by other members, springs or supports). alpha: coefficient of thermal
+        expansion per degree for thermal() (steel 1.2e-5; 0 by default).
+        bond=BondSlip(...): bonded with slip — the bar has its own nodes (every `seg`), each joined to the solid at the
+        same point by a spring along the bar with the bond law × perimeter × tributary length, and stiff across it; the
+        perimeter defaults to that of a round bar of the given area. Slip and bond stress: bar_results(...)["bond"]."""
         if self.built:
             raise RuntimeError("the OpenSees model is already built: add bars before the first analysis")
         P0 = np.asarray(points, float).reshape(-1, 3)
         if len(P0) < 2:
             raise ValueError("a bar needs at least two points")
-        if bond:
+        slip = isinstance(bond, BondSlip)
+        if slip:  # own nodes, each joined to an anchor point of the solid by a bond spring
+            P = resample(P0, seg or 0.5 * float(np.median(self.h)))
+            given = np.zeros(len(P), bool)
+            given[[int(np.argmin(np.linalg.norm(P - q, axis=1))) for q in P0]] = True
+            P = P[given | np.array([self.loc.find(q) is not None for q in P])]
+            ids = [self._new_node(p, None) for p in P]
+            L = np.linalg.norm(np.diff(P, axis=0), axis=1)
+            trib = np.zeros(len(P))  # bonded length per node: the inside parts of the half segments next to it
+            q = (np.arange(16) + 0.5) / 16
+            for k in range(len(L)):
+                ins = np.array([self.loc.find(P[k] + t * (P[k + 1] - P[k])) is not None for t in q])
+                trib[k] += L[k] / 16 * ins[:8].sum()
+                trib[k + 1] += L[k] / 16 * ins[8:].sum()
+            T = np.diff(P, axis=0) / L[:, None]
+            tan = np.r_[T[:1], T[:-1] + T[1:], T[-1:]]
+            tan /= np.linalg.norm(tan, axis=1)[:, None]
+            sa = np.r_[0.0, np.cumsum(L)]
+            per = float(perimeter) if perimeter is not None else math.sqrt(4 * math.pi * float(area))
+            bonds = []
+            for k, (p, j) in enumerate(zip(P, ids)):
+                a = self._anchor_at(p, outside)
+                if a is None:
+                    continue
+                bonds.append(len(self._bonds))
+                self._bonds.append(dict(anchor=a, node=j, t=tan[k], L=float(trib[k]), bar=len(self.bars), s=float(sa[k])))
+        elif bond:
             P = resample(P0, seg or 0.5 * float(np.median(self.h)))
             given = np.zeros(len(P), bool)
             given[[int(np.argmin(np.linalg.norm(P - q, axis=1))) for q in P0]] = True
@@ -774,8 +933,29 @@ class OpsSolid:
                 self._segs.append((i, j, b))
         s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
         self.bars.append(dict(name=name or f"bar{b}", nodes=ids, points=P, s=s, area=float(area), material=material,
-                              prestress=float(prestress), bond=bond, segs=np.array(segs, np.int64)))
+                              prestress=float(prestress), bond=bond, segs=np.array(segs, np.int64), alpha=float(alpha),
+                              bonds=np.array(bonds if slip else [], np.int64), perimeter=per if slip else None))
         return b
+
+    def _anchor_at(self, p, outside: str):
+        """the point of the solid a bond spring holds: a mesh node there, else a node tied to the cell (shared by the bond
+        springs of bars crossing there); None outside the solid with outside='free'"""
+        key = self._key(p)
+        if key in self._akey:
+            return self._akey[key]
+        n = self.mesh.nearest(p)
+        if np.linalg.norm(self.mesh.points[n] - p) <= 1e-7 * self.scale:
+            self._akey[key] = n
+            return n
+        tie = self.loc.find(p)
+        if tie is None:
+            if outside != "free":
+                raise ValueError(f"bar point {np.round(p, 9).tolist()} lies outside the solid (pass outside='free' for "
+                                 "a run outside it, without bond)")
+            return None
+        j = self._new_node(p, tie)
+        self._akey[key] = j
+        return j
 
     def dowel(self, points, *, d: float | None = None, E: float | None = None, nu: float = 0.3, section=None,
               fiber=None, seg: float | None = None, rot: bool = False, name: str | None = None) -> int:
@@ -971,6 +1151,119 @@ class OpsSolid:
     def cell_centroids(self) -> np.ndarray:
         return np.concatenate([self.mesh.points[c].mean(axis=1) for _, c in self.cell_conn()])
 
+    # ── initial (free) strains: shrinkage, temperature, swelling, rust ───
+    def cells_of(self, where=None) -> np.ndarray:
+        """cell ids: all (None), cell group name(s), a predicate on cell centroids x (3, n), a mask or ids"""
+        if where is None:
+            return np.arange(self.nc)
+        if isinstance(where, str) or (isinstance(where, (list, tuple)) and len(where)
+                                      and all(isinstance(g, str) for g in where)):
+            out = []
+            for g in [where] if isinstance(where, str) else where:
+                if g not in self.mesh.cell_groups:
+                    raise KeyError(f"cell group {g!r} not in the mesh")
+                out += [self.off[k] + np.asarray(ids, np.int64) for k, ids in self.mesh.cell_groups[g].items()]
+            return np.unique(np.concatenate(out)) if out else np.zeros(0, np.int64)
+        return _sel(where, self.cell_centroids())
+
+    def gauss_points(self, cells=None) -> np.ndarray:
+        """(m, 8, 3) integration points of cells (see cells_of) in OpenSees' order: hexahedra 2 × 2 × 2 Gauss, point
+        4i + 2j + k at natural coordinates (g_i, g_j, g_k), g = (−1, +1)/√3; a tetrahedron's one point (its centroid)
+        fills all eight slots"""
+        cells = self.cells_of(cells)
+        out = np.zeros((len(cells), 8, 3))
+        P = self.mesh.points
+        for k, conn in self.cell_conn():
+            o, n = self.off[k], len(conn)
+            sel = (cells >= o) & (cells < o + n)
+            if not sel.any():
+                continue
+            X = P[conn[cells[sel] - o]]
+            out[sel] = np.einsum("gn,mnd->mgd", _hex_N(_GAUSS8), X) if k == "hex8" else X.mean(axis=1)[:, None, :]
+        return out
+
+    def _points_for(self, cells, at: str) -> np.ndarray:
+        X = self.gauss_points(cells)
+        if at not in ("gauss", "centroid"):
+            raise ValueError("at: 'gauss' or 'centroid'")
+        if at == "centroid" or self.element == "bbarBrick":
+            X = np.repeat(X.mean(axis=1, keepdims=True), 8, axis=1)
+        return X
+
+    @staticmethod
+    def _voigt_field(eps0, X: np.ndarray) -> np.ndarray:
+        """a free strain (number, 6 Voigt components, 3 × 3 tensor, or a function of x (3, m, 8) returning one of these
+        per point) → (m, 8, 6)"""
+        m = X.shape[0]
+        v = np.asarray(eps0(np.moveaxis(X, -1, 0)) if callable(eps0) else eps0, float)
+        pts = (m, 8)
+        if v.ndim == 0 or v.shape == pts:  # isotropic
+            iso = np.broadcast_to(v, pts)
+            return np.concatenate([np.repeat(iso[..., None], 3, axis=2), np.zeros(pts + (3,))], axis=2)
+        if v.shape[0] == 6 and v.shape[1:] in ((), pts):
+            return np.moveaxis(np.broadcast_to(v.reshape((6,) + (1, 1) * (v.ndim == 1) + v.shape[1:]), (6,) + pts), 0, -1).copy()
+        if v.shape[:2] == (3, 3) and v.shape[2:] in ((), pts):
+            T = np.broadcast_to(v.reshape((3, 3) + (1, 1) * (v.ndim == 2) + v.shape[2:]), (3, 3) + pts)
+            if not np.allclose(T, np.swapaxes(T, 0, 1), atol=1e-14 + 1e-9 * np.abs(T).max()):
+                raise ValueError("a strain tensor must be symmetric")
+            out = np.stack([T[0, 0], T[1, 1], T[2, 2], 2 * T[0, 1], 2 * T[1, 2], 2 * T[2, 0]], axis=-1)
+            return out
+        raise ValueError(f"free strain of shape {v.shape}: a number, 6 Voigt components or a 3 × 3 tensor (per point: "
+                         f"{pts}, (6,) + {pts} or (3, 3) + {pts})")
+
+    def initial_strain(self, eps0, cells=None, *, at: str = "gauss") -> Eigenstrain:
+        """a free strain ε0 of cells (cells_of: all, group name(s), predicate, mask, ids) for a stage:
+        static(..., strain=...) ramps it with the stage's load factor and holds it afterwards; the stress is
+        σ = f(ε − ε0). eps0: a number (isotropic ε0·I: swelling +, shrinkage −), 6 Voigt components (xx yy zz xy yz zx,
+        engineering shear), a 3 × 3 tensor, or a function of the integration points x (3, m, 8) returning one of these
+        per point ((m, 8), (6, m, 8), (3, 3, m, 8)). at="gauss": functions are evaluated at every integration point
+        (fields varying within a cell, as femotion.continuum.Elastic does); "centroid": once per cell (always with
+        bbarBrick, whose averaged volumetric strain needs a free strain constant over the cell)"""
+        c = self.cells_of(cells)
+        return Eigenstrain(c, self._voigt_field(eps0, self._points_for(c, at)))
+
+    def shrinkage(self, eps_sh, cells=None, *, at: str = "gauss") -> Eigenstrain:
+        """free shrinkage (eps_sh > 0 shortens; a number or a function of x like initial_strain's): ε0 = −eps_sh·I"""
+        f = (lambda x: -np.asarray(eps_sh(x), float)) if callable(eps_sh) else -float(eps_sh)
+        return self.initial_strain(f, cells, at=at)
+
+    def _alpha6(self, mi: int) -> np.ndarray:
+        m = self.materials[mi]
+        a = np.asarray(m.alpha, float) * np.ones(3)
+        return np.r_[a, np.zeros(3)]
+
+    def thermal(self, dT, cells=None, *, bars=True, at: str = "gauss") -> Eigenstrain:
+        """a temperature change ΔT (a number or a function of x (3, …) → (…)): every cell expands by its material's
+        alpha (ConcreteDamage: 1e-5 by default; ElasticOrtho: per global axis), every bar segment by its bar's alpha
+        (bar(..., alpha=)) at ΔT of its midpoint; bars=True (all), a list of bar indices, or False"""
+        c = self.cells_of(cells)
+        X = self._points_for(c, at)
+        T = np.broadcast_to(np.asarray(dT(np.moveaxis(X, -1, 0)) if callable(dT) else dT, float), X.shape[:2])
+        A = np.array([self._alpha6(mi) for mi in range(len(self.materials))])[self.mat_of[c]] if len(c) else np.zeros((0, 6))
+        vals = A[:, None, :] * T[..., None]
+        out = Eigenstrain(c, vals)
+        sel = list(range(len(self.bars))) if bars is True else ([] if not bars else list(np.atleast_1d(bars)))
+        segs = [int(k) for b in sel for k in self.bars[b]["segs"]]
+        if segs:
+            P = self.points
+            mid = np.array([0.5 * (P[self._segs[k][0]] + P[self._segs[k][1]]) for k in segs])
+            Tm = np.broadcast_to(np.asarray(dT(mid.T) if callable(dT) else dT, float), (len(segs),))
+            ab = np.array([self.bars[self._segs[k][2]]["alpha"] for k in segs])
+            zero = sorted({self.bars[self._segs[k][2]]["name"] for k in segs if self.bars[self._segs[k][2]]["alpha"] == 0})
+            if zero and np.any(A[:, :3]):
+                warnings.warn(f"bars {zero} have alpha = 0 and restrain the thermal strain of the concrete; give "
+                              "bar(..., alpha=1.2e-5) for steel (or bars=False to leave them out)", stacklevel=2)
+            out = Eigenstrain(c, vals, np.array(segs, np.int64), ab * Tm)
+        return out
+
+    def bar_strain(self, bars, eps0) -> Eigenstrain:
+        """a free strain along bars (an index or a list): a number or a function of the segment midpoints x (3, k) → (k,)"""
+        segs = [int(k) for b in np.atleast_1d(bars) for k in self.bars[int(b)]["segs"]]
+        P = self.points
+        mid = np.array([0.5 * (P[self._segs[k][0]] + P[self._segs[k][1]]) for k in segs]).reshape(-1, 3)
+        v = np.broadcast_to(np.asarray(eps0(mid.T) if callable(eps0) else eps0, float), (len(segs),))
+        return Eigenstrain(np.zeros(0, np.int64), np.zeros((0, 8, 6)), np.array(segs, np.int64), v.copy())
+
     # ── building the OpenSees model ──────────────────────────────────────
     def _live(self):
         if _registry()[0] is not self:
@@ -1023,6 +1316,13 @@ class OpsSolid:
             else:
                 raise TypeError(f"unknown solid material {type(m).__name__}")
         self.h_clipped = clipped
+        # every material inside OpenSees' InitStrain wrapper (zero until a stage applies a free strain): σ = f(ε + ε_init)
+        self._wrap = {}
+        for t in np.unique(self.ops_mat):
+            tag += 1
+            ops.nDMaterial("InitStrain", tag, int(t), 0.0)
+            self._wrap[int(t)] = tag
+        self.ops_mat = np.array([self._wrap[int(t)] for t in self.ops_mat], np.int64)
         if clipped:
             warnings.warn(f"{clipped} concrete cells are larger than the snap-back limit of their softening law and got the "
                           "law of h_max (they dissipate more than Gf); refine the mesh where cracks are expected",
@@ -1053,8 +1353,10 @@ class OpsSolid:
             if b["prestress"]:
                 ops.uniaxialMaterial("InitStressMaterial", mt + 2, use, float(b["prestress"]))
                 use = mt + 2
-            b["ops_mat"] = use
-        mt += 3  # past the last bar's three tags
+            ops.uniaxialMaterial("InitStrainMaterial", mt + 3, use, 0.0)  # free strains (thermal) on the outside
+            b["ops_mat"] = mt + 3
+            mt += 1
+        mt += 3  # past the last bar's four tags
         for s, (i, j, bi) in enumerate(self._segs):
             tag_e += 1
             ops.element("Truss", tag_e, i + 1, j + 1, self.bars[bi]["area"], self.bars[bi]["ops_mat"])
@@ -1107,7 +1409,7 @@ class OpsSolid:
         # embedding ties: the node follows the cell's own interpolation (trilinear in a hexahedron, linear in a
         # tetrahedron), built from ASDEmbeddedNodeElement penalty ties, see _embed
         used = {n for i, j, _ in self._segs for n in (i, j)} | {n for i, j, _ in self._dsegs for n in (i, j)}
-        used |= {a for _, a, _ in self._sliders}
+        used |= {a for _, a, _ in self._sliders} | {bd["anchor"] for bd in self._bonds}
         self._next_node, self._next_ele = self.n_nodes, tag_e
         self.n_aux = 0
         for j, tie in self._tie.items():
@@ -1122,6 +1424,21 @@ class OpsSolid:
             self._next_ele += 1
             ops.element("zeroLength", self._next_ele, a + 1, j + 1, "-mat", mt, mt, "-dir", 2, 3,
                         "-orient", *map(float, sd), *map(float, y / np.linalg.norm(y)))
+        # bond springs: along the bar the bond law, across it stiff
+        if self._bonds:
+            mt += 1
+            m_pen = mt
+            ops.uniaxialMaterial("Elastic", m_pen, k_pen)
+        for bd in self._bonds:
+            bar = self.bars[bd["bar"]]
+            mt += 1
+            bar["bond"].ops_material(ops, mt, bar["perimeter"] * bd["L"])
+            t = bd["t"]
+            y = np.cross(t, (0.0, 0.0, 1.0) if abs(t[2]) < 0.9 else (1.0, 0.0, 0.0))
+            self._next_ele += 1
+            ops.element("zeroLength", self._next_ele, bd["anchor"] + 1, bd["node"] + 1, "-mat", mt, m_pen, m_pen,
+                        "-dir", 1, 2, 3, "-orient", *map(float, t), *map(float, y / np.linalg.norm(y)))
+            bd["tag"] = self._next_ele
         tag_e = self._next_ele
         for j, dn in self._links.items():
             ops.equalDOF(dn + 1, j + 1, 1, 2, 3)
@@ -1348,6 +1665,7 @@ class OpsSolid:
         """bar nodes held in fewer than three directions: not tied to the solid, not on a dowel, not supported, and the
         bars (and deviator ties) on them span less than 3D — two bars in line hold a node only along their line"""
         held = set(self._tie) | set(self._links) | self._six | set(self.fixed) | {n for n, _ in self._springs}
+        held |= {bd["node"] for bd in self._bonds}
         dirs: dict[int, list] = {}
         P = self.points
         for i, j, _ in self._segs:
@@ -1400,7 +1718,8 @@ class OpsSolid:
         retry(2.0)
         return ok
 
-    def _run(self, stage: Stage, steps: int, set_inc, analyze, record, stop=None, lam_of=None, hold: bool = False):
+    def _run(self, stage: Stage, steps: int, set_inc, analyze, record, stop=None, lam_of=None, hold: bool = False,
+             pre=None):
         """`steps` steps (fewer when `stop` says so). hold: a stage without load increment — under IMPL-EX every step
         starts without extrapolation, i.e. a fixed-point iteration on the damage towards the implicit equilibrium, and
         the stage ends once a step changes the displacements by less than hold_tol × their norm (implicitly: after
@@ -1415,6 +1734,8 @@ class OpsSolid:
 
         def attempt():
             self._implex_time(d[0], first[0] or hold)
+            if pre is not None:  # free strains at the load factor this attempt aims at
+                pre(d[0])
             return analyze()
 
         settled = False
@@ -1468,18 +1789,20 @@ class OpsSolid:
         self._run(Stage("prestress", "hold"), self.hold_steps, lambda s: None, lambda: ops.analyze(1), False,
                   lam_of=lambda: 0.0, hold=True)
 
-    def static(self, F=None, steps: int = 1, *, imposed=None, name: str | None = None, record=True,
-               stop=None) -> Stage:
-        """load control: load pattern F (n_nodes, 3) (or None: prestress and initial stresses only) and imposed
-        displacements imposed=(node ids, values (n, 3), NaN = free) applied in `steps` equal increments, then held for
-        the following stages (unload with −F). record: True (cell and bar results every step), an integer k (every k-th
-        step and the last) or False (the last step only); displacements and reactions are kept for every step.
-        stop(step) → True ends the stage."""
+    def static(self, F=None, steps: int = 1, *, imposed=None, strain: Eigenstrain | None = None,
+               name: str | None = None, record=True, stop=None) -> Stage:
+        """load control: load pattern F (n_nodes, 3) (or None: prestress and initial stresses only), imposed
+        displacements imposed=(node ids, values (n, 3), NaN = free) and free strains strain (an Eigenstrain from
+        initial_strain, shrinkage, thermal, bar_strain) applied together in `steps` equal increments of the load factor
+        λ, then held for the following stages (unload with −F; take a free strain back with −strain). record: True (cell
+        and bar results every step), an integer k (every k-th step and the last) or False (the last step only);
+        displacements and reactions are kept for every step. stop(step) → True ends the stage (the free strain keeps the
+        λ reached)."""
         if not self.built:
             self._build()
         self._live()
         ops = self.ops
-        hold = imposed is None and (F is None or not np.any(F))
+        hold = imposed is None and (F is None or not np.any(F)) and strain is None
         drv = self._drivers(imposed) if imposed is not None else None
         self._check_supports()
         p = self._pattern(F, drv)
@@ -1488,10 +1811,104 @@ class OpsSolid:
         ops.integrator("LoadControl", 1.0 / steps)
         ops.analysis("Static")
         st = Stage(name or f"stage{len(self.stages) + 1}", "hold" if hold else "static")
-        self._run(st, steps, lambda s: ops.integrator("LoadControl", s / steps), lambda: ops.analyze(1), record, stop,
-                  lambda: ops.getLoadFactor(p), hold=hold)
+        pre = None
+        if strain is not None:
+            self._eig_begin(strain)
+            pre = lambda d: self._eig_set(ops.getLoadFactor(p) + d / steps)  # noqa: E731  (λ before the step is the committed one)
+        try:
+            self._run(st, steps, lambda s: ops.integrator("LoadControl", s / steps), lambda: ops.analyze(1), record,
+                      stop, lambda: ops.getLoadFactor(p), hold=hold, pre=pre)
+        finally:
+            if strain is not None:
+                self._eig_end(ops.getLoadFactor(p))
         ops.loadConst("-time", 0.0)
         return st
+
+    # free strains of a stage: OpenSees parameters on the InitStrain wrappers, updated before every attempt
+    def _eig_begin(self, S: Eigenstrain):
+        """one OpenSees parameter per group of material points that share the stage's (start value, increment) of a
+        component — a uniform shrinkage of a whole group is a single parameter — so a step costs one update per group"""
+        ops = self.ops
+        if self._e0 is None:
+            self._e0 = np.zeros((self.nc, 8, 6))
+            self._e0b = np.zeros(len(self._segs))
+        cells = np.asarray(S.cells, np.int64)
+        inc = np.asarray(S.values, float).reshape(len(cells), 8, 6)
+        base = self._e0[cells]
+        tet = np.zeros(len(cells), bool)
+        if "tet4" in self.off:
+            o = self.off["tet4"]
+            tet = (cells >= o) & (cells < o + len(self.mesh.cells["tet4"]))
+        same = tet | (np.all(inc == inc[:, :1], axis=(1, 2)) & np.all(base == base[:, :1], axis=(1, 2)))
+        rc, rg, rk = [cells[same]], [np.zeros(int(same.sum()), np.int64)], [np.c_[base[same, 0], inc[same, 0]]]
+        nu = ~same
+        if nu.any():  # varying within the cell: one row per integration point
+            rc.append(np.repeat(cells[nu], 8))
+            rg.append(np.tile(np.arange(1, 9), int(nu.sum())))
+            rk.append(np.c_[base[nu].reshape(-1, 6), inc[nu].reshape(-1, 6)])
+        rc, rg, rk = np.concatenate(rc), np.concatenate(rg), np.concatenate(rk)
+        params = []
+        keys, inv = np.unique(rk, axis=0, return_inverse=True) if len(rk) else (np.zeros((0, 12)), np.zeros(0, np.int64))
+        inv = np.asarray(inv).ravel()
+        order = np.argsort(inv, kind="stable")
+        bounds = np.searchsorted(inv[order], np.arange(len(keys) + 1))
+        for u, key in enumerate(keys):
+            b, i = key[:6], key[6:]
+            if not i.any():
+                continue
+            iso = i[0] == i[1] == i[2] and not i[3:].any() and b[0] == b[1] == b[2]
+            comps = [("eps0", 0)] if iso else [("eps0_" + VOIGT[k], k) for k in range(6) if i[k] != 0]
+            rows = order[bounds[u]:bounds[u + 1]]
+            for nm, k in comps:
+                self._ptag += 1
+                for r, row in enumerate(rows):
+                    addr = ["element", int(rc[row]) + 1] + (["material", str(int(rg[row]))] if rg[row] else []) + [nm]
+                    (ops.parameter if r == 0 else ops.addToParameter)(self._ptag, *addr)
+                params.append((self._ptag, float(b[k]), float(i[k])))
+        segs = np.asarray(S.segs, np.int64)
+        if len(segs):
+            sk = np.c_[self._e0b[segs], np.asarray(S.seg_values, float)]
+            keys, inv = np.unique(sk, axis=0, return_inverse=True)
+            inv = np.asarray(inv).ravel()
+            for u, (b, i) in enumerate(keys):
+                if i == 0:
+                    continue
+                self._ptag += 1
+                for r, sg in enumerate(segs[inv == u]):
+                    (ops.parameter if r == 0 else ops.addToParameter)(self._ptag, "element", int(self.seg_tag[sg]),
+                                                                       "material", "epsInit")
+                params.append((self._ptag, float(b), float(i)))
+        self._eig = dict(S=S, cells=cells, inc=inc, params=params, lam=0.0)
+
+    def _eig_set(self, lam: float):
+        """the free strain at load factor λ of the stage: ε0 = start + λ·increment; the wrappers take ε_init = −ε0"""
+        upd = self.ops.updateParameter
+        for t, b, i in self._eig["params"]:
+            upd(t, -(b + lam * i))
+        self._eig["lam"] = float(lam)
+
+    def _eig_end(self, lam: float):
+        """back to the committed λ (a failed attempt may have left its own), stored, parameters removed"""
+        self._eig_set(lam)
+        e = self._eig
+        np.add.at(self._e0, e["cells"], lam * e["inc"])
+        np.add.at(self._e0b, np.asarray(e["S"].segs, np.int64), lam * np.asarray(e["S"].seg_values, float))
+        for t, _, _ in e["params"]:
+            self.ops.remove("parameter", t)
+        self._eig = None
+
+    def _eig_now(self) -> tuple[np.ndarray, np.ndarray]:
+        """current free strain: (nc, 6) cell averages, (n_segments,) along the bars"""
+        nc, nb = self.nc, len(self._segs)
+        if self._e0 is None:
+            return np.zeros((nc, 6)), np.zeros(nb)
+        c = self._e0.mean(axis=1)
+        b = self._e0b.copy()
+        e = self._eig
+        if e is not None and e["lam"]:
+            np.add.at(c, e["cells"], e["lam"] * e["inc"].mean(axis=1))
+            np.add.at(b, np.asarray(e["S"].segs, np.int64), e["lam"] * np.asarray(e["S"].seg_values, float))
+        return c, b
 
     def push(self, F, node, dof: int, target: float, steps: int = 50, *, name: str | None = None, record=True,
              stop=None) -> Stage:
@@ -1530,9 +1947,10 @@ class OpsSolid:
         return Step(stage, k, float(lam), U, R, sup, cell, bar, dowel)
 
     def _read_fields(self) -> tuple[dict, dict, dict]:
-        """cell averages over the integration points: stress, strain (engineering shear, order xx yy zz xy yz zx),
-        inelastic strain, crack strain and normal, crack width, cracked / crushed flags; bar axial force and strain; dowel
-        element forces"""
+        """cell averages over the integration points: stress, strain (the strain the material sees, ε − ε0; engineering
+        shear, order xx yy zz xy yz zx), eps0 (the free strain ε0; the strain of the displacements is strain + eps0),
+        inelastic strain, crack strain and normal, crack width, cracked / crushed flags; bar axial force, strain (of the
+        displacements) and eps0; dowel element forces"""
         ops = self.ops
         nc = self.nc
         S = np.zeros((nc, 6))
@@ -1572,8 +1990,9 @@ class OpsSolid:
                 crushed[sel] = xc[sel] > m.eps_c_peak * (1 + 1e-6)
                 epre[sel] = m.eps_in_peak
         ecr = np.where(cracked, np.maximum(e1 - epre, 0.0), 0.0)
+        e0c, e0b = self._eig_now()
         cell = dict(stress=S, strain=Eps, eps_in=Ein, crack_strain=ecr, crack_normal=n1 * (ecr > 0)[:, None],
-                    width=ecr * self.h_used, cracked=cracked, crushed=crushed, eq_strain=np.c_[xt, xc])
+                    width=ecr * self.h_used, cracked=cracked, crushed=crushed, eq_strain=np.c_[xt, xc], eps0=e0c)
         nseg = len(self._segs)
         N = np.zeros(nseg)
         dL = np.zeros(nseg)
@@ -1581,7 +2000,10 @@ class OpsSolid:
             N[s] = ops.eleResponse(int(self.seg_tag[s]), "axialForce")[0]
             dL[s] = ops.eleResponse(int(self.seg_tag[s]), "basicDeformation")[0]
         L0, A = self._seg_geometry()
-        bar = dict(N=N, stress=N / A, strain=dL / L0)
+        slip = np.array([ops.eleResponse(bd["tag"], "basicDeformation")[0] for bd in self._bonds])
+        fb = np.array([ops.eleResponse(bd["tag"], "basicForce")[0] for bd in self._bonds])
+        pl = np.array([self.bars[bd["bar"]]["perimeter"] * bd["L"] for bd in self._bonds])
+        bar = dict(N=N, stress=N / A, strain=dL / L0, eps0=e0b, slip=slip, tau=fb / pl if len(pl) else fb)
         nd = len(self._dsegs)
         lf = np.array([ops.eleResponse(int(t), "localForce") for t in self.dseg_tag]).reshape(nd, 12)
         dowel = dict(local=lf, N=lf[:, 6], V=np.hypot(lf[:, 1], lf[:, 2]),
@@ -1647,7 +2069,9 @@ class OpsSolid:
 
     def bar_results(self, bar: int, step=-1) -> dict:
         """axial force, stress and strain of the segments of one bar: s (distance of segment midpoints from its start), N,
-        stress, strain (elastic strain of the element; the prestrain of a prestressed bar comes on top)"""
+        stress, strain (of the element's elongation; the prestrain of a prestressed bar comes on top), eps0 (its free
+        strain); with a bond-slip law also bond=dict(s, slip (bar relative to the concrete, along the bar), tau (bond
+        stress)) at its nodes"""
         h = self._rec(step)
         b = self.bars[bar]
         segs = b["segs"]
@@ -1656,7 +2080,12 @@ class OpsSolid:
         s = np.linalg.norm(mids - b["points"][0], axis=1) if len(segs) else np.zeros(0)
         if len(segs) and len(b["points"]) > 2:  # along a polyline: project on the arc length
             s = np.array([self._arc(b, m) for m in mids])
-        return dict(s=s, x=mids, N=h.bar["N"][segs], stress=h.bar["stress"][segs], strain=h.bar["strain"][segs])
+        out = dict(s=s, x=mids, N=h.bar["N"][segs], stress=h.bar["stress"][segs], strain=h.bar["strain"][segs],
+                   eps0=h.bar["eps0"][segs])
+        if len(b["bonds"]):
+            k = b["bonds"]
+            out["bond"] = dict(s=np.array([self._bonds[i]["s"] for i in k]), slip=h.bar["slip"][k], tau=h.bar["tau"][k])
+        return out
 
     def dowel_results(self, dowel: int, step=-1) -> dict:
         """forces along one dowel per element: s (distance of element midpoints from its first point), N (axial,
@@ -1840,6 +2269,8 @@ class OpsSolid:
         r.field("stress", cellf("stress"), loc="cell", frames=True, label="stress xx yy zz xy yz zx")
         r.field("s1", cellf("stress", lambda S: principal_3d(S)[0][:, 0]), loc="cell", frames=True,
                 label="largest principal stress")
+        if any(np.any(h.cell["eps0"]) for h in hs):
+            r.field("eps0", cellf("eps0"), loc="cell", frames=True, label="free strain xx yy zz xy yz zx")
         if nb:
             r.field("bar_stress", barf("stress"), loc="cell", frames=True, label="bar stress")
             r.field("bar_force", barf("N"), loc="cell", frames=True, label="bar axial force")
@@ -1898,4 +2329,4 @@ class OpsSolid:
 
 __all__ = ["OpsSolid", "ConcreteDamage", "ElasticIso", "ElasticOrtho", "CellLocator", "interpolate", "band_widths",
            "cell_aspect", "displacement_source", "submodel_boundary", "steel", "elastic", "elastic_pp", "frp", "Step",
-           "Stage", "UNITS", "HEX_TETS"]
+           "Stage", "Eigenstrain", "UNITS", "HEX_TETS", "VOIGT"]
