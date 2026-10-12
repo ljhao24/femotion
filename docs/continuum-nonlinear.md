@@ -54,6 +54,9 @@ Any consistent set: N, mm, MPa (fracture energies in N/mm), or kN, m, kPa (kN/m 
 | `fix`, `tie`, `spring`, `face_spring` | `fix`, `equalDOF`, `zeroLength` to fixed ground nodes | Winkler springs per unit area are lumped by tributary area |
 | `static(imposed=…)` | `zeroLength` drivers + `sp` on their ground node | see "Imposed displacements" |
 
+A mesh may mix hexahedra and tetrahedra (cell results are in that order), but boundary-face loads and supports
+(`traction`, `pressure`, `face_spring`, `surface_cracks`) need one kind.
+
 Uniaxial materials of bars are tuples `("OpenSeesType", *parameters)` as in `femotion.frame.opensees.Fiber`, with helpers
 `steel(fy, E, b)` (Steel02), `elastic(E)`, `elastic_pp(fy, E)` and `frp(E, eps_u)` (linear, ruptures for good beyond
 eps_u). Bars that start or end on a dowel node are pinned to it (`equalDOF` in translation): a prestressed strip
@@ -96,7 +99,7 @@ prism) to be overshot by about one step.
 
 **Implicit (`implex=False`)**: secant iterations to equilibrium at every step. Exact at convergence, but convergence is
 linear (Krylov–Newton helps) and stalls when many points crack in one step; steps that do not converge are retried with
-other algorithms and then halved (down to 1/2⁸). Use it for small models and for checks.
+other algorithms and then halved (down to 1/2⁶). Use it for small models and for checks.
 
 IMPL-EX extrapolates with the ratio of OpenSees' pseudo-time increments, and under displacement control that increment is
 the load-factor increment, which changes in every iteration: the step is then not linear and diverges. Here the
@@ -270,8 +273,9 @@ Apple M1 Max, OpenSeesPy 3.8 (UmfPack), IMPL-EX, two Newton iterations per step:
 | the same, 50 × 25 × 25 mm | 15 360 (52 000 equations) | 10 | 247 s (AMD; 352 s with RCM) |
 
 The material update (eight points per hexahedron, about 13 µs each) and the sparse factorisation (UmfPack; the
-equation ordering `numberer` matters: AMD for bulky blocks, RCM for long slender members) share the time; IMPL-EX needs two to three iterations per step. Reading the
-results (two element responses per cell and one per integration point) adds about 0.2 s per step for 4 000 cells.
+equation ordering `numberer` matters: AMD for bulky blocks, RCM for long slender members) share the time; IMPL-EX needs
+two to three iterations per step. Reading the results (two element responses per cell and one per integration point)
+adds about 0.2 s per step for 4 000 cells.
 
 ## OpenSees notes (3.8)
 

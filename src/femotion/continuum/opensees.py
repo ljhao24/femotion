@@ -1225,8 +1225,8 @@ class OpsSolid:
         floor = 1e-10 * self.scale
         return max(floor, self._tol if self._tol is not None else 1e-8 * self.scale)
 
-    def _step(self, analyze, retry, depth: int = 0, max_depth: int = 8) -> bool:
-        """one step; on failure the other algorithms, then two half steps (recursively, down to 1/2⁸)"""
+    def _step(self, analyze, retry, depth: int = 0, max_depth: int = 6) -> bool:
+        """one step; on failure the other algorithms, then two half steps (recursively, down to 1/2⁶)"""
         ops = self.ops
         if analyze() == 0:
             return True
