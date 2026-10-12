@@ -84,6 +84,12 @@ class LayeredSection:
         t = np.concatenate([[0.0]] + [np.linspace(0, 1, n + 1)[1:] + k for k, n in enumerate(self.nz)])  # layer coordinate
         k = np.minimum(t.astype(int), len(self.nz) - 1)
         frac = t - k
+        # solid blocks need ordered interfaces: z_k ≤ z_k+1 at every node of their columns
+        for j, nyj in enumerate(self.ny):
+            a = int(self.ny[:j].sum())
+            for kk in np.where(self.solid[j])[0]:
+                if np.any(Zi[kk + 1, a:a + nyj + 1] < Zi[kk, a:a + nyj + 1] - 1e-12):
+                    raise ValueError(f"interfaces {kk} and {kk + 1} cross in solid block (column {j}, layer {kk}) at x = {x:g}")
         Zn = Zi[k] + frac[:, None] * (Zi[k + 1] - Zi[k])  # (NZ + 1, NY + 1)
         Yg = np.broadcast_to(Y[None, :], Zn.shape)
         P = np.c_[Yg.T.ravel(), Zn.T.ravel()]  # node id = i·(NZ+1) + j

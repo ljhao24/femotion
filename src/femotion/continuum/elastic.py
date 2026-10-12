@@ -88,7 +88,8 @@ class Elastic:
         simplex = mesh.kind in ("tri3", "tri6", "tet4")
         q1 = (np.full((self.dim, 1), 1 / (self.dim + 1) if simplex else 0.5),
               np.array([1 / math.factorial(self.dim) if simplex else 1.0]))
-        # dof bookkeeping, interpolation and cell volumes only: one quadrature point per cell keeps these cheap
+        # ib (vector) and sb (scalar): dof bookkeeping and interpolation only — one quadrature point per cell keeps them
+        # cheap on large meshes, so their dx is not an integration rule (cell volumes: Elastic.cell_volumes)
         self.ib = Basis(self.sk, self.elem, quadrature=q1)
         self.sb = Basis(self.sk, self.scalar_elem, quadrature=q1)
         self._setup_materials(E, nu, material, materials, E_cell)
@@ -102,7 +103,6 @@ class Elastic:
         self.cases: dict = {}
         self.results: dict = {}
         self._fixed: list[np.ndarray] = []
-        self._presc: dict[int, float] = {}
         self._locator = None
         self.Kc = self._assemble_K()
         self.t_assemble = time.time() - t0
@@ -184,7 +184,7 @@ class Elastic:
         dim = self.dim
         ncomp = 3 if dim == 2 else 6
         N = self.ib.N
-        K = sp.csr_matrix((N, N))
+        parts = []
         for mat, cells in self._material_chunks():
             sb = Basis(self.sk, self.scalar_elem, elements=cells)
             Dm = self.D(mat)
@@ -198,8 +198,10 @@ class Elastic:
             gd = self._vector_dofs(sb)  # (nel, n)
             r = np.broadcast_to(gd[:, :, None], Ke.shape)
             c = np.broadcast_to(gd[:, None, :], Ke.shape)
-            K = K + sp.csr_matrix((Ke.ravel(), (r.ravel(), c.ravel())), shape=(N, N))
-        return K.tocsr()
+            parts.append(sp.csr_matrix((Ke.ravel(), (r.ravel(), c.ravel())), shape=(N, N)))
+        while len(parts) > 1:  # pairwise sums: O(nnz log chunks) instead of O(nnz · chunks)
+            parts = [parts[i] + parts[i + 1] if i + 1 < len(parts) else parts[i] for i in range(0, len(parts), 2)]
+        return parts[0].tocsr() if parts else sp.csr_matrix((N, N))
 
     def _B(self, sb) -> np.ndarray:
         """strain-displacement matrices (nel, nq, ncomp, dim·nb) from a scalar basis; column dim·k + c is component c of
@@ -248,6 +250,25 @@ class Elastic:
             raise ValueError(f"{name!r} is already used by a spring or bar")
         self._extra[name] = M.tocsr()
         self._K = None
+
+    @property
+    def cell_volumes(self) -> np.ndarray:
+        """volume (area × thickness in 2D) of every cell, by the assembly quadrature"""
+        if getattr(self, "_vol", None) is None:
+            from skfem import Basis
+            v = np.zeros(self.sk.t.shape[1])
+            for c in self._chunks(np.arange(self.sk.t.shape[1])):
+                v[c] = np.asarray(Basis(self.sk, self.scalar_elem, elements=c).dx).sum(axis=1)
+            self._vol = v * self.thick
+        return self._vol
+
+    @property
+    def h(self) -> float:
+        """median edge length of the mesh (a length scale for tolerances)"""
+        if getattr(self, "_h", None) is None:
+            e = self.mesh.edges()
+            self._h = float(np.median(np.linalg.norm(self.mesh.points[e[:, 1]] - self.mesh.points[e[:, 0]], axis=1)))
+        return self._h
 
     @property
     def locator(self):
@@ -382,20 +403,23 @@ class Elastic:
     # single-case use: the case "default"
     @property
     def f(self) -> np.ndarray:
-        return self.case().f
+        """load vector of the case "default" (zeros if it does not exist; reading it creates nothing)"""
+        return self.cases["default"].f if "default" in self.cases else np.zeros(self.ib.N)
 
     def traction(self, where, t, intorder: int | None = None) -> np.ndarray:
         """where: boundary facets (a predicate pred(x) on facet midpoints, or an array of facet ids); t: a constant vector or
         t(x) → components. Returns this part of the load vector"""
-        f = self._traction_vector(where, t, intorder)
-        self.case().f += f
-        return f
+        c = self.case()
+        before = c.f_ext.copy()
+        c.traction(where, t, intorder)
+        return c.f_ext - before
 
     def body_force(self, b, groups=None) -> np.ndarray:
         """body force per unit volume (e.g. ρg downwards): constant vector or b(x)"""
-        f = self._body_vector(b, self._cells_of(groups))
-        self.case().f += f
-        return f
+        c = self.case()
+        before = c.f_ext.copy()
+        c.body_force(b, groups)
+        return c.f_ext - before
 
     def point_load(self, p, F):
         """point load at the vertex nearest to p"""
@@ -407,13 +431,17 @@ class Elastic:
         return self.case().scale_load(total, direction)
 
     def resultant(self, f=None) -> np.ndarray:
+        """resultant of a load vector (default: the case "default")"""
         f = self.f if f is None else f
         return np.array([f[i::self.dim].sum() for i in range(self.dim)])
 
     # ── supports ────────────────────────────────────────────────────────
     def fix(self, where, comps=None, value: float = 0.0):
-        """where: a predicate pred(x) on node coordinates (also selects mid-edge nodes of quadratic cells) or an array of
-        vertex ids; comps: all components by default; value: imposed displacement (in every case)"""
+        """where: a predicate pred(X) on dof locations X (dim, N): every node where it holds — a point, a line, a face —
+        including mid-edge nodes of quadratic cells (on curved boundaries those lie on the chord); or an array of vertex
+        ids. comps: all components by default. value: an imposed displacement, part of the case "default" (other cases
+        hold these dofs at zero; use case(name).displacement for settlements in named cases). Facet loads and springs
+        select facets by their midpoints instead (traction, spring, facets)"""
         comps = range(self.dim) if comps is None else comps
         per = self.dofs_where(where, comps)  # every dof located where the predicate holds: points, lines, faces alike
         for c in comps:
@@ -422,8 +450,7 @@ class Elastic:
                 raise ValueError("fix: the selection holds no nodes")
             self._fixed.append(d)
             if value:
-                for k in d:
-                    self._presc[int(k)] = value
+                self.case().uD.update({int(k): float(value) for k in d})
 
     def fix_point(self, p, comps=None):
         n = int(np.argmin(np.linalg.norm(self.sk.p.T - np.asarray(p, float), axis=1)))
@@ -438,6 +465,8 @@ class Elastic:
             raise ValueError("spring: no facets selected")
         kk = np.asarray(k, float)
         kk = np.diag(kk) if kk.ndim == 1 else kk
+        if not np.allclose(kk, kk.T):
+            raise ValueError("spring: k must be symmetric")
         d = self.dim
         nz = [(i, j) for i in range(d) for j in range(d) if kk[i, j] != 0]
 
@@ -474,8 +503,8 @@ class Elastic:
     # ── solve ───────────────────────────────────────────────────────────
     def solve(self, method: str = "auto", tol: float = 1e-10, verbose: bool = False, cases=None):
         """solve every load case (or the named ones) with one factorisation. method: direct (SuperLU), cholesky (CHOLMOD
-        via the optional package cholespy: far faster and leaner for 3D solids, needs a positive definite K, i.e.
-        enough supports), amg (pyamg smoothed aggregation + CG with rigid-body modes as near-null space, one hierarchy for
+        through scikit-sparse or, failing that, cholespy: far faster and leaner for 3D solids, needs a positive definite
+        K, i.e. enough supports), amg (pyamg smoothed aggregation + CG with rigid-body modes as near-null space, one hierarchy for
         all cases; slow to converge on thin-walled quadratic models), auto (direct up to 150,000 dofs, then cholesky up to
         800,000 if installed, else amg). Returns the displacements of the case "default" (or of the first case)"""
         from .results import CaseResult
@@ -487,28 +516,16 @@ class Elastic:
         D = np.unique(np.concatenate(self._fixed)) if self._fixed else np.zeros(0, int)
         free = np.setdiff1d(np.arange(self.ib.N), D)
         uD0 = np.zeros(self.ib.N)
-        for k, v in self._presc.items():
-            uD0[k] = v
         A = K[free][:, free].tocsr()
-        any_presc = bool(self._presc) or any(len(self.cases[n].uD) for n in names)
+        any_presc = any(len(self.cases[n].uD) for n in names)
         KfD = K[free][:, D] if any_presc else None
         if method == "auto":
             method = "direct" if len(free) <= 150_000 else ("cholesky" if _has_cholespy() and len(free) <= 800_000 else "amg")
         self.cg_iterations = 0
         self.method = method
         rels = []
-        if method == "cholesky":  # CHOLMOD (supernodal, METIS ordering) through cholespy: robust for thin-walled solids
-            from cholespy import CholeskySolverD, MatrixType
-            C = A.tocoo()
-            try:
-                ch = CholeskySolverD(len(free), C.row.astype(np.int32), C.col.astype(np.int32), C.data, MatrixType.COO)
-            except Exception as e:
-                raise RuntimeError(f"Cholesky factorisation failed ({e}); check the supports") from e
-
-            def solve1(b):
-                x = np.zeros_like(b)
-                ch.solve(np.ascontiguousarray(b), x)
-                return x
+        if method == "cholesky":  # CHOLMOD: robust for thin-walled solids
+            solve1 = _cholmod(A)
         elif method == "direct":
             from scipy.sparse.linalg import splu
             try:
@@ -546,14 +563,14 @@ class Elastic:
                 u[free] = solve1(b)
             rel = float(np.linalg.norm(b - A @ u[free]) / nb) if nb > 0 else 0.0
             if not rel < 1e-6 or not np.all(np.isfinite(u)):
-                raise RuntimeError(f"{method} solve did not converge for case {name!r} (relative residual {rel:.1e}); "
-                                   "try method='direct', check the supports, or improve the mesh")
+                hint = {"amg": "try method='cholesky' or 'direct', check the supports",
+                        "cholesky": "check the supports (K must be positive definite)"}.get(method, "check the supports")
+                raise RuntimeError(f"{method} solve did not converge for case {name!r} (relative residual {rel:.1e}); {hint}")
             rels.append(rel)
             self.results[name] = CaseResult(self, u, [(1.0, self.cases[name])], name=name)
         self.rel_residual = max(rels)
         self.free, self.fixed = free, D
-        main = "default" if "default" in self.results else names[0]
-        self.u = self.results[main].u
+        self.u = self._main().u if (len(self.results) == 1 or self._has_default()) else None
         self.t_solve = time.time() - t0
         if verbose:
             print(f"  assembly {self.t_assemble:.1f}s, solve {self.t_solve:.1f}s ({method}), {self.ib.N:,} dofs, "
@@ -599,6 +616,8 @@ class Elastic:
 
     def combine(self, factors: dict, name: str | None = None):
         """Σ factor · result(case), e.g. combine({"自重": 1.2, "车辆": 1.4})"""
+        if not factors:
+            raise ValueError("combine: no cases")
         out = None
         for k, v in factors.items():
             r = v * self.result(k)
@@ -606,10 +625,18 @@ class Elastic:
         out.name = name
         return out
 
+    def _has_default(self) -> bool:
+        return "default" in self.results and not self.cases["default"].empty
+
     def _main(self):
+        """the result behind the single-case API: the case "default", or the only case"""
         if not self.results:
             raise RuntimeError("solve() first")
-        return self.results["default"] if "default" in self.results else next(iter(self.results.values()))
+        if self._has_default():
+            return self.results["default"]
+        if len(self.results) == 1:
+            return next(iter(self.results.values()))
+        raise ValueError(f"several load cases ({', '.join(self.results)}): use result(name)")
 
     def reactions(self) -> np.ndarray:
         """resultant reaction at the fixed dofs (per component)"""
@@ -666,7 +693,34 @@ class Elastic:
 
 def _has_cholespy() -> bool:
     import importlib.util
-    return importlib.util.find_spec("cholespy") is not None
+    return any(importlib.util.find_spec(m) is not None for m in ("sksparse", "cholespy"))
+
+
+def _cholmod(A):
+    """factorise an SPD matrix with CHOLMOD and return x = solve(b): scikit-sparse (supernodal, multithreaded BLAS; needs
+    SuiteSparse installed) if present, else cholespy (pip wheels; simplicial, an order of magnitude slower on 3D solids)"""
+    try:
+        import sksparse.cholmod as C
+    except ImportError:
+        C = None
+    if C is not None:
+        try:
+            F = C.cho_factor(sp.csc_array(A.tocsc()), order="default")
+        except Exception as e:
+            raise RuntimeError(f"Cholesky factorisation failed ({e}); check the supports") from e
+        return lambda b: np.asarray(F.solve(b)).reshape(b.shape)
+    from cholespy import CholeskySolverD, MatrixType
+    C = A.tocoo()
+    try:
+        ch = CholeskySolverD(A.shape[0], C.row.astype(np.int32), C.col.astype(np.int32), C.data, MatrixType.COO)
+    except Exception as e:
+        raise RuntimeError(f"Cholesky factorisation failed ({e}); check the supports") from e
+
+    def solve1(b):
+        x = np.zeros_like(b)
+        ch.solve(np.ascontiguousarray(b), x)
+        return x
+    return solve1
 
 
 def facet_normals(P: np.ndarray) -> np.ndarray:
@@ -685,4 +739,5 @@ class Support:
         self.name, self.where, self.K = name, where, K.tocsr()
 
     def __repr__(self):
-        return f"Support({self.name!r}, {len(self.where)} facet(s))"
+        kind = "point" if self.K.nnz <= 3 else f"{len(self.where)} facet(s)"
+        return f"Support({self.name!r}, {kind})"

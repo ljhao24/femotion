@@ -36,10 +36,11 @@ export_vtu("out/deck.vtu", s, {"G1": s.result("G1"), "sum": r})
 |---|---|
 | `materials` | `Isotropic(E, nu, alpha)`, `Orthotropic(E, nu, G, alpha, axes)` and `Orthotropic.transversely_isotropic` (fibre plates); 3D, plane stress and plane strain laws, thermal strains |
 | `elastic` | `Elastic`: assembly per material group in chunks of cells (bounded memory), supports (`fix`, `spring`, `spring_point`), embedded bars (`bar`), load cases (`case`), `solve` |
-| `loads` | `LoadCase`: `traction`, `pressure`, `area_load`, `body_force`, `initial_strain`, `thermal`, `point_load`, `point_forces`, `line_load`, `tendon`, `bar_prestress` |
+| `loads` | `LoadCase`: `traction`, `pressure`, `area_load`, `body_force`, `initial_strain`, `thermal`, `point_load`, `point_forces`, `line_load`, `tendon`, `bar_prestress`, `displacement` |
 | `embed` | `Locator` (points → cells and reference coordinates; interpolation and its transpose, consistent nodal forces), `Bar` (bonded or unbonded axial bar between embedded points) |
 | `tendon` | `Tendon`: paths from intersection points and radii (`fillet_path`), friction `P e^{−(μθ+kx)}` from either or both ends, the forces it puts on the concrete |
 | `results` | `CaseResult`: displacements and stresses (initial strains taken off), `sample`, `section`, `spring_force`, `bar_force`, `+`, `*`; `export_vtu` |
+| `submodel` | `drive`: the cut boundary of a finely meshed part prescribed with the displacements of a coarser model |
 | `femotion.mesh.section` | `LayeredSection` + `sweep`: structured hexahedra for members with a varying cross-section (box girders, voided slabs, end thickenings, haunches) |
 
 ### Materials and groups
@@ -51,8 +52,11 @@ coordinates); plane stress and plane strain reduce the 3D law (the material's ax
 
 ### Supports
 
-`fix(where, comps, value)` selects the dofs located where the predicate holds — a point, an edge, a face alike — or the
-dofs of given vertex ids. `spring(facets, k)` is an elastic support spread over boundary facets with a stiffness per unit
+`fix(where, comps, value)` selects the dofs located where the predicate holds — a point, an edge, a face alike (on curved
+boundaries the mid-edge nodes of quadratic cells lie on the chord) — or the dofs of given vertex ids; a nonzero `value`
+is a settlement of the case "default" (other cases hold those dofs at zero; `case(name).displacement` for named cases).
+Predicates come in three flavours: `fix` and `displacement` test dof locations, `traction`, `spring` and `facets` test
+facet midpoints, `boundary_facets_where` tests all vertices of a facet. `spring(facets, k)` is an elastic support spread over boundary facets with a stiffness per unit
 area (vector per axis or matrix): a bearing pad, a soil bed. A model on springs alone needs horizontal springs too.
 `facets(where, normal=…)` picks boundary facets by position and outward normal; `facet_integral` integrates over them
 (the area of a bearing plate as meshed, to turn a bearing stiffness into a stiffness per area).
@@ -71,22 +75,45 @@ back to the nodes (exactly the transpose, so equilibrium and work are preserved)
   to zero; the tendon adds no stiffness.
 - `line_load` / `point_forces`: forces along a polyline or at points inside the solid, e.g. anchor bolts or a dowel.
 
+Points are found through a grid of bins holding every cell whose bounding box overlaps the bin: each point is tested
+against every cell that can contain it (exact also for elongated and curved cells); `snap` moves points just outside the
+mesh onto the nearest cell (anchor plates poking out of a sloping end face), `outside="skip"` drops points outside it.
+
 ### Load cases and results
 
-`case(name)` creates a load case; its methods add to the case's load vector and chain. Initial strains (`thermal`,
-`initial_strain`) are remembered so that the stress of the case is D (ε − ε0). `solve()` factorises once (sparse LU,
-or one AMG hierarchy above 150,000 dofs) and solves every case. A `CaseResult` holds the displacements and where they came
+`case(name)` creates a load case; its methods add to the case's load vector and chain. The vector has an external part
+(tractions, body forces, point and line forces, tendon loads — their recipes are kept for sections) and an internal,
+self-equilibrated one (initial strains ∫Bᵀ D ε0, bar prestress −Gᵀ P); initial strains and prestress are remembered so
+that the stress is D (ε − ε0) and the bar force EA δ/L + P. `scale_load` scales the external part only. `area_load` with
+a `rect` print samples the print on a fine grid of points on the facets under it, so a wheel smaller than the cells is
+placed right. `solve()` factorises once (SuperLU up to 150,000 dofs, then CHOLMOD up to 800,000 if scikit-sparse or
+cholespy is installed, else one AMG hierarchy) and solves every case. A `CaseResult` holds the displacements and where they came
 from; `+` and scalar `*` combine results (combinations of codes), and stresses of a combination subtract the combined
 initial strains, bar forces add the combined prestress.
 
 `section(origin, normal)` gives the force and moment the positive side exerts on the negative side of a plane through
-cell faces. The default `method="nodal"` is statics of the positive part — the loads, reactions and spring forces on its
-nodes — exact to solver precision and the right comparison with beam models; `method="traction"` integrates σ·n over the
-faces (stress averaged from both sides, O(h²) accurate), optionally over a part of the cut (`region`), e.g. the force in a
-bottom slab.
+cell faces (a plane cutting through cells raises). The default `method="nodal"` is statics of the positive part — the
+external loads, reactions and spring forces on its nodes, plus the share of the loads of the cells next to the plane that
+falls on the nodes in it — exact to solver precision and the right comparison with beam models; embedded bars crossing
+the plane count with the solid, initial strains and prestress are internal. `method="traction"` integrates σ·n over the
+interior faces in the plane (stress averaged from both sides, O(h²) accurate) plus the bars crossing it, optionally over a
+part of the cut (`region`), e.g. the force in a bottom slab. M is the vector moment about `ref`: for a member along +x
+with z up a sagging moment is M_y < 0, the opposite sign of `femotion.frame.post.chain_force`.
 
-The old single-case use (`Elastic(...).traction(...); .fix(...); .solve(); .nodal_stress()`) works on the case
-"default".
+The single-case use (`Elastic(...).traction(...); .fix(...); .solve(); .nodal_stress()`) works on the case "default";
+`s.u`, `s.reactions()` and the like refer to it, or to the only case; with several cases use `s.result(name)`. Reading
+`s.f` creates no case. `ib` and `sb` (the vector and scalar bases) carry one quadrature point per cell — they are for dof
+bookkeeping and interpolation; cell volumes are `cell_volumes`.
+
+### Compared with `femotion.frame.loads`
+
+| continuum (`LoadCase` bound to a solid model) | frame (`LoadCase` as data, applied to a model) |
+|---|---|
+| `displacement` | `settlement` |
+| `thermal`, `initial_strain` | `imposed` |
+| `bar_prestress` (a force) | `bar_strain` (a strain) |
+| `tendon` with `continuum.tendon.Tendon` (a 3D path) | `tendon` with `frame.prestress.Tendon` (eccentricities along a chain of beams) |
+| results combine: `1.2 * r1 + r2`, `Elastic.combine({name: k})` | cases combine: `1.2 * case1 + case2`, `combine((k, case), …)` |
 
 ### Swept meshes
 
@@ -106,7 +133,7 @@ before the pavement is cast).
 | plane strain thermal strain | (1 + ν) α ΔT | exact |
 | off-axis tension of a rotated orthotropic block (0°, 30°, 90°) | 1/Ex of classical lamination theory | 1e-8 |
 | two materials in series | σ (L1/E1 + L2/E2) | 1e-10 |
-| chunked assembly; batched B-matrix assembly | scikit-fem's own assembly | 1e-15 |
+| chunked assembly | one-chunk assembly | 1e-12 |
 | 20-node hexahedra, end-loaded cantilever | Timoshenko beam | 2 % |
 | stiff block on area springs | q / k, bed force = load | 1e-4 |
 | two load cases, one factorisation | separate solves; superposition | 1e-10 |
@@ -114,6 +141,19 @@ before the pavement is cast).
 | free thermal expansion | no stress, u = α ΔT L | 1e-10 |
 | bimetal strip (Timoshenko 1925) | curvature | 1 % |
 | embedded bonded bar in a stretched prism | N = (E A + Es As) ε, by statics and by traction | 1e-9 |
+| bonded bars at ±e on a cantilever | bending stiffness E I + 2 EA e² | 2 % |
+| bar tensioned in a free prism | N = P (1 − EAb / (EAc + EAb)) | 1e-5 |
+| block held on every face, heated | σ = −E α ΔT / (1 − 2ν) | 1e-8 |
+| plane strain: 3D free strain against temperature | same stresses | 1e-10 |
+| sections under temperature (free, restrained, linear gradient) and bar prestress | N = 0, −E α ΔT A, M = 0, N = 0 | statics 1e-6, traction 1e-2 |
+| cantilever under self-weight cut | V = w (L − a), M = w (L − a)²/2 by statics, 8- and 20-node hexahedra | 1e-9 |
+| unbonded bar crossing a cut | (E A + EA_bar) δ / L by statics and by traction | 1e-9 |
+| B-matrix assembly (hex 8 / 20 nodes, tet 10, quad 8 plane strain; rotated orthotropic) | scikit-fem `BilinearForm` with C_ijkl | 1e-12 |
+| sheared, elongated hexahedra | every random interior point found and mapped back | 1e-9 |
+| small wheel print inside large facets | resultant; point of application | 1e-12; 1 mm |
+| prescribed displacements per case | E A δ / L | 1e-9 |
+| submodel driven by a coarse cantilever | beam theory and the coarse model | 1 % |
+| CHOLMOD against SuperLU | same displacements | 1e-7 |
 | unbonded bar over a deviator | one force from the summed elongations | 1e-9 |
 | fillet path, friction from both ends, arc push | R tan(Δ/2), P e^{−(μθ+kx)}, 2P sin(Δ/2) | 1e-4 – 2e-3 |
 | straight eccentric tendon | −P/A ∓ P e y / I, no reactions | 0.5 % |

@@ -52,6 +52,18 @@ def _reduce(D6: np.ndarray, a6: np.ndarray, dim: int, kind: str):
     raise ValueError(f"unknown kind {kind!r} (plane_stress, plane_strain, solid)")
 
 
+def _reduce_strain(D6: np.ndarray, e6: np.ndarray, dim: int, kind: str) -> np.ndarray:
+    """a free strain (6, …) seen by a plane problem: the in-plane part (plane stress), plus Dpp⁻¹ Dpo εo (plane strain)"""
+    e6 = np.asarray(e6, float)
+    if dim == 3:
+        return e6
+    p, o = list(PLANE), [2, 4, 5]
+    if kind == "plane_stress":
+        return e6[p]
+    corr = np.linalg.solve(D6[np.ix_(p, p)], D6[np.ix_(p, o)])
+    return e6[p] + np.einsum("ij,j...->i...", corr, e6[o])
+
+
 @dataclass(frozen=True)
 class Isotropic:
     """E (any consistent unit), Poisson's ratio nu, coefficient of thermal expansion alpha (per degree)"""
@@ -88,8 +100,12 @@ class Isotropic:
         """free strain per degree, Voigt (the in-plane equivalent in plane strain)"""
         return _reduce(self.D6(), self.alpha6(), dim, kind)[1]
 
+    def reduce_strain(self, e6, dim: int = 3, kind: str = "solid") -> np.ndarray:
+        """a 3D free strain (6, …) as seen by a plane problem"""
+        return _reduce_strain(self.D6(), e6, dim, kind)
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, eq=False)
 class Orthotropic:
     """moduli E = (E1, E2, E3), Poisson's ratios nu = (ν12, ν13, ν23) (νij: contraction along j under stress along i,
     νji = νij Ej / Ei), shear moduli G = (G12, G13, G23), expansion coefficients alpha = (α1, α2, α3), material axes
@@ -153,6 +169,9 @@ class Orthotropic:
 
     def thermal_strain(self, dim: int = 3, kind: str = "solid") -> np.ndarray:
         return _reduce(self.D6(), self.alpha6(), dim, kind)[1]
+
+    def reduce_strain(self, e6, dim: int = 3, kind: str = "solid") -> np.ndarray:
+        return _reduce_strain(self.D6(), e6, dim, kind)
 
 
 def lame(E: float, nu: float, kind: str = "solid"):

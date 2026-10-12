@@ -11,10 +11,11 @@ strains (temperature, shrinkage) and bar forces add the right prestress. Results
     r.spring_force("B0"); r.bar_force("plate3")
     export_vtu("out/deck.vtu", s, {"自重": g, "合计": r})
 
-section() integrates the traction σ·n over the cell faces lying on the plane, taking the stress from the cells on the
-negative side: F is the force the positive part exerts on the negative part (tension along n positive), M its moment
-about `ref` (default: the centroid of the cut). Section forces of a beam model compare directly: N = F·n, bending moments
-from M. The plane must coincide with element faces (a node layer of a structured or swept mesh).
+section() gives the force F the part on the positive side of a plane exerts on the part on the negative side (N = F·n,
+tension positive) and its moment M about `ref` (default: the centroid of the cut) as a vector, right-handed. For a member
+along +x with z up, a sagging moment (bottom fibres in tension) is M_y < 0 and a hogging one M_y > 0: the opposite sign
+of femotion.frame.post.chain_force (sagging +). The plane must coincide with cell faces (a node layer of a structured or
+swept mesh); a plane cutting through cells raises.
 """
 from __future__ import annotations
 
@@ -44,7 +45,7 @@ class CaseResult:
     __radd__ = __add__
 
     def __mul__(self, k: float) -> "CaseResult":
-        return CaseResult(self.s, k * self.u, [(k * a, c) for a, c in self.terms], self.name)
+        return CaseResult(self.s, k * self.u, [(k * a, c) for a, c in self.terms])
 
     __rmul__ = __mul__
 
@@ -61,6 +62,15 @@ class CaseResult:
     def f(self) -> np.ndarray:
         """the load vector of this (combined) result"""
         return sum(a * c.f for a, c in self.terms)
+
+    @property
+    def f_ext(self) -> np.ndarray:
+        """its external loads (no initial-strain or bar-prestress loads)"""
+        return sum(a * c.f_ext for a, c in self.terms)
+
+    @property
+    def f_int(self) -> np.ndarray:
+        return sum(a * c.f_int for a, c in self.terms)
 
     # ── initial strains ─────────────────────────────────────────────────
     def _eps0(self, x: np.ndarray, cells: np.ndarray, mat) -> np.ndarray | None:
@@ -116,7 +126,7 @@ class CaseResult:
         s = self.s
         S = self.stress_at_nodes_per_cell()
         ed = s.sb.element_dofs  # (nloc, nel)
-        vol = _arr(s.sb.dx).sum(axis=1)
+        vol = s.cell_volumes
         w = np.broadcast_to(vol[None, :], ed.shape)
         acc = np.zeros((S.shape[0], s.sb.N))
         wsum = np.bincount(ed.ravel(), weights=w.ravel(), minlength=s.sb.N)
@@ -144,14 +154,15 @@ class CaseResult:
         return out
 
     def compliance(self) -> float:
-        return float(self.f @ self.u)
+        """work of the external loads, f_ext·u (twice the strain energy when there are no initial strains)"""
+        return float(self.f_ext @ self.u)
 
     # ── supports and bars ───────────────────────────────────────────────
     def reactions(self) -> np.ndarray:
         """resultant reaction at the fixed dofs (per component; elastic supports: spring_force)"""
         s = self.s
         r = s.K @ self.u - self.f
-        out = np.zeros(s.dim)
+        out = np.zeros(s.dim)  # (the internal parts of f vanish against K u inside the solid; at supports they are reactions)
         for i in range(s.dim):
             d = s.fixed[s.fixed % s.dim == i]
             out[i] = r[d].sum()
@@ -187,18 +198,20 @@ class CaseResult:
     # ── section resultants ──────────────────────────────────────────────
     def section(self, origin, normal, ref=None, method: str = "nodal", region=None, tol: float = 1e-6,
                 gauss: int = 3) -> dict:
-        """force and moment resultants on the plane through `origin` with unit normal `normal`: F is the force the part on
-        the positive side exerts on the part on the negative side (N = F·n, tension +), M its moment about `ref` (default:
-        the centroid of the cut). method="nodal": statics of the positive part, F = Σ of the loads, reactions and spring
-        forces on its nodes (exact equilibrium; loads on nodes in the plane count to the negative side; embedded bars
-        crossing the plane are included). method="traction": ∫ σ·n dA over the cell faces in the plane, the stress
-        averaged from the cells on both sides, plus the forces of embedded bars crossing it; region(x) → bool restricts the
-        integral to part of the cut (the bottom slab, one web). Both need the plane to coincide with cell faces"""
+        """force and moment resultants on the plane through `origin` with unit normal `normal` (see the module doc for
+        signs). method="nodal" (default): statics of the positive part — the external loads, reactions and spring forces
+        on its nodes, plus the share of the loads of the cells next to the plane that falls on the nodes in it; exact
+        equilibrium, embedded bars crossing the plane included (their force adds to the solid's), initial strains and bar
+        prestress taken as internal. Loads given as nodal forces (point_load) and supports on the plane itself count to
+        the negative side. method="traction": ∫ σ·n dA over the cell faces in the plane (stress averaged from both sides,
+        O(h²) accurate) plus the forces of embedded bars crossing it; region(x) → bool restricts the integral to part of
+        the cut (the bottom slab, one web). tol: distance from the plane, relative to the median edge length"""
         s = self.s
         o = np.asarray(origin, float)
         n = np.asarray(normal, float)
         n = n / np.linalg.norm(n)
-        pts, wts, cut = self._cut(o, n, tol, gauss)
+        atol = tol * s.h
+        pts, wts, cut = self._cut(o, n, atol, gauss)
         area = wts.sum() * s.thick
         cen = (pts * wts).sum(axis=1) / wts.sum()
         r0 = cen if ref is None else np.asarray(ref, float)
@@ -208,64 +221,62 @@ class CaseResult:
             K = s.K
             for sp_ in s.springs.values():
                 K = K - sp_.K
-            e = (K @ self.u).reshape(-1, s.dim)  # loads + reactions + spring forces on every node
+            e = (K @ self.u - self.f_int).reshape(-1, s.dim)  # external loads + reactions + spring forces at every node
             X = s.ib.doflocs[:, ::s.dim].T
-            h = np.ptp(s.sk.p, axis=1).max()
-            pos = (X - o) @ n > tol * h
-            F = e[pos].sum(axis=0)
-            M = _moment(X[pos] - r0, e[pos], s.dim)
+            d = (X - o) @ n
+            pos, on = d > atol, np.abs(d) <= atol
+            # cells on the positive side touching the plane: their loads' share on the nodes in the plane
+            sk = s.sk
+            vd = (sk.p.T - o) @ n
+            cd = vd[sk.t]  # (nv, nel)
+            adj = np.where((cd.max(axis=0) > atol) & np.any(np.abs(cd) <= atol, axis=0))[0]
+            share = sum(a * c.restricted(adj) for a, c in self.terms).reshape(-1, s.dim)
+            F = e[pos].sum(axis=0) + share[on].sum(axis=0)
+            M = _moment(X[pos] - r0, e[pos], s.dim) + _moment(X[on] - r0, share[on], s.dim)
         elif method == "traction":
             keep = np.ones(len(wts), bool) if region is None else np.asarray(region(pts), bool)
             T = np.zeros((pts.shape[1], s.dim))
-            for side_cells in cut:  # stress from each side, averaged where both exist
-                ok = side_cells >= 0
-                if not ok.any():
-                    continue
-                X = inverse_map(s.sb.mapping, pts[:, ok, None], side_cells[ok])[:, :, 0]
-                St = self.sample(pts[:, ok].T, located=(side_cells[ok], np.clip(X, 0.0, 1.0)))["stress"]
-                T[ok] += _traction(St, n, s.dim)
-            nside = sum((c >= 0).astype(float) for c in cut)
-            T /= np.maximum(nside, 1)[:, None]
+            for side_cells in cut:  # stress from each side, averaged
+                X = inverse_map(s.sb.mapping, pts[:, :, None], side_cells)[:, :, 0]
+                St = self.sample(pts.T, located=(side_cells, np.clip(X, 0.0, 1.0)))["stress"]
+                T += _traction(St, n, s.dim) / 2
             w = wts * keep
             F = (T * w[:, None]).sum(axis=0) * s.thick
             M = _moment(pts.T - r0, T * w[:, None], s.dim) * s.thick
-            for name, bar in s.bars.items():  # bars crossing the plane
+            for name, bar in s.bars.items():  # bars crossing the plane: bonded pieces, or the runs of an unbonded bar
                 N = self.bar_force(name)
                 d = (bar.points - o) @ n
-                for k in np.where((d[:-1] < 0) != (d[1:] < 0))[0] if bar.bonded else []:
+                for k in np.where((d[:-1] < 0) != (d[1:] < 0))[0]:
                     a, b = bar.points[k], bar.points[k + 1]
                     xc = a + (b - a) * d[k] / (d[k] - d[k + 1])
                     if region is not None and not region(xc[:, None])[0]:
                         continue
                     t = (b - a) / np.linalg.norm(b - a)
-                    Fb = N[k] * t * np.sign(t @ n)
+                    Fb = (N[k] if bar.bonded else N[0]) * t * np.sign(t @ n)
                     F = F + Fb
                     M = M + _moment((xc - r0)[None], Fb[None], s.dim)
         else:
             raise ValueError("method: nodal or traction")
         return {"F": F, "M": M, "N": float(F @ n), "area": float(area), "centroid": cen}
 
-    def _cut(self, o, n, tol, gauss):
-        """Gauss points (dim, nq) and weights of the cell faces lying on a plane, with the cell on each side of each point"""
+    def _cut(self, o, n, atol, gauss):
+        """Gauss points (dim, nq) and weights of the interior cell faces lying on a plane, with the cell on each side of
+        each point; raises if the plane cuts through cells"""
         s = self.s
         sk = s.sk
-        Pf = sk.p[:, sk.facets]  # (dim, nv, nf)
-        dist = np.einsum("i,ivf->vf", n, Pf - o[:, None, None])
-        h = np.ptp(sk.p, axis=1).max()
-        fids = np.where(np.all(np.abs(dist) < tol * h, axis=0))[0]
+        vd = (sk.p.T - o) @ n
+        cd = vd[sk.t]
+        if np.any((cd.min(axis=0) < -atol) & (cd.max(axis=0) > atol)):
+            raise ValueError("section: the plane cuts through cells; cut at a node layer (a plane of cell faces)")
+        fd = vd[sk.facets]
+        fids = np.where(np.all(np.abs(fd) <= atol, axis=0) & (sk.f2t[1] >= 0))[0]  # faces with cells on both sides
         if len(fids) == 0:
-            raise ValueError("section: no cell faces lie on this plane (cut at a node layer)")
+            raise ValueError("section: no interior cell faces lie on this plane")
         cc = sk.p[:, sk.t].mean(axis=1)
-        neg = np.full(len(fids), -1)
-        posc = np.full(len(fids), -1)
-        for i, f in enumerate(fids):
-            for c in sk.f2t[:, f]:
-                if c < 0:
-                    continue
-                if n @ (cc[:, c] - o) < 0:
-                    neg[i] = c
-                else:
-                    posc[i] = c
+        t2 = sk.f2t[:, fids]
+        first_neg = (n @ (cc[:, t2[0]] - o[:, None])) < 0
+        neg = np.where(first_neg, t2[0], t2[1])
+        posc = np.where(first_neg, t2[1], t2[0])
         pts, wts, own = _facet_quadrature(sk.p[:, sk.facets[:, fids]], n, gauss)
         return pts, wts, (neg[own], posc[own])
 

@@ -39,83 +39,133 @@ def inverse_map(mapping, x: np.ndarray, tind: np.ndarray, iters: int = 40) -> np
 
 
 class Locator:
-    """finds points in the cells of a solver's mesh (scikit-fem reference cells: unit simplex or unit square / cube)"""
+    """finds points in the cells of a solver's mesh (scikit-fem reference cells: unit simplex or unit square / cube).
 
-    def __init__(self, solver, candidates: int = 12):
+    Candidates come from a uniform grid of bins holding every cell whose bounding box overlaps the bin, so a point is
+    tested against every cell that can contain it — exact for elongated or curved cells, and cheap for points in voids
+    (no candidates). Points with no containing cell fall back to their nearest cells by centroid (for `snap` and the
+    error message)."""
+
+    def __init__(self, solver, candidates: int = 12, max_bins_per_cell: int = 512):
         from scipy.spatial import cKDTree
         self.s = solver
         sk = solver.sk
         self.sk = sk
         self.mapping = solver.sb.mapping
         self.simplex = type(sk).__name__.startswith(("MeshTri", "MeshTet"))
-        self.centroids = sk.p[:, sk.t].mean(axis=1).T
+        V = sk.p[:, sk.t]  # (dim, nv, nel)
+        self.lo, self.hi = V.min(axis=1).T, V.max(axis=1).T  # cell bounding boxes (nel, dim)
+        span = np.ptp(sk.p, axis=1)
+        pad = 1e-9 * max(span.max(), 1e-300)
+        self.lo, self.hi = self.lo - pad, self.hi + pad
+        self.centroids = V.mean(axis=1).T
         self.tree = cKDTree(self.centroids)
         self.k = min(candidates, sk.t.shape[1])
+        h = np.maximum(np.median(self.hi - self.lo, axis=0), 1e-12)
+        while True:
+            i0 = np.floor((self.lo - self.lo.min(axis=0)) / h).astype(np.int64)
+            i1 = np.floor((self.hi - self.lo.min(axis=0)) / h).astype(np.int64)
+            ext = i1 - i0 + 1
+            if np.prod(ext.max(axis=0)) <= max_bins_per_cell:
+                break
+            h = h * 2
+        self.h, self.origin = h, self.lo.min(axis=0)
+        self.shape = i1.max(axis=0) + 1
+        cells, keys = [], []
+        dim = len(h)
+        for off in np.ndindex(*ext.max(axis=0)):
+            o = np.array(off)
+            ok = np.all(i0 + o <= i1, axis=1)
+            b = i0[ok] + o
+            cells.append(np.where(ok)[0])
+            keys.append(np.ravel_multi_index(tuple(b.T), tuple(self.shape)) if dim else b)
+        cells, keys = np.concatenate(cells), np.concatenate(keys)
+        order = np.argsort(keys, kind="stable")
+        self.bin_cells = cells[order]
+        self.bin_keys, self.bin_start = np.unique(keys[order], return_index=True)
+        self.bin_end = np.r_[self.bin_start[1:], len(order)]
+
+    def _pairs(self, P: np.ndarray):
+        """(point index, cell) pairs: every cell whose bounding box holds the point"""
+        b = np.floor((P - self.origin) / self.h).astype(np.int64)
+        inside = np.all((b >= 0) & (b < self.shape), axis=1)
+        idx = np.where(inside)[0]
+        key = np.ravel_multi_index(tuple(b[idx].T), tuple(self.shape))
+        j = np.searchsorted(self.bin_keys, key)
+        j = np.minimum(j, len(self.bin_keys) - 1)
+        hit = self.bin_keys[j] == key
+        idx, j = idx[hit], j[hit]
+        cnt = self.bin_end[j] - self.bin_start[j]
+        pi = np.repeat(idx, cnt)
+        starts = np.repeat(self.bin_start[j], cnt)
+        within = np.arange(cnt.sum()) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        ci = self.bin_cells[starts + within]
+        box = np.all((P[pi] >= self.lo[ci]) & (P[pi] <= self.hi[ci]), axis=1)
+        return pi[box], ci[box]
+
+    def _best(self, P: np.ndarray, chunk: int = 200_000):
+        """least violation over the candidate cells of every point: (violation, cell, reference coordinates)"""
+        n = len(P)
+        best_v = np.full(n, np.inf)
+        best_c = np.zeros(n, np.int64)
+        best_X = np.zeros((P.shape[1], n))
+        pi, ci = self._pairs(P)
+        for a in range(0, len(pi), chunk):
+            p, c = pi[a:a + chunk], ci[a:a + chunk]
+            X = inverse_map(self.mapping, P[p].T[:, :, None], c)[:, :, 0]
+            v = _violation(X, self.simplex)
+            o = np.lexsort((v, p))  # per point, the least violation first
+            first = np.r_[True, p[o][1:] != p[o][:-1]]
+            k = o[first]
+            better = v[k] < best_v[p[k]]
+            sel = k[better]
+            best_v[p[sel]], best_c[p[sel]], best_X[:, p[sel]] = v[sel], c[sel], X[:, sel]
+        return best_v, best_c, best_X
+
+    def _nearest(self, P: np.ndarray):
+        """least violation over the nearest cells by centroid (points outside every cell)"""
+        _, cand = self.tree.query(P, k=self.k)
+        cand = cand.reshape(len(P), -1)
+        best_v = np.full(len(P), np.inf)
+        best_c = np.zeros(len(P), np.int64)
+        best_X = np.zeros((P.shape[1], len(P)))
+        for j in range(cand.shape[1]):
+            X = inverse_map(self.mapping, P.T[:, :, None], cand[:, j])[:, :, 0]
+            v = _violation(X, self.simplex)
+            b = v < best_v
+            best_v[b], best_c[b], best_X[:, b] = v[b], cand[b, j], X[:, b]
+        return best_v, best_c, best_X
 
     def locate(self, points, tol: float = 1e-6, snap: float = 0.0):
         """(cells (n,), reference coordinates (dim, n)); points on faces go to the least violated cell. Points outside the
         mesh by more than tol (in reference coordinates of the nearest cell) raise ValueError, unless within `snap` (e.g.
         1.0: one cell): those are moved onto the nearest cell (anchor plates poking out of a sloping end face)"""
-        tol = max(tol, snap)
         P = np.atleast_2d(np.asarray(points, float))
-        n = len(P)
-        _, cand = self.tree.query(P, k=self.k)
-        cand = cand.reshape(n, -1)
-        best_v = np.full(n, np.inf)
-        best_c = np.zeros(n, np.int64)
-        best_X = np.zeros((self.sk.p.shape[0], n))
-        x = P.T[:, :, None]
-        for j in range(cand.shape[1]):
-            c = cand[:, j]
-            todo = best_v > 0
-            if not todo.any():
-                break
-            X = inverse_map(self.mapping, x[:, todo], c[todo])[:, :, 0]
-            v = _violation(X, self.simplex)
-            sel = np.where(todo)[0]
-            better = v < best_v[sel]
-            best_v[sel[better]] = v[better]
-            best_c[sel[better]] = c[todo][better]
-            best_X[:, sel[better]] = X[:, better]
-        bad = best_v > tol
-        if bad.any():
-            # elongated cells can hide the owner behind more centroids: search the rest once by brute force
-            for i in np.where(bad)[0]:
-                X = inverse_map(self.mapping, np.repeat(P[i][:, None, None], self.sk.t.shape[1], axis=1),
-                                np.arange(self.sk.t.shape[1]))[:, :, 0]
-                v = _violation(X, self.simplex)
-                k = int(np.argmin(v))
-                best_v[i], best_c[i], best_X[:, i] = v[k], k, X[:, k]
-            bad = best_v > tol
+        v, c, X = self._best(P)
+        out = v > tol
+        if out.any():
+            v2, c2, X2 = self._nearest(P[out])
+            idx = np.where(out)[0]
+            v[idx], c[idx], X[:, idx] = v2, c2, X2
+            bad = v > max(tol, snap)
             if bad.any():
                 raise ValueError(f"{int(bad.sum())} point(s) lie outside the mesh, e.g. {P[np.where(bad)[0][0]]}")
-        lo, hi = 0.0, 1.0
-        best_X = np.clip(best_X, lo, hi)
-        return best_c, best_X
+        if self.simplex:  # onto the simplex: clip negatives, then scale the sum back to ≤ 1
+            X = np.clip(X, 0.0, None)
+            sm = X.sum(axis=0)
+            X = X / np.maximum(sm, 1.0)
+        else:
+            X = np.clip(X, 0.0, 1.0)
+        return c, X
 
     def inside(self, points, tol: float = 1e-6, snap: float = 0.0) -> np.ndarray:
-        """bool per point: inside the mesh (within tol, or snap cells)"""
+        """bool per point: inside the mesh (within tol, or within `snap` cells of it)"""
         P = np.atleast_2d(np.asarray(points, float))
-        lim = max(tol, snap)
-        _, cand = self.tree.query(P, k=self.k)
-        cand = cand.reshape(len(P), -1)
-        ok = np.zeros(len(P), bool)
-        x = P.T[:, :, None]
-        for j in range(cand.shape[1]):
-            todo = ~ok
-            if not todo.any():
-                break
-            X = inverse_map(self.mapping, x[:, todo], cand[todo, j])[:, :, 0]
-            ok[np.where(todo)[0][_violation(X, self.simplex) <= lim]] = True
-        # points the nearest cells did not contain: exact test only if they are within the mesh's bounding box
-        lo, hi = self.sk.p.min(axis=1), self.sk.p.max(axis=1)
-        rest = np.where(~ok & np.all((P >= lo) & (P <= hi), axis=1))[0]
-        for i in rest:
-            try:
-                self.locate(P[i][None], tol=tol, snap=snap)
-                ok[i] = True
-            except ValueError:
-                pass
+        v, _, _ = self._best(P)
+        ok = v <= tol
+        if snap > 0 and (~ok).any():
+            idx = np.where(~ok)[0]
+            ok[idx] = self._nearest(P[idx])[0] <= snap
         return ok
 
     def _phi(self, cells, X, grad: bool = False):
@@ -124,7 +174,7 @@ class Locator:
         out = []
         for k in range(sb.Nbfun):
             f = sb.elem.gbasis(self.mapping, X[:, :, None], k, tind=cells)[0]
-            out.append(f.grad[:, :, 0] if grad else f.value[:, 0])
+            out.append(np.asarray(f.grad)[:, :, 0] if grad else np.asarray(f)[:, 0])
         return np.array(out)
 
     def scalar_matrix(self, points, located=None) -> sp.csr_matrix:

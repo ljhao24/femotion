@@ -31,6 +31,17 @@ def fillet_path(pis, radii, arc_step: float = 0.05) -> np.ndarray:
     arc lies in the plane of the two tangents), sampled at most arc_step apart along the arcs"""
     P = np.asarray(pis, float)
     R = np.broadcast_to(np.asarray(radii, float), (len(P) - 2,))
+    # tangent lengths R tan(Δ/2) of neighbouring bends must fit on the leg between them
+    T = np.zeros(len(P))
+    for j in range(1, len(P) - 1):
+        a, b = P[j - 1] - P[j], P[j + 1] - P[j]
+        cosang = np.clip(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)), -1.0, 1.0)
+        T[j] = R[j - 1] * np.tan((np.pi - np.arccos(cosang)) / 2) if R[j - 1] > 0 else 0.0
+    legs = np.linalg.norm(np.diff(P, axis=0), axis=1)
+    over = np.where(T[:-1] + T[1:] > legs + 1e-9)[0]
+    if len(over):
+        k = over[0]
+        raise ValueError(f"fillet_path: the bends at PI {k} and {k + 1} need {T[k] + T[k + 1]:.3f} of a leg {legs[k]:.3f} long")
     out = [P[:1]]
     prev_end = P[0]
     for j in range(1, len(P) - 1):
@@ -130,9 +141,13 @@ class Tendon:
 
 def anchor_points(center, direction, size, up=(0.0, 0.0, 1.0), n: int = 5) -> np.ndarray:
     """n × n points on a rectangular bearing plate (size = (a, b)) perpendicular to `direction` at `center`; the plate
-    side a is along `up` projected onto the plate, b across"""
+    side a is along `up` projected onto the plate, b across. In 2D: n points on a line of length a across the tendon"""
     t = np.asarray(direction, float)
     t = t / np.linalg.norm(t)
+    if len(t) == 2:
+        u = np.array([-t[1], t[0]])
+        g = ((np.arange(n) + 0.5) / n - 0.5) * size[0]
+        return np.asarray(center, float) + g[:, None] * u
     u = np.asarray(up, float) - (np.asarray(up, float) @ t) * t
     if np.linalg.norm(u) < 1e-9:
         u = np.cross(t, (1.0, 0.0, 0.0)) if abs(t[0]) < 0.9 else np.cross(t, (0.0, 1.0, 0.0))

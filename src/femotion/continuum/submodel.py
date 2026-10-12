@@ -10,10 +10,11 @@ whole (the usual way to look at an anchorage, a bolt group or an opening without
     sub.solve()
 
 The cut must lie far enough from the detail for the coarse displacements to be right there (Saint-Venant: about one
-member depth or two cell sizes of the coarse model), and every load acting inside the part must be applied to the
-submodel too: body forces of its cells, tractions on its own faces, point and line loads inside it (point_forces /
-line_load / tendon with outside="skip" keep only those). Displacements are interpolated from the coarse model at the
-submodel's boundary nodes (femotion.continuum.results.CaseResult.sample).
+member depth or two cell sizes of the coarse model), and the part must be modelled as in the whole: every load acting
+inside it (body forces of its cells, tractions on its own faces, point and line loads and tendons inside it —
+point_forces / line_load / tendon with outside="skip" keep only those —, temperatures and initial strains of its cells,
+the prestress of bars in it) and the embedded bars crossing it (their stiffness). Displacements are interpolated from the
+coarse model at the submodel's boundary nodes (femotion.continuum.results.CaseResult.sample).
 """
 from __future__ import annotations
 
