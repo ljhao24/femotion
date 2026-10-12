@@ -6,7 +6,7 @@ import pytest
 pytest.importorskip("openseespy")
 pytest.importorskip("skfem")
 from femotion.continuum import Elastic  # noqa: E402
-from femotion.continuum.opensees import (HEX_TETS, ConcreteDamage, ElasticIso, ElasticOrtho, Locator, OpsSolid,  # noqa: E402
+from femotion.continuum.opensees import (HEX_TETS, CellLocator, ConcreteDamage, ElasticIso, ElasticOrtho, OpsSolid,  # noqa: E402
                                          band_widths, elastic, interpolate, steel, submodel_boundary)
 from femotion.mesh import structured  # noqa: E402
 from femotion.mesh.core import Mesh  # noqa: E402
@@ -87,7 +87,7 @@ def test_locator_and_interpolation():
     v = interpolate(m, lin(m.points), pts)
     assert np.allclose(v, lin(pts), atol=1e-9)
     assert np.isnan(interpolate(m, lin(m.points), [[5.0, 0, 0]])).all()
-    loc = Locator(tets_of(m))
+    loc = CellLocator(tets_of(m))
     assert loc.find((0.33, 1.1, 0.8))[1] == "tet4"
     assert np.allclose(band_widths(structured.box(2, 1, 1, 4, 2, 2)), 0.5)
     assert np.allclose(band_widths(structured.box(2, 1, 1, 4, 2, 2), ("projected", (1, 1, 0))), 1.0 / np.sqrt(2))

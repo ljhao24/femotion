@@ -143,6 +143,35 @@ class Fiber:
                    [("circ", "s", n_bars, A, (0.0, 0.0), rc)], GJ or 0.2 * Ec / 2.4 * J)
 
 
+def build_fiber_section(ops, fb: Fiber, tag: int, mat_base: int | None = None) -> int:
+    """define fiber section `tag` in the current OpenSees model: its uniaxial materials get the tags mat_base + i
+    (default 50000 + 100·tag); returns the tag. Shared with femotion.continuum.opensees (fiber anchor bolts)"""
+    base = 50000 + 100 * tag if mat_base is None else mat_base
+    mtag = {}
+    for name, spec in fb.materials.items():
+        mtag[name] = base + len(mtag)
+        ops.uniaxialMaterial(spec[0], mtag[name], *map(float, spec[1:]))
+    ops.section("Fiber", tag, "-GJ", float(fb.GJ))
+    for p in fb.patches:
+        if p[0] == "rect":
+            _, mat, ny, nz, (y0, z0), (y1, z1) = p
+            ops.patch("rect", mtag[mat], int(ny), int(nz), float(y0), float(z0), float(y1), float(z1))
+        else:
+            _, mat, nc, nr, (yc, zc), ri, ro, *ang = p
+            a0, a1 = ang if ang else (0.0, 360.0)
+            ops.patch("circ", mtag[mat], int(nc), int(nr), float(yc), float(zc), float(ri), float(ro), float(a0), float(a1))
+    for ly in fb.layers:
+        if ly[0] == "circ":
+            _, mat, nbar, A, (yc, zc), r = ly
+            ops.layer("circ", mtag[mat], int(nbar), float(A), float(yc), float(zc), float(r))
+        else:
+            _, mat, nbar, A, (y0, z0), (y1, z1) = ly
+            ops.layer("straight", mtag[mat], int(nbar), float(A), float(y0), float(z0), float(y1), float(z1))
+    for mat, y, z, A in fb.fibers:
+        ops.fiber(float(y), float(z), float(A), mtag[mat])
+    return tag
+
+
 # ── model ────────────────────────────────────────────────────────────────
 class OpsFrame:
     """femotion.frame.Model → OpenSees model. Analyses accumulate state in call order:
@@ -254,30 +283,7 @@ class OpsFrame:
         return self.nb + self.nt + k + 1
 
     def _section(self, fb: Fiber, tag: int) -> int:
-        ops = self.ops
-        mtag = {}
-        for name, spec in fb.materials.items():
-            mtag[name] = 50000 + 100 * tag + len(mtag)
-            ops.uniaxialMaterial(spec[0], mtag[name], *map(float, spec[1:]))
-        ops.section("Fiber", tag, "-GJ", float(fb.GJ))
-        for p in fb.patches:
-            if p[0] == "rect":
-                _, mat, ny, nz, (y0, z0), (y1, z1) = p
-                ops.patch("rect", mtag[mat], int(ny), int(nz), float(y0), float(z0), float(y1), float(z1))
-            else:
-                _, mat, nc, nr, (yc, zc), ri, ro, *ang = p
-                a0, a1 = ang if ang else (0.0, 360.0)
-                ops.patch("circ", mtag[mat], int(nc), int(nr), float(yc), float(zc), float(ri), float(ro), float(a0), float(a1))
-        for ly in fb.layers:
-            if ly[0] == "circ":
-                _, mat, nbar, A, (yc, zc), r = ly
-                ops.layer("circ", mtag[mat], int(nbar), float(A), float(yc), float(zc), float(r))
-            else:
-                _, mat, nbar, A, (y0, z0), (y1, z1) = ly
-                ops.layer("straight", mtag[mat], int(nbar), float(A), float(y0), float(z0), float(y1), float(z1))
-        for mat, y, z, A in fb.fibers:
-            ops.fiber(float(y), float(z), float(A), mtag[mat])
-        return tag
+        return build_fiber_section(self.ops, fb, tag)
 
     def _live(self):
         if _ACTIVE[0] is not self:
@@ -509,4 +515,4 @@ def to_result(m: Model, Us: np.ndarray, meta: dict | None = None, unit_scale: fl
     return r
 
 
-__all__ = ["OpsFrame", "Fiber", "to_result", "lumped_masses"]
+__all__ = ["OpsFrame", "Fiber", "to_result", "lumped_masses", "build_fiber_section"]
