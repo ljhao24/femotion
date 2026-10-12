@@ -180,6 +180,26 @@ gives the widths of the cells under selected boundary faces (a crack map of the 
 - **Time-dependent effects** (creep, shrinkage, fatigue) are not modelled; long-term widths need the code's long-term
   factors.
 
+## Anchors, strips and local models
+
+A prestressed strip anchored by bolts, for example, is three members:
+
+```python
+s = OpsSolid(mesh, concrete, band=("projected", (0, 1, 0)))   # splitting cracks along x: band across the member
+a1 = s.dowel([(0.3, 0.2, -0.01), (0.3, 0.2, 0.15)], d=0.016, E=2e8)   # bolt: head 10 mm below the soffit, 150 mm deep
+a2 = s.dowel([(1.7, 0.2, -0.01), (1.7, 0.2, 0.15)], d=0.016, E=2e8)
+s.bar([(0.3, 0.2, -0.01), (1.7, 0.2, -0.01)], area=70e-6, material=frp(1.65e8, 0.016),
+      prestress=1.1e6, bond=False, outside="free")          # strip pinned to the bolt heads
+s.static(None, steps=5)                                      # the prestress is balanced in the first step
+s.dowel_results(a1)                                          # shear and moment along the bolt
+```
+
+The bolt is a line of beam elements tied to the solid at its nodes: the bearing pressure over the bolt's diameter is not
+resolved, and the cells right next to a bolt crack first, with widths that depend on the mesh (0.34 mm with 50 mm cells,
+0.69 mm with 25 mm cells across the member in this example). Read the cracks a few cells away from the bolts (the
+splitting crack along the member, say), compare two meshes, or model the bolt and its hole as solids where the contact
+itself matters.
+
 ## Sub-models
 
 `submodel_boundary(global_mesh, U, local, where)` interpolates the displacements U of a global model (any hex8 / tet4
@@ -239,12 +259,13 @@ Apple M1 Max, OpenSeesPy 3.8 (UmfPack), IMPL-EX, two Newton iterations per step:
 | Model | Cells | Steps | Time |
 |---|---|---|---|
 | RC beam, 50 mm | 312 + 52 bar segments | 100 | 13 s |
-| RC beam, 25 mm | 2 496 + 104 | 100 | 178 s |
-| slab strip with two anchor bolts and a prestressed strip, 50 mm | 3 840 + 2 dowels | 5 | 11 s |
+| RC beam, 25 mm | 2 496 + 104 | 100 | 179 s (`numberer="RCM"`; 199 s with AMD) |
+| member with two anchor bolts and a prestressed strip, 50 mm | 3 840 + 2 dowels | 5 | 10 s |
+| the same, 50 × 25 × 25 mm | 15 360 (52 000 equations) | 10 | 247 s (AMD; 352 s with RCM) |
 
-The material update (eight points per hexahedron, an eigen-decomposition each) and the sparse factorisation share the
-time; each Newton iteration of a 40 000-equation model costs about 3 s in UmfPack. Reading the results (two element
-responses per cell and one per integration point) adds well under 0.1 s per 10 000 cells.
+The material update (eight points per hexahedron, about 13 µs each) and the sparse factorisation (UmfPack; the
+equation ordering `numberer` matters: AMD for bulky blocks, RCM for long slender members) share the time; IMPL-EX needs two to three iterations per step. Reading the
+results (two element responses per cell and one per integration point) adds about 0.2 s per step for 4 000 cells.
 
 ## OpenSees notes (3.8)
 
