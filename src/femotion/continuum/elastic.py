@@ -475,6 +475,7 @@ class Elastic:
             return sum(kk[i, j] * u[j] * v[i] for i, j in nz)
         name = name or f"spring{len(self.springs)}"
         s = Support(name, facets, asm(a, self._fbasis(facets)) * self.thick)
+        s.on = lambda fac: asm(a, self._fbasis(fac)) * self.thick  # the stiffness of part of the facets (sections)
         self._add_matrix(name, s.K)
         self.springs[name] = s
         return s
@@ -737,6 +738,7 @@ class Support:
 
     def __init__(self, name, where, K):
         self.name, self.where, self.K = name, where, K.tocsr()
+        self.on = None  # area springs: facets → stiffness of those facets
 
     def __repr__(self):
         kind = "point" if self.K.nnz <= 3 else f"{len(self.where)} facet(s)"

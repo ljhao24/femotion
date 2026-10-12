@@ -680,3 +680,38 @@ def test_area_load_point_of_application():
     yc = (X[:, 1] * f[:, 2]).sum() / f[:, 2].sum()
     assert abs(xc - 1.41) < 1e-3 and abs(yc - 2.53) < 1e-3
     assert c.resultant() == pytest.approx([0, 0, -1.0], abs=1e-12)
+
+
+# ── regressions of the review's recheck (N1–N3) ─────────────────────────
+def test_area_load_lands_on_the_outermost_layer():
+    """a wheel over a box cell: the load goes to the deck, not to the floor of the cell under it"""
+    sec, z = _box_section()
+    s = Elastic(sweep(sec, np.linspace(0, 4, 9), z), E=1.0, nu=0.3)
+    c = s.case("w").area_load(s.facets(normal=(0, 0, 1)), (0, 0, -1e5), rect(1.8, 2.2, 0.8, 1.2))
+    f = c.f.reshape(-1, 3)[:, 2]
+    zf = s.ib.doflocs[2, 2::3]
+    assert f[zf > 0.7].sum() == pytest.approx(-1e5, rel=1e-12) and abs(f[zf < 0.5].sum()) < 1e-6  # deck slab 0.8–1.0
+
+
+def test_section_on_an_elastic_bed_by_statics():
+    """a beam on an elastic bed under an end load: the cut takes the bed's share on its nodes too, V = P − bed force
+    beyond the cut (which is what statics of the beam with the bed gives)"""
+    L, P, k = 6.0, 1e5, 2e7
+    s = Elastic(structured.box(L, 1, 1, 12, 2, 2), E=3e10, nu=0.2, order=2, serendipity=True)
+    s.spring(s.facets(normal=(0, 0, -1)), k=(1e5, 1e5, k), name="bed")
+    s.traction(lambda x: np.isclose(x[0], L), (0, 0, -P))
+    s.solve()
+    sec = s.result().section((3.0, 0, 0), (1, 0, 0))
+    # bed force on the part x > 3: integrate −k u_z over the bottom facets there (traction method on the bed itself)
+    bed = s.facet_integral(s.facets(lambda x: x[0] > 3.0, normal=(0, 0, -1)),
+                           lambda x: -k * s.result().sample(x.reshape(3, -1).T)["u"][:, 2].reshape(x.shape[1:]), intorder=4)
+    assert sec["F"][2] == pytest.approx(-P + bed, rel=1e-6)
+
+
+def test_scale_load_leaves_later_loads_alone():
+    s = _prism(E=1.0, nu=0.3)
+    c = s.case().traction(lambda x: np.isclose(x[0], 2.0), (1e3, 0, 0))
+    c.scale_load(2e3, (1, 0, 0))
+    c.traction(lambda x: np.isclose(x[0], 2.0), (1e3, 0, 0))
+    assert c.resultant()[0] == pytest.approx(3e3, rel=1e-12)
+    assert c.restricted(np.arange(s.sk.t.shape[1]))[0::3].sum() == pytest.approx(3e3, rel=1e-12)

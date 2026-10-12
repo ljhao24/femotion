@@ -51,7 +51,6 @@ class LoadCase:
         self.f_ext = np.zeros(N)  # external loads
         self.f_int = np.zeros(N)  # self-equilibrated: initial strains, bar prestress
         self.parts: list[Callable] = []  # recipes of the external loads: part(cells | None) → load vector
-        self.k_ext = 1.0  # scale_load factor applied to the recipes
         self.strains: list = []  # (cells, eps0(x, material) → Voigt (ncomp, …))
         self.bar_P: dict[str, np.ndarray] = {}  # prestress of embedded bars in this case
         self.uD: dict[int, float] = {}  # prescribed displacements of this case (dof → value)
@@ -67,9 +66,9 @@ class LoadCase:
 
     def _external(self, part: Callable) -> np.ndarray:
         v = part(None)
-        self.f_ext += self.k_ext * v
+        self.f_ext += v
         self.parts.append(part)
-        return self.k_ext * v
+        return v
 
     def restricted(self, cells: np.ndarray) -> np.ndarray:
         """the external loads acting through the given cells only (their share at shared nodes included); nodal loads
@@ -77,7 +76,7 @@ class LoadCase:
         out = np.zeros(self.s.ib.N)
         for p in self.parts:
             out += p(cells)
-        return self.k_ext * out
+        return out
 
     # ── surface loads ───────────────────────────────────────────────────
     def _facet_part(self, facets: np.ndarray, vector: Callable):
@@ -117,7 +116,7 @@ class LoadCase:
                 keep &= (P[i].max(axis=0) >= lo) & (P[i].min(axis=0) <= hi)
             fac = fac[keep]
         if bb is not None and self.s.dim == 3 and len(fac):
-            pts = self._print_points(fac, region, bb, spacing)
+            pts = self._print_points(fac, region, bb, spacing, F)
             if len(pts):
                 return self.point_forces(pts, np.repeat(F[None] / len(pts), len(pts), axis=0))
         A = self.s.facet_integral(fac, lambda x: region(x).astype(float), intorder) if len(fac) else 0.0
@@ -128,8 +127,10 @@ class LoadCase:
         self._external(self._facet_part(fac, lambda f: self.s._traction_vector(f, t, intorder)))
         return self
 
-    def _print_points(self, fac, region, bb, spacing):
-        """grid points of a plan region lying on the given (upward or downward facing) facets, just inside the solid"""
+    def _print_points(self, fac, region, bb, spacing, F):
+        """grid points of a plan region lying on the given (upward or downward facing) facets, just inside the solid.
+        Where several facet layers lie over the same point (a deck slab and the floor of a box cell under it), the
+        outermost one along the facets' outward normal takes the load — the surface the load reaches first"""
         from .elastic import facet_normals
         (x0, x1), (y0, y1) = bb
         ds = spacing or min((x1 - x0) / 10, (y1 - y0) / 10, self.s.h / 4)
@@ -141,6 +142,7 @@ class LoadCase:
         nrm = self.s.boundary_normals(fac)  # outward (3, nf)
         cen = Pf.mean(axis=1)
         out = np.full(len(g), np.nan)
+        score = np.full(len(g), -np.inf)
         side = np.zeros((len(g), 3))
         for k in range(len(fac)):
             if abs(nrm[2, k]) < 1e-6:
@@ -153,9 +155,10 @@ class LoadCase:
             for i in range(len(V)):  # convex polygon: left of every edge
                 a, b = V[i], V[(i + 1) % len(V)]
                 inside &= (b[0] - a[0]) * (g[:, 1] - a[1]) - (b[1] - a[1]) * (g[:, 0] - a[0]) >= -1e-12
-            new = inside & np.isnan(out)
-            out[new] = cen[2, k] - (nrm[0, k] * (g[new, 0] - cen[0, k]) + nrm[1, k] * (g[new, 1] - cen[1, k])) / nrm[2, k]
-            side[new] = nrm[:, k]
+            z = cen[2, k] - (nrm[0, k] * (g[:, 0] - cen[0, k]) + nrm[1, k] * (g[:, 1] - cen[1, k])) / nrm[2, k]
+            sc = np.sign(nrm[2, k]) * z  # outermost: highest of upward faces, lowest of downward ones
+            new = inside & (sc > score)
+            out[new], score[new], side[new] = z[new], sc[new], nrm[:, k]
         ok = ~np.isnan(out)
         return np.c_[g[ok], out[ok]] - 1e-6 * self.s.h * side[ok]
 
@@ -311,7 +314,7 @@ class LoadCase:
             raise ValueError("scale_load: the resultant along this direction is zero")
         k = total / R
         self.f_ext *= k
-        self.k_ext *= k
+        self.parts = [(lambda cells, p=p: k * p(cells)) for p in self.parts]  # loads added later are not scaled
         return k
 
     def resultant(self) -> np.ndarray:

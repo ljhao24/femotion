@@ -230,7 +230,15 @@ class CaseResult:
             vd = (sk.p.T - o) @ n
             cd = vd[sk.t]  # (nv, nel)
             adj = np.where((cd.max(axis=0) > atol) & np.any(np.abs(cd) <= atol, axis=0))[0]
-            share = sum(a * c.restricted(adj) for a, c in self.terms).reshape(-1, s.dim)
+            share = sum(a * c.restricted(adj) for a, c in self.terms)
+            for sp_ in s.springs.values():  # area springs on faces of those cells: their share too
+                if sp_.on is None:
+                    continue
+                own = sk.f2t[0, sp_.where]
+                fac = sp_.where[np.isin(own, adj)]
+                if len(fac):
+                    share = share - sp_.on(fac) @ self.u
+            share = share.reshape(-1, s.dim)
             F = e[pos].sum(axis=0) + share[on].sum(axis=0)
             M = _moment(X[pos] - r0, e[pos], s.dim) + _moment(X[on] - r0, share[on], s.dim)
         elif method == "traction":
