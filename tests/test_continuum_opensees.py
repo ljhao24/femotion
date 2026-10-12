@@ -95,7 +95,8 @@ def test_locator_and_interpolation():
 
 
 # ── crack band: peak, fracture energy, mesh objectivity ───────────────────
-def tension_prism(nb: int, nu: float, implex: bool = False, steps: int = 150, kind: str = "hex8"):
+def tension_prism(nb: int, nu: float, implex: bool = False, steps: int = 150, kind: str = "hex8",
+                  element: str = "stdBrick"):
     """a 400 × 100 × 100 mm prism pulled through a rigid end (tie + displacement control); the middle cell layer is 5 %
     weaker (a notch) so the crack forms there. kind="tet4": every cube cut into six tetrahedra"""
     L, b = 400.0, 100.0
@@ -107,7 +108,7 @@ def tension_prism(nb: int, nu: float, implex: bool = False, steps: int = 150, ki
     hx = L / (4 * nb)
     weak = np.abs(m.centroids()[:, 0] - (L / 2 + hx / 2)) < hx / 2
     m.cell_groups = {"c": {kind: np.flatnonzero(~weak)}, "w": {kind: np.flatnonzero(weak)}}
-    s = OpsSolid(m, {"c": c, "w": cw})
+    s = OpsSolid(m, {"c": c, "w": cw}, element=element)
     s.fix(lambda x: np.isclose(x[0], 0), comps=(0,))
     s.fix(lambda x: np.isclose(x[1], 0), comps=(1,))
     s.fix(lambda x: np.isclose(x[2], 0), comps=(2,))
@@ -175,6 +176,15 @@ def test_implex_follows_the_same_softening():
     assert peak_within_a_step(F, A, 0.95 * c.ft, c.E)
     assert np.trapezoid(F, u) / (c.Gf * A) == pytest.approx(1.0, abs=0.1)
     assert s.crack_widths().argmax() in np.flatnonzero(np.isclose(s.cell_centroids()[:, 0], 225.0))
+
+
+@pytest.mark.parametrize("kind,element", [("tet4", "stdBrick"), ("hex8", "bbarBrick")])
+def test_implex_with_tetrahedra_and_bbar_bricks(kind, element):
+    """IMPL-EX under displacement control also with FourNodeTetrahedron and bbarBrick (their material points take the
+    pseudo-time parameter too): the prism separates, with about the implicit energy"""
+    s, c, u, F, A, hx = tension_prism(2, 0.2, implex=True, kind=kind, element=element)
+    assert F[-1] < 1e-2 * F.max()
+    assert np.trapezoid(F, u) / (c.Gf * A) == pytest.approx(1.0, abs=0.12)
 
 
 def test_snap_back_limit():

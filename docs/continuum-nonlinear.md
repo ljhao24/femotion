@@ -298,6 +298,7 @@ were added after an independent review (its own scripts and a discrete cohesive-
 | same, ν = 0.2 | mesh objectivity | 0.933 Gf and 0.934 Gf (lateral restraint of the band, see above) |
 | same, IMPL-EX | implicit | 1.03 Gf (ν = 0.2; 1.08 Gf with ν = 0): 8–10 % above the implicit solution, every layer passing the peak by one step in the uniform field; same crack |
 | same with tetrahedra (cubes cut in six), band ∛(6V) | input law | 0.999 Gf and 1.002 Gf (ν = 0); width = end displacement |
+| IMPL-EX with tetrahedra and with bbarBrick | separation, energy | separated; within the IMPL-EX overshoot above |
 | cells 50 × 100 × 100 across the crack, `band="volume"` / `("projected", n)` | h/∛V = 0.63; Gf | 0.63 Gf with a warning / 1.00 Gf |
 | separated prism | end displacement less the elastic stretch | crack width along a line 0.29997 mm vs 0.29997 mm; cell width 0.2995 mm |
 | crack opened to 0.5, 2.5 and 4 w1, unloaded to zero stress | plastic_t = 0.2 of w stays open | 0.20 (± 0.01) on both branches of the law |
