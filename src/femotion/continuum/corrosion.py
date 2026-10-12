@@ -166,8 +166,9 @@ def interface_pressure(p0, axis, r: float, cells=None, tol: float = 1e-6):
         Fn = np.array([F[int(i)] for i in cache["ids"]])
         fr = np.einsum("ij,ij->i", Fn, cache["n"])  # the node pushes the concrete outwards: + under pressure
         A = cache["area_node"]
-        return dict(p=float(fr.sum() / A.sum()), theta=cache["theta"], p_node=fr / A, force=float(fr.sum()),
-                    area=float(A.sum()))
+        ok = A > 1e-9 * A.max()  # nodes touched by a cell corner only carry force but no face of the interface
+        return dict(p=float(fr.sum() / A.sum()), theta=cache["theta"], p_node=np.where(ok, fr / np.where(ok, A, 1.0), np.nan),
+                    force=float(fr.sum()), area=float(A.sum()))
 
     return fn
 
