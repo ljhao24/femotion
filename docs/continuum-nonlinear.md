@@ -247,7 +247,8 @@ s.dowel_results(a1)                                          # shear and moment 
 
 The bolt is a line of beam elements tied to the solid at its nodes: the bearing pressure over the bolt's diameter is not
 resolved, and the cells right next to a bolt crack first, with widths that depend on the mesh (in this example, exactly
-as written: ANCHOR50 with 50 mm cells, ANCHOR25 with 50 × 25 × 25 mm cells). Read the cracks a few cells away from the
+as written on a 2.0 × 0.4 × 0.6 m member: largest width 0.089 mm, 32 cracked cells, strip force 59.9 kN with 50 mm
+cells; 0.215 mm, 100 cracked cells, 58.0 kN with 50 × 25 × 25 mm cells). Read the cracks a few cells away from the
 bolts (the splitting crack along the member, say), compare two meshes, or model the bolt and its hole as solids where
 the contact itself matters. The prestress is settled before the stage (see "Solving"), so `steps` does not change the
 result.
@@ -336,7 +337,7 @@ Apple M1 Max, OpenSeesPy 3.8 (UmfPack), IMPL-EX, two Newton iterations per step:
 | RC beam, 50 mm | 312 + 52 bar segments | 100 | 17 s |
 | RC beam, 25 mm | 2 496 + 104 | 100 | 179 s (`numberer="RCM"`; 199 s with AMD) ¹ |
 | member with two anchor bolts and a prestressed strip, 50 mm | 3 840 + 2 dowels | 17 settling steps + 1 | 34 s ² |
-| the same, 50 × 25 × 25 mm | 15 360 (52 000 equations) | 10 | 247 s (AMD; 352 s with RCM) ¹ |
+| the same, 50 × 25 × 25 mm | 15 360 (52 000 equations) | 10 | 247 s (AMD; 352 s with RCM) ¹; 29 settling steps + 1: 998 s ² |
 
 ¹ measured before the trilinear ties, which add six auxiliary nodes and seven tie elements per bar node (a few per cent
 of the equations); ² with another heavy job on the machine, so an upper bound. The prestress of a stage settles in 10–20
