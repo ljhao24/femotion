@@ -21,7 +21,7 @@ s = OpsSolid(m, c)                                                   # or {cell 
 s.bar([(30, 100, 40), (2970, 100, 40)], area=402.0, material=steel(450.0, 2.0e5))   # bonded bar, any polyline
 s.fix(lambda x: np.isclose(x[2], 0) & (np.abs(x[0] - 100) < 30), comps=(1, 2))
 s.fix(lambda x: np.isclose(x[2], 0) & (np.abs(x[0] - 2900) < 30), comps=(2,))
-s.fix(lambda x: np.isclose(x[0], 1500) & np.isclose(x[1], 0), comps=(0,))
+s.fix(lambda x: np.isclose(x[0], 1500) & np.isclose(x[2], 0), comps=(0,))   # a line across: holds the rotation about z
 s.static(s.self_weight(25e-6), steps=2, name="self-weight")          # stage 1, held afterwards
 F = s.traction(lambda x: np.isclose(x[2], 300) & (np.abs(x[0] - 1500) < 60), (0, 0, -1.0))
 s.push(F, (1500, 100, 0), dof=2, target=-8.0, steps=120, name="load")   # stage 2, displacement control
@@ -106,6 +106,11 @@ extrapolation. With that, `push` (displacement control) works with IMPL-EX too.
 
 Convergence: the norm of the displacement correction below `rtol` (1e-4) × the norm of the previous step's displacement
 increment, but not below 1e-10 × the model size (the round-off left by the penalty ties).
+
+Supports: every stage first counts the rigid-body motions the supports leave free (`free_rigid_modes()`) and warns.
+A free one makes the stiffness singular; a symmetric elastic model may still solve, but the round-off of the penalty
+ties of bars excites the free motion and no step converges (a beam held in x only along one edge, at a single point
+across, can still turn about the vertical through its bearing).
 
 **Imposed displacements** (`static(imposed=(nodes, values))`, sub-models, stroke control through a rigid plate made with
 `tie`) are applied through stiff springs from driven ground nodes. An `sp` constraint on the node itself puts the whole
@@ -215,7 +220,8 @@ reactions of the supported nodes (`Step.R`, `Step.Rn`: fixed components, springs
 xy yz zx), `eps_in`, `crack_strain`, `crack_normal`, `width`, `cracked`, `crushed`, `eq_strain` (material equivalent
 strains); per bar segment `N`, `stress`, `strain`; per dowel element `N`, `V`, `M`, `local`.
 
-- `curve(node, dof, at=…)`: load–displacement (reaction resultant at the supports selected by `at`);
+- `curve(node, dof, at=…)`: load–displacement (−1 × the reaction resultant at the supports selected by `at`, i.e. the
+  applied load with its sign; `sign=1` gives the reaction);
   `reaction(at)`; `first_crack()`; `bar_results(k)`, `dowel_results(k)` along one member.
 - `width_history()` or `width_history(a, b)`: the largest crack width per recorded step (any cell, or the cracks along a
   line), to interpolate the load at a width limit; `stop=lambda step: step.cell["width"].max() > 0.2` ends a stage

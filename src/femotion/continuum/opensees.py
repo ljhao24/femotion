@@ -10,7 +10,7 @@ and bonded or anchored strips, staged loading and crack-width read-outs. Guide a
     s.bar([(50, 100, 40), (2950, 100, 40)], area=402.0, material=steel(500.0, 2.0e5))    # bonded bar, any path
     s.fix(lambda x: np.isclose(x[0], 100) & np.isclose(x[2], 0), comps=(1, 2))
     s.fix(lambda x: np.isclose(x[0], 2900) & np.isclose(x[2], 0), comps=(2,))
-    s.fix(lambda x: np.isclose(x[0], 1500) & np.isclose(x[1], 0), comps=(0,))
+    s.fix(lambda x: np.isclose(x[0], 1500) & np.isclose(x[2], 0), comps=(0,))   # holds the rotation about z too
     F = s.traction(lambda x: np.isclose(x[2], 300) & (abs(x[0] - 1500) < 100), (0, 0, -1.0))
     s.static(s.self_weight(25e-6), steps=2)                             # stage 1, held
     s.push(F, node=(1500, 100, 0), dof=2, target=-6.0, steps=60)         # stage 2, displacement control
@@ -645,6 +645,7 @@ class OpsSolid:
         self._springs: list[tuple] = []  # (node, (kx, ky, kz))
         self._ties: list[tuple] = []  # (master, slaves, comps)
         self._driven: set[int] = set()
+        self._driven_masks: list[tuple] = []
         self._react: dict[int, list[tuple]] = {}  # model node → [(OpenSees node tag, component mask)] carrying its reaction
         self._faces = None
         # state
@@ -1153,6 +1154,7 @@ class OpsSolid:
             if n in self.fixed and any(self.fixed[n][c] for c in comps):
                 raise ValueError(f"node {n} is fixed in an imposed component")
             self._driven.add(n)
+            self._driven_masks.append((n, np.isin(np.arange(3), comps)))
             g = self._ground(n, comps, [k] * len(comps), fixed=[c for c in range(3) if c not in comps])
             out.append((g, comps, u[comps]))
         return out
@@ -1182,6 +1184,33 @@ class OpsSolid:
                 if first:
                     ops.setParameter("-val", 1e30, "-eleRange", int(o) + 1, int(o) + n, "material", str(ip + 1), "dTimeCommit")
         self._dt = dt
+
+    def free_rigid_modes(self) -> int:
+        """how many of the six rigid-body motions the supports leave free (fixed components, springs, displacement
+        drivers); a free one makes the stiffness singular, and round-off (the penalty ties of bars) then wrecks the
+        iterations. Checked at the start of every stage"""
+        rows = []
+        P = self.points
+        c = P.mean(axis=0)
+        held = [(n, np.array(f, float)) for n, f in self.fixed.items()]
+        held += [(n, np.array(k, float) != 0) for n, k in self._springs]
+        held += [(n, m) for n, m in self._driven_masks]
+        for n, mask in held:
+            r = P[n] - c
+            for i in np.flatnonzero(mask):
+                e = np.zeros(3)
+                e[i] = 1.0
+                rows.append(np.r_[e, np.cross(r, e)])  # e·(ω × r) = ω·(r × e)
+        if not rows:
+            return 6
+        A = np.array(rows) / np.r_[np.ones(3), np.full(3, max(self.scale, 1e-300))]
+        return 6 - int(np.linalg.matrix_rank(A, tol=1e-9 * np.abs(A).max()))
+
+    def _check_supports(self):
+        k = self.free_rigid_modes()
+        if k:
+            warnings.warn(f"the supports leave {k} rigid-body motion(s) free: the stiffness is singular and the analysis "
+                          "will not converge (check that rotations about all three axes are held)", stacklevel=4)
 
     def _setup(self):
         ops = self.ops
@@ -1262,6 +1291,7 @@ class OpsSolid:
         ops = self.ops
         drv = self._drivers(imposed) if imposed is not None else None
         p = self._pattern(F, drv)
+        self._check_supports()
         self._setup()
         ops.integrator("LoadControl", 1.0 / steps)
         ops.analysis("Static")
@@ -1282,6 +1312,7 @@ class OpsSolid:
         ops = self.ops
         n = int(node) if np.ndim(node) == 0 else self.nearest(node)
         p = self._pattern(F)
+        self._check_supports()
         self._setup()
         inc = target / steps
         ops.integrator("DisplacementControl", n + 1, dof + 1, inc)

@@ -474,3 +474,24 @@ def test_width_history_and_stop():
     st = s2.push(s2.nodal_force(None, (1.0, 0, 0), nodes=[end]), end, 0, 0.3, steps=150,
                  stop=lambda h: h.cell["width"].max() > 0.05)
     assert "stop" in st.message and 0.05 < s2.crack_widths().max() < 0.06
+
+
+def test_free_rigid_body_modes_are_reported():
+    """a beam on a line bearing (y, z) and a roller (z), held in x only along one edge at midspan, can still turn about
+    the vertical through the corner of the bearing: one free rigid-body motion, which the check finds and warns about;
+    holding x along a line across the beam removes it"""
+    m = structured.box(3000.0, 200.0, 300.0, 6, 2, 3)
+    s = OpsSolid(m, ElasticIso(3e4, 0.2))
+    s.fix(lambda x: np.isclose(x[2], 0) & np.isclose(x[0], 0), comps=(1, 2))
+    s.fix(lambda x: np.isclose(x[2], 0) & np.isclose(x[0], 3000), comps=(2,))
+    s.fix(lambda x: np.isclose(x[0], 1500) & np.isclose(x[1], 0), comps=(0,))
+    assert s.free_rigid_modes() == 1
+    with pytest.warns(UserWarning, match="rigid-body"):
+        s.static(None)
+    s2 = OpsSolid(m, ElasticIso(3e4, 0.2))
+    s2.fix(lambda x: np.isclose(x[2], 0) & np.isclose(x[0], 0), comps=(1, 2))
+    s2.fix(lambda x: np.isclose(x[2], 0) & np.isclose(x[0], 3000), comps=(2,))
+    s2.fix(lambda x: np.isclose(x[0], 1500) & np.isclose(x[2], 0), comps=(0,))
+    assert s2.free_rigid_modes() == 0
+    s2.spring(None, (0, 0, 1.0), nodes=[0])  # springs count as supports too
+    assert s2.free_rigid_modes() == 0 and OpsSolid(m, ElasticIso(3e4, 0.2)).free_rigid_modes() == 6
