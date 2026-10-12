@@ -1,6 +1,6 @@
 """Checks for the calculation-report tests (tests/test_report.py): one case per branch of every template of
-femotion.codes.jtg.report, including the cases of the independent review (shared/refs/codes/REPORT_REVIEW.md: F, S, C,
-T, Q, W, K, P, V, D, X, L, U, B, J), and a catalogue of the other kinds of check of the library."""
+femotion.codes.jtg.report, including the cases of the independent review (not published with this library; cases F, S,
+C, T, Q, W, K, P, V, D, X, L, U, B, J), and a catalogue of the other kinds of check of the library."""
 import numpy as np
 
 from femotion.codes import jtg

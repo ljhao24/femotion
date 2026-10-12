@@ -453,7 +453,7 @@ def test_composite_class_b_self_weight():
     assert (a.demand, a.resistance) == (b.demand, b.resistance)
 
 
-# ── after the independent review (shared/refs/codes/SLS_EXTRA_REVIEW.md) ──
+# ── after the independent review (not published with this library) ──
 def _props(parts):
     """(A, centroid depth, I) of (area, depth, own second moment) parts — parallel axes, by hand"""
     A = sum(a for a, _, _ in parts)

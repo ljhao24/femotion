@@ -468,7 +468,7 @@ def test_search_inputs():
     assert s3.check.details["h0_min"] == pytest.approx(SEC.h0(external=False))
 
 
-# ── after the independent review (shared/refs/codes/ULS_EXTRA_REVIEW.md) ────
+# ── after the independent review (not published with this library) ────
 def test_review_527_zero_moment_and_note():
     """L1: Md = 0 on an over-reinforced section passes with 5.2.7; L12: the note that the provided steel stays
     over-reinforced (commentary p175)"""
