@@ -38,16 +38,18 @@ outline (bookmarks) from the headings.
 from __future__ import annotations
 
 import html as _html
+import math as _pymath
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from .viz import COLORS, FONT, number
+from .viz import COLORS, FONT
 
-__all__ = ["Report", "Node", "Markup", "Cell", "escape", "rich", "math", "m", "fixed", "sci"]
+__all__ = ["Report", "Node", "Markup", "Cell", "escape", "rich", "math", "m", "fixed", "num", "sci"]
 
 # ── markup ──────────────────────────────────────────────────────────────────
 
@@ -79,7 +81,7 @@ def rich(s) -> Markup:
     if s is None:
         return Markup("")
     if isinstance(s, (int, float)) and not isinstance(s, bool):
-        return Markup(number(float(s)))
+        return Markup(num(float(s)))
     s = str(s)
     out, pos = [], 0
     for mt in re.finditer(r"(?<!\\)\$(.+?)(?<!\\)\$", s):
@@ -171,7 +173,7 @@ def _math(s: str, sub: bool = False) -> str:
             elif cmd == "u":
                 out.append(f'<span class="mu">{_html.escape(args[0])}</span>')
             elif cmd == "v":
-                out.append(f'<span class="v" data-sym="{_html.escape(args[0])}">{_html.escape(args[1])}</span>')
+                out.append(f'<span class="v" data-sym="{_html.escape(args[0])}">{_math(args[1], True)}</span>')
             elif cmd == "b":
                 out.append(f"<b>{_math(args[0], sub)}</b>")
             elif cmd == "op":
@@ -222,18 +224,43 @@ def m(s: str) -> Markup:
 
 
 def fixed(v: float, nd: int = 1) -> str:
-    """a number with nd decimals, a real minus sign, −0 as 0 (the form of values substituted into formulas)"""
-    s = f"{float(v):.{nd}f}"
+    """a number with nd decimals rounded half up (790.5 → 791, as by hand: the decimal digits shown, not the binary
+    value), a real minus sign, −0 as 0 (the form of values substituted into formulas)"""
+    v = float(v)
+    if not _pymath.isfinite(v):
+        return "∞" if v > 0 else "−∞"
+    q = Decimal(repr(v)).quantize(Decimal(1).scaleb(-nd), rounding=ROUND_HALF_UP)
+    s = f"{q:f}"
     if re.fullmatch(r"-0\.?0*", s):
         s = s[1:]
     return s.replace("-", "−")
+
+
+def num(v: float) -> str:
+    """a number by its magnitude as femotion.viz.number (none from 100, one decimal from 10, two from 1, three
+    significant figures below 1; trailing zeros dropped), rounded half up"""
+    v = float(v)
+    if not _pymath.isfinite(v):
+        return "∞" if v > 0 else "−∞"
+    a = abs(v)
+    if a >= 100 or a == 0:
+        s = fixed(v, 0)
+    elif a >= 10:
+        s = fixed(v, 1)
+    elif a >= 1:
+        s = fixed(v, 2)
+    else:
+        s = fixed(v, max(2 - int(_pymath.floor(_pymath.log10(a))), 0))
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return "0" if s in ("−0", "") else s
 
 
 def sci(v: float, sig: int = 4) -> str:
     """a number in the math language: plain below 1e6, else a × 10^{n} with sig significant figures"""
     v = float(v)
     if v == 0 or 1e-3 <= abs(v) < 1e6:
-        return number(v) if abs(v) < 1e6 else fixed(v, 0)
+        return num(v) if abs(v) < 1e6 else fixed(v, 0)
     e = int(f"{v:e}".split("e")[1])
     a = v / 10 ** e
     return f"{fixed(a, sig - 1)}×10^{{{fixed(e, 0)}}}"
@@ -297,7 +324,7 @@ def _cell_text(v, digits) -> Markup:
     if isinstance(v, (int, float)):
         if isinstance(v, int):
             return Markup(f"{v}".replace("-", "−"))
-        return Markup(fixed(v, digits) if digits is not None else number(v))
+        return Markup(fixed(v, digits) if digits is not None else num(v))
     return rich(v)
 
 

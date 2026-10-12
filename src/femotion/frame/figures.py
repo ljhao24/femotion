@@ -716,7 +716,7 @@ def influence_figure(il, layout, *, lang: str = "zh", width: float = 720, title:
             sc.bands.append(b)
         if layout.P_at is not None:
             u, z = at(layout.P_at)
-            sc.points.append((u, z, layout.P * dz, 0.0, f"{sym_P} = {number(layout.P)} kN",
+            sc.points.append((u, z, layout.P * dz, 0.0, f"{sym_P} = {number(layout.P, 1)} kN",
                               f' data-s="{_d(layout.P_at)}"', ""))
     sc.section = None if s_sec is None else (*at(s_sec), "")
 
@@ -905,7 +905,7 @@ def _effect_lines(layout, sym, unit, W, lang):
     parts, syms = [], []
     kq = "_{k}" if layout.kind == "lane" else ""
     if layout.P_at is not None:
-        parts.append(f"{number(layout.P)}×{_paren(layout.eta_P)}")
+        parts.append(f"{number(layout.P, 1)}×{_paren(layout.eta_P)}")
         syms.append(f"P{kq}η")
     if layout.q != 0 and layout.segments:
         parts.append(f"{number(layout.q)}×{_paren(layout.area)}")

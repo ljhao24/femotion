@@ -579,7 +579,7 @@ def punching(Fld: float, *, Um: float, h0: float, h: float, concrete, sigma_pc: 
         sigma_pc = 3.5
     elif 0 < sigma_pc < 1.0:
         notes.append(f"σpc,m = {sigma_pc:.2f} MPa < 1.0 MPa, below the range 1.0 … 3.5 of 5.6.1 (taken as given)")
-    d = {"beta_h": bh, "Um": Um, "h0": h0, "sigma_pc_m": sigma_pc, "ftd": c.ftd}
+    d = {"beta_h": bh, "Um": Um, "h0": h0, "sigma_pc_m": sigma_pc, "ftd": c.ftd, "h": h}
     if stirrups is None and bent is None:
         R = (0.7 * bh * c.ftd + 0.15 * sigma_pc) * Um * h0 / 1e3
         return Check("punching (slab, 5.6.1)", gamma0 * Fld, R, "kN", "JTG 3362-2018 5.6.1", d, notes)
@@ -590,7 +590,7 @@ def punching(Fld: float, *, Um: float, h0: float, h: float, concrete, sigma_pc: 
     else:
         Asbu, th = bent
         steel_part = 0.75 * st.fsd * Asbu * math.sin(math.radians(th)) / 1e3
-        clause, d["Asbu"], d["theta"] = "JTG 3362-2018 5.6.2-3", Asbu, th
+        clause, d["Asbu"], d["theta"], d["fsd"] = "JTG 3362-2018 5.6.2-3", Asbu, th, st.fsd
     chk = Check("punching (slab with punching steel, 5.6.2)", gamma0 * Fld, conc + steel_part, "kN", clause,
                 d | {"V_concrete": conc, "V_steel": steel_part}, notes)
     vmax = 1.05 * bh * c.ftd * Um * h0 / 1e3
@@ -602,6 +602,7 @@ def punching(Fld: float, *, Um: float, h0: float, h: float, concrete, sigma_pc: 
     else:
         out = (0.7 * bh * c.ftd + 0.15 * sigma_pc) * Um_outer * h0 / 1e3
         chk.details["V_outer"] = out
+        chk.details["Um_outer"] = Um_outer  # for calculation reports
         if gamma0 * Fld > out:
             chk.failed.append(f"outside the punching steel: γ0Fld > {out:.0f} kN (5.6.1 on Um = {Um_outer:.0f} mm, 5.6.2)")
     pre = "; a premise of the punching steel in 5.6.2-2/-3, 5.6.2 note"
@@ -649,7 +650,8 @@ def footing_punching(*, ps: float, A: float, bt: float, h0: float, h: float, con
     Fld = ps * A / 1e3
     R = 0.7 * bh * c.ftd * bm * h0 / 1e3
     return Check("punching (footing, 5.6.3)", gamma0 * Fld, R, "kN", "JTG 3362-2018 5.6.3",
-                 {"Fld": Fld, "bm": bm, "bb": bb, "beta_h": bh, "A": A})
+                 {"Fld": Fld, "bm": bm, "bb": bb, "beta_h": bh, "A": A, "ps": ps, "bt": bt, "h0": h0, "h": h,
+                  "ftd": c.ftd})
 
 
 # ── 9.2 detailing ───────────────────────────────────────────────────────────

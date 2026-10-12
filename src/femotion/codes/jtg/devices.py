@@ -370,7 +370,8 @@ def ptfe_sliding(b: Laminated, *, mu_f: float, RGk: float, RQk: float | None = N
         cases.append(("with braking (8.7.5-2)", RGk + RQk, tan_alpha[1], "8.7.5-2"))
     for name, R, ta, eq in cases:
         out.append(Check(f"PTFE friction {name}", mu_f * R, b.G * b.Ag * ta / 1e3, "kN", f"JTG 3362-2018 {eq}",
-                         {"R": R, "tan_alpha": ta, "shear_angle": mu_f * R * 1e3 / (b.G * b.Ag)}, limit_check=True,
+                         {"R": R, "tan_alpha": ta, "shear_angle": mu_f * R * 1e3 / (b.G * b.Ag), "mu_f": mu_f,
+                          "Ge": b.G, "Ag": b.Ag}, limit_check=True,
                          symbol="μf R"))
     return out
 

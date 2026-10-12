@@ -124,7 +124,7 @@ Constants: `COLORS`, `STYLE`, `TEXT_SIZE`, `FONT`, `PRECISION`, `GUTTER`, `EDGE`
 
 `section_figure(sec, *, check=None, lang="zh", width=560, title=None, hogging=None, stirrup_d=None, side_cover=None,
 webs=None, bar_x=None, tendon_x=None, external_n=None, strand=(15.2, 140.0), dims=True, labels=True, legend=True,
-info=True)`
+info=True, main_rows=None)`
 
 - `sec`: an `RCSection` or a `Composite` (drawn as its ultimate section, the cast-in-place topping in its own colour).
 - `check`: a `Check` or a list of them, or the dict of `cracked_section`. Flexure: the compression zone cut out of the
@@ -135,7 +135,9 @@ info=True)`
 - The compression face follows `Check.hogging`; `hogging=` overrides it for eccentric compression and gives it for
   `cracked_section`'s dict.
 - `stirrup_d` draws the stirrups and takes them into the bar layout as `section_detailing` does; `bar_x`, `tendon_x`
-  place rows and ducts by hand; `bar_layout(sec, …)` returns the layout drawn.
+  place rows and ducts by hand; `bar_layout(sec, …)` returns the layout drawn. `main_rows`: the main rows from each face
+  as `section_detailing(…, main_rows=…)` takes them (e.g. the layers of a welded frame), by default those of a
+  `section_detailing` check drawn, else the edge rows.
 
 What is drawn where (the section stores no horizontal positions) is written in the module's docstring: bars spread
 over the concrete at their depth between the stirrups, shared over the webs of a box or the walls of a hollow pier,

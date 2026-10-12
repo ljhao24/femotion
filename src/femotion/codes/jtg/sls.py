@@ -269,6 +269,9 @@ def principal_stresses(sec: RCSection, M: float, V: float, *, N: float = 0.0, M_
                - Pv_x * sec.first_moment(z, kind_x) / (b * Ix) + tau_t)
         m, r = (scx + scy) / 2, math.hypot((scx - scy) / 2, tau)
         out.append({"z": z, "b": b, "sigma_cx": scx, "sigma_cy": scy, "tau": tau, "sigma_tp": r - m, "sigma_cp": m + r,
+                    # the parts, for calculation reports: σpc, M y0 / I0, V S0 / (b I0)
+                    "sigma_pc": float(sec.prestress_stress(z, M_p2)), "y0": z0 - z, "I0": I0, "S0": sec.first_moment(z),
+                    "M": M, "V": abs(V + V_p2), "bent": bool(rows or rows_x), "extra": bool(N or sigma_cx or tau_t),
                     "sigma_t": st})
     return out
 
@@ -552,7 +555,7 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
             e = ep * (Np0 / F) + (M + Nn * ys) / F
             gf = _gamma_f(s, h0)
             z = _z_arm(gf, h0, e)
-            dd = {"Np0": Np0 / 1e3, "ep": ep, "e": e, "z": z, "h0": h0, "gamma_f": gf}
+            dd = {"Np0": Np0 / 1e3, "ep": ep, "e": e, "z": z, "h0": h0, "gamma_f": gf, "At": At, "M_p2": M_p2}
         else:  # net tension: about the compression-face steel (as 6.4.4-3), z ≤ 0.87 h0
             z, a_c = lever_tension(s, h0)
             dd = {"Np0": Np0 / 1e3, "ep": ep, "a'": a_c, "z": z, "h0": h0}
@@ -629,7 +632,7 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
             gf = _gamma_f(s, h0)
             z = _z_arm(gf, h0, es)
             sss = N * 1e3 * (es - z) / (As * z)
-            dd = {"e0": e0, "eta_s": eta, "es": es, "z": z, "gamma_f": gf, "h0": h0}
+            dd = {"e0": e0, "eta_s": eta, "es": es, "z": z, "gamma_f": gf, "h0": h0, "l0": l0}
             M_na = eta * k * Ms
         elif mtype == "tension" and N < 0:  # 6.4.4-3
             Nt = -N
@@ -680,6 +683,7 @@ def _crack_width(sec: RCSection, Ms: float, N: float, *, Ml, Nl, env, l0, slab, 
         d *= 1.3
     if c is None:
         c = _cover(s, mask, side)
+    dd["c_raw"] = c  # the cover before the 50 mm cap, for calculation reports
     c = min(c, 50.0)
     if C1 is None:
         C1 = 1.4 if s.steel.name == "HPB300" else (1.15 if epoxy else 1.0)
@@ -910,7 +914,8 @@ def _service_b(sec: RCSection, Mk: float, M_p2: float, th, pt: float, N: float =
         sc = sc + pt * np.array([float(thc.sigma(zo(dp))) for dp in s.tendons[:, 1]])
     sig_p = aEP * sc  # 7.1.4-5, negative: tension increment
     sp = s.tendons[:, 2] - sig_p
-    d = {"x": r["x"], "Acr": r["A"], "Icr": r["I"], "c": r["zc"], "eN": eN, "e0N": eN + r["zc"], "Np0": Np0 / 1e3,
+    d = {"alpha_EP": aEP, "sigma_p0": s.tendons[:, 2], "hp": s.tendons[:, 1], "Mt": Mt, "Nt": Nt,  # for reports
+         "x": r["x"], "Acr": r["A"], "Icr": r["I"], "c": r["zc"], "eN": eN, "e0N": eN + r["zc"], "Np0": Np0 / 1e3,
          "hps": hps, "sigma_p": sig_p, "tendon_stress": sp, "edge": edge if k > 0 else {"top": "bottom", "bottom": "top"}[edge]}
     if th is not None:
         d.update(M_k=Mt - M_p2, N_t=Nt, sigma_t_edge=scc - r["sigma"](0.0 if edge == "top" else s.h))
@@ -965,6 +970,7 @@ def service_stresses(sec: RCSection, Mk: float, *, pc_class: str, M_p2: float = 
             skt = skt - psi_t * np.array([temperature.unfavourable(d, "tension") for d in sec.tendons[:, 1]])
         sp = sec._sigma_pe() + aEP * skt
         d = {"edge_stress": edge, "tendon_stress": sp, "sigma_kt": skt}
+        d.update(alpha_EP=aEP, sigma_pe=sec._sigma_pe(), tendon_depth=sec.tendons[:, 1])  # for calculation reports
         # the parts at each edge, for calculation reports: σkc = Mk y0 / I0 and the prestress σpt (6.1.6 with Mp2)
         d.update(Mk=Mk, N=N, I0=I0, z0=z0, sigma_kc={n: Mk * 1e6 * (z0 - z) / I0 for n, z in (("top", 0.0),
                                                                                               ("bottom", sec.h))},
@@ -1067,7 +1073,8 @@ def transient_rc(sec: RCSection, Mk: float = 0.0, Vk: float | None = None, *, fc
         r = _cracked(s, M=Mn)
         x0, Icr = r["x"], r["I_na"]
         ten = s.bars[:, 1] > x0
-        row = {"factor": k, "M": M, "x0": x0, "Icr": Icr, "sigma_cc": Mn * x0 / Icr,
+        row = {"factor": k, "M": M, "x0": x0, "Icr": Icr, "sigma_cc": Mn * x0 / Icr, "h0i": s.bars[ten, 1],
+               "alpha_ES": s.steel.Es / s.concrete.Ec,
                "sigma_s": s.steel.Es / s.concrete.Ec * Mn * (s.bars[ten, 1] - x0) / Icr}
         if has_V:
             V = (Vk or 0.0) + k * (V_G or 0.0) + crane_factor * (V_crane or 0.0)
@@ -1088,6 +1095,8 @@ def transient_rc(sec: RCSection, Mk: float = 0.0, Vk: float | None = None, *, fc
                 symbol="σtcc", section=sec, hogging=g["M"] < 0)
     gs = max(rows, key=lambda r: r["sigma_s"].max(initial=0.0))
     d.update(sigma_s=gs["sigma_s"], dynamic_factor_steel=gs["factor"])
+    d.update(M_steel=gs["M"], x0_steel=gs["x0"], Icr_steel=gs["Icr"], h0i=gs["h0i"], alpha_ES=gs["alpha_ES"],
+             fsk=sec.steel.fsk)  # the steel's case, for calculation reports
     if gs["sigma_s"].max(initial=0.0) > 0.75 * sec.steel.fsk:
         chk.failed.append(f"bar stress {gs['sigma_s'].max():.0f} > 0.75 fsk = {0.75 * sec.steel.fsk:.0f} MPa (7.2.4-2)")
     if has_V:

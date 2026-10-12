@@ -100,6 +100,7 @@ def local_bearing(concrete, Fld: float, *, Al: float, Aln: float | None = None, 
         Acor = math.pi * dcor * dcor / 4 if Acor is None else Acor
         rho_v = spiral_ratio(Ass1, dcor, s)
     notes = []
+    Acor_raw = Acor
     if Acor > Ab:
         notes.append(f"Acor = {Acor:.0f} > Ab: Acor = Ab (5.7.2)")
         Acor = Ab
@@ -107,6 +108,8 @@ def local_bearing(concrete, Fld: float, *, Al: float, Aln: float | None = None, 
     k = k_indirect(c)
     R = 0.9 * (es * beta * fcd + k * rho_v * beta_cor * st.fsd) * Aln / 1e3
     d.update(rho_v=rho_v, beta_cor=beta_cor, k=k, Acor=Acor, fsd=st.fsd)
+    d.update(mesh=None if mesh is None else tuple(mesh), spiral=None if spiral is None else tuple(spiral),
+             Acor_indirect=Acor_raw)  # the inputs behind ρv and Acor, for calculation reports
     d.update(F_resistance=R, governs="5.7.1-1 (section size)" if size < R else "5.7.2-1")
     chk = Check("local compression", gamma0 * Fld, min(R, size), "kN", "JTG 3362-2018 5.7.1, 5.7.2", d, notes)
     if mesh is not None and d["mesh_area_ratio"] > 1.5:
