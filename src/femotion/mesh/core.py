@@ -206,6 +206,29 @@ class Mesh:
         pg = {k: remap[v][remap[v] >= 0] for k, v in self.point_groups.items()}
         return Mesh(self.points[used], {k: remap[v] for k, v in self.cells.items()}, pg, self.cell_groups)
 
+    def subset(self, groups) -> tuple["Mesh", np.ndarray, np.ndarray]:
+        """the cells of the given cell groups as a mesh of their own (construction stages: the girder before the pavement
+        is cast). Returns (mesh, cell ids of the main block in this mesh, node ids in this mesh); groups are carried over
+        where their cells survive"""
+        if isinstance(groups, str):
+            groups = [groups]
+        k = self.kind
+        cells = np.unique(np.concatenate([np.asarray(self.cell_groups[g].get(k, []), np.int64) for g in groups]))
+        conn = self.cells[k][cells]
+        nodes = np.unique(conn)
+        remap = -np.ones(self.n_points, np.int64)
+        remap[nodes] = np.arange(len(nodes))
+        cmap = -np.ones(len(self.cells[k]), np.int64)
+        cmap[cells] = np.arange(len(cells))
+        cg = {}
+        for g, d in self.cell_groups.items():
+            c = cmap[np.asarray(d.get(k, []), np.int64)]
+            c = c[c >= 0]
+            if len(c):
+                cg[g] = {k: c}
+        pg = {g: remap[v][remap[v] >= 0] for g, v in self.point_groups.items()}
+        return Mesh(self.points[nodes], {k: remap[conn]}, pg, cg), cells, nodes
+
     # ── conversion to / from scikit-fem ─────────────────────────────────
     def to_skfem(self):
         from skfem import MeshHex, MeshQuad, MeshTet, MeshTri

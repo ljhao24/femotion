@@ -1,0 +1,406 @@
+"""Solid models of femotion.continuum beyond one material and one load: materials, elastic supports, embedded bars and
+tendons, initial strains, load cases, sections, sweeps. Every check has an independent reference: a closed-form result
+of elasticity or beam theory, a textbook formula, or an exact equilibrium statement."""
+import numpy as np
+import pytest
+
+pytest.importorskip("skfem")
+from femotion.continuum import Elastic, Isotropic, Orthotropic, Tendon, fillet_path, rect  # noqa: E402
+from femotion.mesh import structured  # noqa: E402
+from femotion.mesh.core import Mesh  # noqa: E402
+from femotion.mesh.section import LayeredSection, sweep  # noqa: E402
+
+
+def _groups_by(m: Mesh, **preds) -> Mesh:
+    c = m.centroids()
+    m.cell_groups = {k: {m.kind: np.where(p(c.T))[0]} for k, p in preds.items()}
+    return m
+
+
+def _box_supports(s, L):
+    """statically determinate supports of a box [0, L] × [0, b] × [0, h]: no reactions to self-equilibrated loads"""
+    s.fix(lambda x: np.isclose(x[0], 0), comps=(0,))
+    s.fix_point((0, 0, 0), comps=(1, 2))
+    s.fix_point((0, 1, 0), comps=(2,))
+
+
+# ── materials ────────────────────────────────────────────────────────────
+def test_orthotropic_with_equal_constants_is_isotropic():
+    E, nu = 3.0e10, 0.2
+    G = E / (2 * (1 + nu))
+    iso = Isotropic(E, nu)
+    ort = Orthotropic(E=(E, E, E), nu=(nu, nu, nu), G=(G, G, G), axes=[[0.6, 0.8, 0], [-0.8, 0.6, 0], [0, 0, 1]])
+    assert np.allclose(ort.D6(), iso.D6(), rtol=1e-12, atol=1e-3)
+
+
+def test_orthotropic_plane_stress_textbook():
+    """plane stress of an orthotropic lamina in its axes: Q11 = E1/(1 − ν12ν21), Q12 = ν12E2/(1 − ν12ν21), Q66 = G12"""
+    E1, E2, n12, G12 = 165e9, 10e9, 0.3, 5e9
+    m = Orthotropic(E=(E1, E2, E2), nu=(n12, n12, 0.4), G=(G12, G12, E2 / 2.8))
+    n21 = n12 * E2 / E1
+    Q = m.D(2, "plane_stress")
+    assert Q[0, 0] == pytest.approx(E1 / (1 - n12 * n21), rel=1e-12)
+    assert Q[1, 1] == pytest.approx(E2 / (1 - n12 * n21), rel=1e-12)
+    assert Q[0, 1] == pytest.approx(n12 * E2 / (1 - n12 * n21), rel=1e-12)
+    assert Q[2, 2] == pytest.approx(G12, rel=1e-12)
+
+
+def test_isotropic_plane_strain_thermal_strain():
+    """plane strain: the in-plane free strain of a temperature change is (1 + ν) α ΔT"""
+    m = Isotropic(3e10, 0.2, alpha=1e-5)
+    assert np.allclose(m.thermal_strain(2, "plane_strain"), [1.2e-5, 1.2e-5, 0], rtol=1e-12)
+    assert np.allclose(m.thermal_strain(2, "plane_stress"), [1e-5, 1e-5, 0], rtol=1e-12)
+
+
+@pytest.mark.parametrize("theta", [0.0, 30.0, 90.0])
+def test_rotated_orthotropic_block_uniaxial(theta):
+    """off-axis tension of an orthotropic block: 1/Ex = c⁴/E1 + (1/G12 − 2ν12/E1) s²c² + s⁴/E2 (classical lamination
+    theory), with the shear coupling free to develop"""
+    E1, E2, n12, G12 = 140e9, 9e9, 0.3, 4.5e9
+    t = np.radians(theta)
+    c, s_ = np.cos(t), np.sin(t)
+    mat = Orthotropic(E=(E1, E2, E2), nu=(n12, n12, 0.45), G=(G12, G12, E2 / 2.9),
+                      axes=[[c, s_, 0], [-s_, c, 0], [0, 0, 1]])
+    L = 2.0
+    s = Elastic(structured.box(L, 1, 1, 4, 2, 2), material=mat)
+    s.traction(lambda x: np.isclose(x[0], L), (1e6, 0, 0))
+    _box_supports(s, L)
+    s.solve()
+    ux = s.nodal_displacement()[np.isclose(s.result_mesh().points[:, 0], L), 0].mean()
+    Ex = 1 / (c**4 / E1 + (1 / G12 - 2 * n12 / E1) * s_**2 * c**2 + s_**4 / E2)
+    assert ux / L == pytest.approx(1e6 / Ex, rel=1e-8)
+
+
+def test_two_materials_in_series():
+    """a bar of two materials in series: δ = σ (L1/E1 + L2/E2)"""
+    m = _groups_by(structured.box(3.0, 1, 1, 6, 2, 2), a=lambda c: c[0] < 1.0, b=lambda c: c[0] > 1.0)
+    s = Elastic(m, materials={"a": Isotropic(10e9, 0.0), "b": Isotropic(40e9, 0.0)})
+    s.traction(lambda x: np.isclose(x[0], 3), (2e6, 0, 0))
+    _box_supports(s, 3)
+    s.solve()
+    ux = s.nodal_displacement()[np.isclose(s.result_mesh().points[:, 0], 3), 0].mean()
+    assert ux == pytest.approx(2e6 * (1 / 10e9 + 2 / 40e9), rel=1e-10)
+
+
+def test_missing_material_raises():
+    m = _groups_by(structured.box(1, 1, 1, 2, 2, 2), a=lambda c: c[0] < 0.5)
+    with pytest.raises(ValueError, match="no material"):
+        Elastic(m, materials={"a": Isotropic(1.0, 0.2)})
+
+
+# ── assembly ─────────────────────────────────────────────────────────────
+def test_chunked_assembly_equals_whole():
+    m = structured.box(2, 1, 1, 6, 3, 3)
+    K1 = Elastic(m, E=1.0, nu=0.3, order=2, serendipity=True).K
+    K2 = Elastic(m, E=1.0, nu=0.3, order=2, serendipity=True, chunk=7).K
+    assert abs(K1 - K2).max() < 1e-12 * abs(K1).max()
+
+
+def test_serendipity_hex_cantilever():
+    """20-node hexahedra, end-loaded cantilever: δ = PL³/3EI + PL/(κGA), κ = 5/6"""
+    L, b, P, E, nu = 8.0, 1.0, 1.0, 1000.0, 0.3
+    s = Elastic(structured.box(L, b, b, 16, 2, 2), E=E, nu=nu, order=2, serendipity=True)
+    s.traction(lambda x: np.isclose(x[0], L), (0, 0, -P / b**2))
+    s.fix(lambda x: np.isclose(x[0], 0))
+    s.solve()
+    tip = np.isclose(s.result_mesh().points[:, 0], L)
+    I, G_ = b**4 / 12, E / (2 * (1 + nu))
+    assert -s.nodal_displacement()[tip, 2].mean() == pytest.approx(P * L**3 / (3 * E * I) + P * L / (5 / 6 * G_ * b * b), rel=0.02)
+
+
+# ── supports ─────────────────────────────────────────────────────────────
+def test_block_on_area_springs():
+    """a stiff block on an elastic bed under uniform pressure q: settlement q / k, bed force = load"""
+    q, kz = 2e5, 5e7
+    s = Elastic(structured.box(2, 1, 0.5, 4, 2, 2), E=1e12, nu=0.2)
+    s.traction(lambda x: np.isclose(x[2], 0.5), (0, 0, -q))
+    s.spring(s.facets(normal=(0, 0, -1)), k=(1e5, 1e5, kz), name="bed")
+    s.solve()
+    assert s.nodal_displacement()[:, 2].mean() == pytest.approx(-q / kz, rel=1e-4)
+    assert s.result().spring_force("bed") == pytest.approx([0, 0, q * 2.0], rel=1e-9, abs=1e-6)
+
+
+def test_facets_by_normal_and_position():
+    s = Elastic(structured.box(2, 1, 1, 4, 2, 2), E=1.0, nu=0.3)
+    top = s.facets(normal=(0, 0, 1))
+    assert s.facet_integral(top, lambda x: 1 + 0 * x[0]) == pytest.approx(2.0)
+    part = s.facets(lambda x: x[0] < 1.0, normal=(0, 0, -1))
+    assert s.facet_integral(part, lambda x: 1 + 0 * x[0]) == pytest.approx(1.0)
+
+
+# ── load cases ───────────────────────────────────────────────────────────
+def test_cases_one_factorisation_equal_separate_solves_and_combine():
+    m = structured.box(4, 1, 1, 8, 2, 2)
+
+    def model():
+        s = Elastic(m, E=3e10, nu=0.2, order=2)
+        s.fix(lambda x: np.isclose(x[0], 0))
+        return s
+    s = model()
+    s.case("g").body_force((0, 0, -25e3))
+    s.case("p").traction(lambda x: np.isclose(x[0], 4), (0, 1e5, -2e5))
+    s.solve()
+    for name, add in (("g", lambda c: c.body_force((0, 0, -25e3))),
+                      ("p", lambda c: c.traction(lambda x: np.isclose(x[0], 4), (0, 1e5, -2e5)))):
+        t = model()
+        add(t.case())
+        t.solve()
+        assert np.allclose(s.result(name).u, t.u, rtol=1e-10, atol=1e-16)
+    both = model()
+    both.body_force((0, 0, -25e3))
+    both.traction(lambda x: np.isclose(x[0], 4), (0, 1e5, -2e5))
+    both.solve()
+    r = s.combine({"g": 1.0, "p": 1.0})
+    assert np.allclose(r.u, both.u, rtol=1e-10, atol=1e-16)
+    assert np.allclose(r.nodal_stress(), both.nodal_stress(), rtol=1e-8, atol=1e-3)
+    assert np.allclose((1.2 * s.result("g")).u, 1.2 * s.result("g").u)
+
+
+def test_area_line_and_point_loads_resultants():
+    """the resultant and moment of distributed loads are exact, wherever they cut through cells"""
+    s = Elastic(structured.box(4, 2, 1, 5, 3, 2), E=1.0, nu=0.3, order=2)
+    F = np.array([0.0, 0.0, -1e5])
+    s.case("w").area_load(s.facets(normal=(0, 0, 1)), F, rect(1.13, 1.33, 0.27, 0.87))
+    assert s.case("w").resultant() == pytest.approx(F, abs=1e-6)
+    q = np.array([1e4, 0, 0])
+    pts = np.array([[0.3, 0.37, 0.1], [0.3, 0.37, 0.9]])
+    s.case("bolt").line_load(pts, q)
+    assert s.case("bolt").resultant() == pytest.approx(q * 0.8, rel=1e-12)
+    P = np.array([[1.234, 0.77, 0.31]])
+    Fp = np.array([[3.0, -2.0, 5.0]])
+    c = s.case("pt").point_forces(P, Fp)
+    X = s.ib.doflocs.T[0::3]
+    f = c.f.reshape(-1, 3)
+    assert f.sum(axis=0) == pytest.approx(Fp[0], rel=1e-12)
+    assert np.cross(X, f).sum(axis=0) == pytest.approx(np.cross(P[0], Fp[0]), rel=1e-10)
+
+
+def test_sample_reproduces_a_linear_field():
+    s = Elastic(structured.box(2, 1, 1, 3, 2, 2), E=100.0, nu=0.3, order=1)
+    s.traction(lambda x: np.isclose(x[0], 2), (1.0, 0, 0))
+    _box_supports(s, 2)
+    s.solve()
+    pts = np.array([[0.37, 0.21, 0.66], [1.9, 0.9, 0.05], [2.0, 1.0, 1.0]])
+    r = s.result().sample(pts)
+    assert np.allclose(r["stress"][:, 0], 1.0, rtol=1e-9)
+    assert np.allclose(r["u"][:, 0], pts[:, 0] / 100.0, rtol=1e-9)
+
+
+# ── initial strains ─────────────────────────────────────────────────────
+def test_free_thermal_expansion_has_no_stress():
+    s = Elastic(structured.box(2, 1, 1, 4, 2, 2), material=Isotropic(3e10, 0.2, alpha=1e-5), order=2)
+    s.case().thermal(25.0)
+    _box_supports(s, 2)
+    s.solve()
+    assert np.abs(s.nodal_stress()).max() < 1e-4
+    ux = s.nodal_displacement()[np.isclose(s.result_mesh().points[:, 0], 2), 0]
+    assert ux.mean() == pytest.approx(2 * 25e-5, rel=1e-10)
+
+
+def test_bimetal_strip_curvature():
+    """Timoshenko's bimetal strip: κ = 6 Δα ΔT (1 + m)² / (h [3 (1 + m)² + (1 + m n)(m² + 1/(m n))]), m = h1/h2, n = E1/E2"""
+    L, h1, h2, E1, E2, a1, a2, dT = 1.0, 0.01, 0.015, 200e9, 70e9, 12e-6, 23e-6, 50.0
+    m = _groups_by(structured.rect(L, h1 + h2, 100, 10, "quad4"), lo=lambda c: c[1] < h1, hi=lambda c: c[1] > h1)
+    s = Elastic(m, materials={"lo": Isotropic(E1, 0.0, a1), "hi": Isotropic(E2, 0.0, a2)}, order=2)
+    s.case().thermal(dT)
+    s.fix_point((0, 0), comps=(1,))
+    s.fix(lambda x: np.isclose(x[0], 0), comps=(0,))
+    s.solve()
+    mm, n, h = h1 / h2, E1 / E2, h1 + h2
+    kappa = 6 * (a2 - a1) * dT * (1 + mm) ** 2 / (h * (3 * (1 + mm) ** 2 + (1 + mm * n) * (mm**2 + 1 / (mm * n))))
+    rm = s.result_mesh()
+    tip = np.isclose(rm.points[:, 0], L) & np.isclose(rm.points[:, 1], 0)
+    assert -s.nodal_displacement()[tip, 1][0] == pytest.approx(kappa * L**2 / 2, rel=0.01)  # curves towards the low-α layer
+
+
+# ── embedded bars and tendons ───────────────────────────────────────────
+def test_embedded_bar_adds_axial_stiffness():
+    """a prism with a bonded bar along it, stretched by δ: N = (E A + Es As) δ / L (the bar spans whole and part cells)"""
+    L, E, EsAs, d = 3.0, 1e9, 4e8, 1e-3
+    s = Elastic(structured.box(L, 1, 1, 6, 2, 2), E=E, nu=0.25, order=2)
+    s.bar([(0, 0.33, 0.61), (L, 0.33, 0.61)], EA=EsAs, name="rebar")
+    s.fix(lambda x: np.isclose(x[0], L), comps=(0,), value=d)
+    _box_supports(s, L)
+    s.solve()
+    for method in ("nodal", "traction"):  # the cut force of solid and bar together
+        assert s.result().section((L / 2, 0, 0), (1, 0, 0), method=method)["N"] == pytest.approx((E * 1.0 + EsAs) * d / L, rel=1e-9)
+    assert s.result().bar_force("rebar") == pytest.approx(np.full(len(s.bars["rebar"].L), EsAs * d / L), rel=1e-9)
+
+
+def test_unbonded_bar_one_force_over_its_length():
+    """a bar attached at its ends and at a frictionless deviator carries one force; under a uniform stretch ε of the solid
+    its force is EA ε (sum of the projected elongations of both runs) / total length × (run lengths) — here exactly EA ε
+    cos² weighted: checked against the closed form Σ Li cos²θi ε EA / ΣLi"""
+    L, d, EA = 4.0, 2e-3, 1.0  # a bar too soft to disturb the uniform strain of the solid
+    s = Elastic(structured.box(L, 1, 1, 8, 2, 2), E=1e9, nu=0.0, order=1)
+    pts = [(0.0, 0.5, 0.8), (2.0, 0.5, 0.2), (4.0, 0.5, 0.8)]
+    b = s.bar(pts, EA=EA, bonded=False, name="ext")
+    s.fix(lambda x: np.isclose(x[0], L), comps=(0,), value=d)
+    _box_supports(s, L)
+    s.solve()
+    runs = np.diff(np.asarray(pts), axis=0)
+    Li = np.linalg.norm(runs, axis=1)
+    elong = np.sum(Li * (runs[:, 0] / Li) ** 2) * d / L  # ε_xx = d/L, other strains 0 (ν = 0)
+    assert len(b.L) == 1 and b.L[0] == pytest.approx(Li.sum())
+    assert s.result().bar_force("ext")[0] == pytest.approx(EA * elong / Li.sum(), rel=1e-9)
+
+
+def test_fillet_path_geometry():
+    """a 90° bend with radius R: tangent length R, arc length πR/2, path through the tangent points"""
+    R = 2.0
+    p = fillet_path([(0, 0, 0), (5, 0, 0), (5, 5, 0)], [R], arc_step=0.01)
+    seg = np.linalg.norm(np.diff(p, axis=0), axis=1).sum()
+    assert seg == pytest.approx((5 - R) * 2 + np.pi * R / 2, rel=1e-4)
+    assert np.any(np.all(np.isclose(p, (3, 0, 0)), axis=1)) and np.any(np.all(np.isclose(p, (5, 2, 0)), axis=1))
+    with pytest.raises(ValueError):
+        fillet_path([(0, 0, 0), (1, 0, 0), (1, 1, 0)], [5.0])
+
+
+def test_tendon_friction_and_equilibrium():
+    """friction from both ends: P(x) = P0 e^{−(μθ + kx)}; the loads on the concrete add up to zero; the radial push of an
+    arc adds up to 2 P sin(Δ/2) along its bisector"""
+    td = Tendon.from_pis([(0, 0, 1.0), (4, 0, 0.1), (12, 0, 0.1), (16, 0, 1.0)], [10.0, 10.0], arc_step=0.01)
+    tf = td.with_friction(1000e3, mu=0.25, k=0.0015, ends="both")
+    P = tf.forces()
+    L = tf.lengths()
+    x = np.cumsum(L) - L / 2
+    th = np.arctan(0.9 / 4)
+    mid = np.argmin(abs(x - 8))
+    assert P[mid] == pytest.approx(1000e3 * np.exp(-(0.25 * th + 0.0015 * x[mid])), rel=2e-3)
+    assert P[0] == pytest.approx(1000e3 * np.exp(-0.0015 * x[0]), rel=1e-12)
+    assert np.allclose(P, P[::-1], rtol=1e-6)
+    F = Tendon(td.points, 1000e3).vertex_forces()
+    assert np.abs(F.sum(axis=0)).max() < 1e-6
+    turn = np.r_[0, td.turn_angles(), 0] > 1e-9
+    first_arc = np.where(turn)[0]
+    first_arc = first_arc[first_arc < len(td.points) // 2]
+    Fa = F[first_arc].sum(axis=0)
+    assert np.linalg.norm(Fa) == pytest.approx(2 * 1000e3 * np.sin(th / 2), rel=1e-3)
+
+
+def _beam(L, b, h, nx, ny, nz, order=2):
+    return Elastic(structured.box(L, b, h, nx, ny, nz), E=3e10, nu=0.2, order=order, serendipity=True)
+
+
+def test_straight_eccentric_tendon_beam_theory():
+    """a straight tendon at eccentricity e below the centroid of a statically determinate beam: σ = −P/A ∓ P e y / I
+    (Saint-Venant: away from the anchors), no reactions"""
+    L, b, h, P, e = 8.0, 0.4, 0.6, 1.0e6, 0.15
+    s = _beam(L, b, h, 16, 2, 4)
+    s.case().tendon(Tendon([(0, b / 2, h / 2 - e), (L, b / 2, h / 2 - e)], P), anchor=(0.2, 0.2))
+    s.fix(lambda x: np.isclose(x[0], 0) & np.isclose(x[2], 0), comps=(0, 2))
+    s.fix(lambda x: np.isclose(x[0], L) & np.isclose(x[2], 0), comps=(2,))
+    s.fix_point((0, 0, 0), comps=(1,))
+    s.solve()
+    A, I = b * h, b * h**3 / 12
+    r = s.result().sample([(L / 2, b / 2, 0.0), (L / 2, b / 2, h)])
+    assert r["stress"][0, 0] == pytest.approx(-P / A - P * e * (h / 2) / I, rel=5e-3)
+    assert r["stress"][1, 0] == pytest.approx(-P / A + P * e * (h / 2) / I, rel=5e-3)
+    assert np.abs(s.reactions()).max() < 1e-6 * P
+
+
+def test_parabolic_tendon_load_balancing_and_section():
+    """a parabolic tendon (sag f, anchored at the centroid) on a simply supported beam: upward w = 8 P f / L², camber
+    5 w L⁴ / (384 E I) + w L² / (8 κ G A) (shear); midspan section: N = −P, M = −P f (about the centroid)"""
+    L, b, h, P, f = 10.0, 0.3, 0.5, 1.0e6, 0.15
+    xs = np.linspace(0, L, 201)
+    zs = h / 2 - f * 4 * xs / L * (1 - xs / L)
+    td = Tendon(np.c_[xs, np.full_like(xs, b / 2), zs], P)
+    s = _beam(L, b, h, 20, 2, 4)
+    s.case().tendon(td, anchor=(0.2, 0.2))
+    s.fix(lambda x: np.isclose(x[0], 0) & np.isclose(x[2], h / 2), comps=(0, 2))
+    s.fix(lambda x: np.isclose(x[0], L) & np.isclose(x[2], h / 2), comps=(2,))
+    s.fix_point((0, 0, h / 2), comps=(1,))
+    s.solve()
+    E, nu = 3e10, 0.2
+    I, A, G = b * h**3 / 12, b * h, E / (2 * (1 + nu))
+    w = 8 * P * f / L**2
+    camber = 5 * w * L**4 / (384 * E * I) + w * L**2 / (8 * 5 / 6 * G * A)
+    uz = s.result().sample([(L / 2, b / 2, h / 2)])["u"][0, 2]
+    assert uz == pytest.approx(camber, rel=0.02)
+    sec = s.result().section((L / 2, 0, 0), (1, 0, 0))
+    assert sec["N"] == pytest.approx(-P, rel=1e-3)  # the tendon is horizontal at midspan (P varies along it: arc sampling)
+    assert sec["M"][1] == pytest.approx(P * f, rel=2e-3)
+    tr = s.result().section((L / 2, 0, 0), (1, 0, 0), method="traction")
+    assert tr["N"] == pytest.approx(-P, rel=0.01) and tr["M"][1] == pytest.approx(P * f, rel=0.01)  # +y moment = hogging here: the tendon below the centroid lifts the beam
+    assert sec["area"] == pytest.approx(A, rel=1e-12)
+
+
+def test_cantilever_section_forces():
+    """a cut through an end-loaded cantilever carries V = P and M = P (L − a)"""
+    L, b, P = 6.0, 1.0, 1e4
+    s = Elastic(structured.box(L, b, b, 24, 4, 4), E=3e10, nu=0.2, order=2, serendipity=True)
+    s.traction(lambda x: np.isclose(x[0], L), (0, 0, -P / b**2))
+    s.fix(lambda x: np.isclose(x[0], 0))
+    s.solve()
+    for a in (1.5, 3.0):
+        sec = s.result().section((a, 0, 0), (1, 0, 0))  # statics: exact
+        assert sec["F"][2] == pytest.approx(-P, rel=1e-9)
+        assert sec["M"][1] == pytest.approx(P * (L - a), rel=1e-9)
+        assert abs(sec["N"]) < 1e-9 * P
+        tr = s.result().section((a, 0, 0), (1, 0, 0), method="traction")  # the stress field: O(h²) close (10 % at 12 cells)
+        assert tr["F"][2] == pytest.approx(-P, rel=0.03)
+        assert tr["M"][1] == pytest.approx(P * (L - a), rel=0.005)
+        top = s.result().section((a, 0, 0), (1, 0, 0), method="traction", region=lambda x: x[2] > b / 2)
+        assert top["N"] == pytest.approx(P * (L - a) / (b**3 / 12) * (b / 4) * (b * b / 2), rel=0.01)  # σ = M y / I
+
+
+# ── meshes ──────────────────────────────────────────────────────────────
+def _box_section():
+    """a single-cell box 2.0 × 1.0 with 0.2 webs and slabs"""
+    sec = LayeredSection(y=[0, 0.2, 1.8, 2.0], ny=[2, 8, 2], nz=[2, 6, 2], solid=[[1, 1, 1], [1, 0, 1], [1, 1, 1]],
+                         names=[["web", "web", "web"], ["bottom", None, "top"], ["web", "web", "web"]])
+    return sec, (lambda x, y: [0 * y, 0.2 + 0 * y, 0.8 + 0 * y, 1.0 + 0 * y])
+
+
+def test_sweep_box_volume_and_groups():
+    sec, z = _box_section()
+    m = sweep(sec, np.linspace(0, 5, 11), z)
+    assert m.measure().sum() == pytest.approx((2.0 * 1.0 - 1.6 * 0.6) * 5, rel=1e-12)
+    assert set(m.cell_groups) == {"web", "bottom", "top"}
+    vol = {g: m.measure()[c["hex8"]].sum() for g, c in m.cell_groups.items()}
+    assert vol["bottom"] == pytest.approx(1.6 * 0.2 * 5) and vol["web"] == pytest.approx(2 * 0.2 * 1.0 * 5)
+    sub, cells, nodes = m.subset(["web", "bottom"])
+    assert sub.measure().sum() == pytest.approx(vol["web"] + vol["bottom"])
+    assert np.allclose(sub.points, m.points[nodes]) and len(cells) == sub.n_cells()
+
+
+def test_swept_box_cantilever_beam_theory():
+    """a thin-walled box cantilever under an end shear: δ = P L³ / (3 E I) + P L / (G A_web) (shear through the webs)"""
+    sec, z = _box_section()
+    L, P, E, nu = 12.0, 1e5, 3e10, 0.2
+    s = Elastic(sweep(sec, np.linspace(0, L, 25), z), E=E, nu=nu, order=2, serendipity=True)
+    s.traction(lambda x: np.isclose(x[0], L), (0, 0, -P / (2.0 - 1.6 * 0.6)))
+    s.fix(lambda x: np.isclose(x[0], 0))
+    s.solve()
+    I = (2.0 * 1.0**3 - 1.6 * 0.6**3) / 12
+    Aw = 2 * 0.2 * 1.0
+    d = P * L**3 / (3 * E * I) + P * L / (E / (2 * (1 + nu)) * Aw)
+    tip = s.result().sample([(L, 0.1, 0.5)])["u"][0, 2]
+    assert -tip == pytest.approx(d, rel=0.03)
+
+
+def test_section_with_varying_interfaces_is_valid():
+    """a thickening near x = 0 (as at a girder end): all cells positive, volume as integrated by hand"""
+    sec, _ = _box_section()
+    z = lambda x, y: [0 * y, (0.2 + 0.2 * max(0.0, 1 - x)) + 0 * y, 0.8 + 0 * y, 1.0 + 0 * y]  # noqa: E731
+    m = sweep(sec, np.linspace(0, 3, 31), z)
+    v = m.measure()
+    assert v.min() > 0
+    # void: 1.6 wide × (0.6 − 0.2·(1 − x)) over x ∈ [0, 1], 1.6 × 0.6 beyond
+    void = 1.6 * (0.6 * 3 - 0.2 * 0.5)
+    assert v.sum() == pytest.approx(2.0 * 1.0 * 3 - void, rel=1e-9)
+
+
+def test_export_vtu(tmp_path):
+    pytest.importorskip("meshio")
+    from femotion.continuum import export_vtu
+    s = Elastic(structured.box(2, 1, 1, 2, 1, 1), material=Isotropic(1e9, 0.2, 1e-5))
+    s.case("t").thermal(10.0)
+    s.case("g").body_force((0, 0, -1e3))
+    _box_supports(s, 2)
+    s.solve()
+    p = export_vtu(tmp_path / "r.vtu", s, {"t": s.result("t"), "sum": s.result("t") + s.result("g")})
+    import meshio
+    m = meshio.read(p)
+    assert {"u:t", "S:sum", "S123:sum", "dir1:t"} <= set(m.point_data)
