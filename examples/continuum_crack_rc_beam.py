@@ -10,7 +10,9 @@ plate. Units N, mm, MPa.
 
 Printed: the cracking moment against the transformed section, the load–deflection curve against the uncracked and the
 fully cracked beam (Branson in between), the steel stress against the cracked section, and the cracks along the soffit
-with their widths against JTG 3362-2018 6.4.3 (Wcr) and Eurocode 2 7.3.4 (wk) at the same moment.
+with their widths against the short-term maximum widths of JTG 3362-2018 6.4.3 (Wcr with C2 = 1) and Eurocode 2 7.3.4
+(wk with kt = 0.6, hc,ef = min(2.5 (h − d), (h − x)/3, h/2)) at the same moment — the analysis is short-term and
+monotonic, so it is compared on that basis. Moments include the self-weight (1.07 kN·m at midspan).
 
     python examples/continuum_crack_rc_beam.py [--h 25] [--steps 100] [--out DIR]
 
@@ -77,31 +79,36 @@ def main():
     u, P = -u, 4 * P  # the whole beam: four quarters' bearing reactions
     P -= P[s.stages[0].steps[-1]]  # the applied load only (self-weight reaction removed)
     n, yb, Ig, x, Icr = sections(c)
-    i = s.first_crack()
-    print(f"first crack between {P[i - 1] / 2 * 900 / 1e6:.1f} and {P[i] / 2 * 900 / 1e6:.1f} kN·m (live load), ft·W "
-          f"{c.ft * Ig / yb / 1e6:.1f} kN·m: the MC2010 pre-peak law and the softening raise the apparent flexural "
-          "strength, as fctm,fl = 1.31 fctm of MC2010 for h = 300 mm")
     span, sa = 2400.0, 900.0
+    Mg = 25e-6 * B * D * span**2 / 8  # self-weight moment at midspan
+    i = s.first_crack()
+    W = Ig / yb
+    fl = (1 + 0.06 * D**0.7) / (0.06 * D**0.7)  # MC2010 5.1-7: fctm,fl / fctm
+    print(f"first crack between {(P[i - 1] / 2 * sa + Mg) / 1e6:.1f} and {(P[i] / 2 * sa + Mg) / 1e6:.1f} kN·m (with "
+          f"self-weight): ft·W {c.ft * W / 1e6:.1f}, fctm,fl·W {fl * c.ft * W / 1e6:.1f} kN·m (MC2010 flexural tensile "
+          "strength; the pre-peak law and the softening raise the apparent strength above ft·W)")
     kb = sa * (3 * span**2 - 4 * sa**2) / (24 * c.E)  # midspan deflection per unit P/2, bending only
-    Mcr = c.ft * Ig / yb
-    print("    P kN   δ FE   uncracked  Branson  cracked   σs FE   σs cracked   max w FE   Wcr JTG   wk EC2   cracks")
+    Mcr = c.ft * W
+    print("    P kN   δ FE   uncracked  Branson  cracked   σs FE   σs cracked   max w FE   Wcr JTG   wk EC2   cracks\n"
+          "                                                                        (short-term: C2 = 1; kt = 0.6)")
     from femotion.codes import jtg
     from femotion.codes.jtg import sls
 
     sec = jtg.rect(200, 300, concrete="C30", steel="HRB400", bottom=[(2, 16, 40)])
-    rho = AS / (B * min(2.5 * 40, D / 2))
+    rho = AS / (B * min(2.5 * (D - DEPTH), (D - x) / 3, D / 2))  # EC2 7.3.2(3): ρp,eff on hc,ef
     for k in s.recorded()[2::max(1, a.steps // 10)]:
         if P[k] <= 0:
             continue
-        M = P[k] / 2 * sa
+        M = P[k] / 2 * sa + Mg
         Ie = Ig if M < Mcr else (Mcr / M) ** 3 * Ig + (1 - (Mcr / M) ** 3) * Icr
         r = s.bar_results(0, k)
         sfe = r["stress"][r["x"][:, 0] > 950].max()
-        wj = sls.crack_width(sec, Ms=M / 1e6, Ml=M / 1e6, env="I").demand
-        ss = M / (0.87 * AS * DEPTH)
-        wk = (3.4 * 32 + 0.425 * 0.8 * 0.5 * 16 / rho) * max(ss - 0.4 * c.ft / rho * (1 + n * rho), 0.6 * ss) / ES
+        wj = sls.crack_width(sec, Ms=M / 1e6, Ml=0.0, env="I").demand  # short term: C2 = 1
+        ss = n * M * (DEPTH - x) / Icr  # cracked section (EC2 7.3.4)
+        wk = (3.4 * 32 + 0.425 * 0.8 * 0.5 * 16 / rho) * max(ss - 0.6 * c.ft / rho * (1 + n * rho), 0.6 * ss) / ES
         cr = s.cracks_along((150, 50, 1), (HALF, 50, 1), step=k)
-        print(f"  {P[k] / 1e3:6.1f} {u[k]:6.2f} {P[k] / 2 * kb / Ig:9.2f} {P[k] / 2 * kb / Ie:8.2f} {P[k] / 2 * kb / Icr:8.2f} "
+        kM = M / sa * kb  # deflection from the midspan moment M, as if all of it came from the two loads
+        print(f"  {P[k] / 1e3:6.1f} {u[k]:6.2f} {kM / Ig:9.2f} {kM / Ie:8.2f} {kM / Icr:8.2f} "
               f"{sfe:8.1f} {n * M * (DEPTH - x) / Icr:10.1f} {cr['max_width']:10.3f} {wj:9.3f} {wk:8.3f}   "
               f"{len([q for q in cr['cracks'] if q['width'] > 0.03])}")
     cr = s.cracks_along((150, 50, 1), (HALF, 50, 1))
