@@ -177,31 +177,61 @@ class Elastic:
         return mat.D(self.dim, self.kind)
 
     def _assemble_K(self):
-        from skfem import Basis, BilinearForm, asm
-        from skfem.helpers import ddot, eye, sym_grad, trace
-        dim, kind = self.dim, self.kind
-        K = None
+        """K = Σ ∫ Bᵀ D B dV, assembled cell by cell with batched matrix products (scikit-fem gives the shape-function
+        gradients and the measure; a BilinearForm would evaluate the form once per pair of the 60 × 60 basis functions of a
+        20-node hexahedron, about a hundred times slower)"""
+        from skfem import Basis
+        dim = self.dim
+        ncomp = 3 if dim == 2 else 6
+        N = self.ib.N
+        K = sp.csr_matrix((N, N))
         for mat, cells in self._material_chunks():
-            b = Basis(self.sk, self.elem, elements=cells)
-            s = np.ones(len(cells)) if self._scale is None else self._scale[cells]
-            if getattr(mat, "isotropic", False):
-                lam, mu = mat.lame(kind)
-
-                @BilinearForm
-                def a(u, v, w):
-                    e = sym_grad(u)
-                    return w.s * ddot(2 * mu * e + lam * eye(trace(e), e.shape[0]), sym_grad(v))
-            else:
-                Dm = self.D(mat)
-                nz = [(i, j) for i in range(Dm.shape[0]) for j in range(Dm.shape[1]) if Dm[i, j] != 0]
-
-                @BilinearForm
-                def a(u, v, w):
-                    eu, ev = _voigt(sym_grad(u), dim), _voigt(sym_grad(v), dim)
-                    return w.s * sum(Dm[i, j] * eu[j] * ev[i] for i, j in nz)
-            Kc = asm(a, b, s=np.repeat(s[:, None], b.X.shape[-1], axis=1)) * self.thick
-            K = Kc if K is None else K + Kc
+            sb = Basis(self.sk, self.scalar_elem, elements=cells)
+            Dm = self.D(mat)
+            dx = np.asarray(sb.dx) * self.thick
+            if self._scale is not None:
+                dx = dx * self._scale[cells][:, None]
+            B = self._B(sb)  # (nel, nq, ncomp, n)
+            nel, nq, _, n = B.shape
+            DB = np.einsum("ij,eqjA->eqiA", Dm, B) * dx[:, :, None, None]
+            Ke = np.matmul(B.reshape(nel, nq * ncomp, n).transpose(0, 2, 1), DB.reshape(nel, nq * ncomp, n))
+            gd = self._vector_dofs(sb)  # (nel, n)
+            r = np.broadcast_to(gd[:, :, None], Ke.shape)
+            c = np.broadcast_to(gd[:, None, :], Ke.shape)
+            K = K + sp.csr_matrix((Ke.ravel(), (r.ravel(), c.ravel())), shape=(N, N))
         return K.tocsr()
+
+    def _B(self, sb) -> np.ndarray:
+        """strain-displacement matrices (nel, nq, ncomp, dim·nb) from a scalar basis; column dim·k + c is component c of
+        scalar function k (the vector dof order)"""
+        dim, nb = self.dim, sb.Nbfun
+        G = np.stack([np.asarray(sb.basis[k][0].grad) for k in range(nb)])  # (nb, dim, nel, nq)
+        nel, nq = G.shape[2], G.shape[3]
+        ncomp = 3 if dim == 2 else 6
+        B = np.zeros((nel, nq, ncomp, dim * nb))
+        g = G.transpose(2, 3, 1, 0)  # (nel, nq, dim, nb)
+        if dim == 2:
+            B[:, :, 0, 0::2] = g[:, :, 0]
+            B[:, :, 1, 1::2] = g[:, :, 1]
+            B[:, :, 2, 0::2] = g[:, :, 1]
+            B[:, :, 2, 1::2] = g[:, :, 0]
+            return B
+        B[:, :, 0, 0::3] = g[:, :, 0]
+        B[:, :, 1, 1::3] = g[:, :, 1]
+        B[:, :, 2, 2::3] = g[:, :, 2]
+        B[:, :, 3, 0::3] = g[:, :, 1]  # γxy = ∂ux/∂y + ∂uy/∂x
+        B[:, :, 3, 1::3] = g[:, :, 0]
+        B[:, :, 4, 1::3] = g[:, :, 2]  # γyz = ∂uy/∂z + ∂uz/∂y
+        B[:, :, 4, 2::3] = g[:, :, 1]
+        B[:, :, 5, 2::3] = g[:, :, 0]  # γzx = ∂uz/∂x + ∂ux/∂z
+        B[:, :, 5, 0::3] = g[:, :, 2]
+        return B
+
+    def _vector_dofs(self, sb) -> np.ndarray:
+        """global vector dofs (nel, dim·nb) of the cells of a scalar basis, in the column order of _B"""
+        sd = np.asarray(sb.element_dofs)  # (nb, nel)
+        d = self.dim
+        return (d * sd.T[:, :, None] + np.arange(d)[None, None, :]).reshape(sd.shape[1], -1)
 
     @property
     def K(self):
@@ -385,14 +415,7 @@ class Elastic:
         """where: a predicate pred(x) on node coordinates (also selects mid-edge nodes of quadratic cells) or an array of
         vertex ids; comps: all components by default; value: imposed displacement (in every case)"""
         comps = range(self.dim) if comps is None else comps
-        if isinstance(where, np.ndarray):
-            dofs = self.ib.get_dofs(nodes=where)
-            per = {c: dofs.all(f"u^{c + 1}") for c in comps}
-        else:  # every dof located where the predicate holds: points, lines and faces alike
-            X = self.ib.doflocs
-            hit = np.asarray(where(X), bool)
-            comp = np.arange(self.ib.N) % self.dim
-            per = {c: np.where(hit & (comp == c))[0] for c in comps}
+        per = self.dofs_where(where, comps)  # every dof located where the predicate holds: points, lines, faces alike
         for c in comps:
             d = per[c]
             if len(d) == 0:
@@ -450,9 +473,11 @@ class Elastic:
 
     # ── solve ───────────────────────────────────────────────────────────
     def solve(self, method: str = "auto", tol: float = 1e-10, verbose: bool = False, cases=None):
-        """solve every load case (or the named ones) with one factorisation. method: direct (sparse LU), amg (pyamg
-        smoothed aggregation + CG with rigid-body modes as near-null space, one hierarchy for all cases), auto (amg above
-        150,000 dofs). Returns the displacements of the case "default" (or of the first case)"""
+        """solve every load case (or the named ones) with one factorisation. method: direct (SuperLU), cholesky (CHOLMOD
+        via the optional package cholespy: far faster and leaner for 3D solids, needs a positive definite K, i.e.
+        enough supports), amg (pyamg smoothed aggregation + CG with rigid-body modes as near-null space, one hierarchy for
+        all cases; slow to converge on thin-walled quadratic models), auto (direct up to 150,000 dofs, then cholesky up to
+        800,000 if installed, else amg). Returns the displacements of the case "default" (or of the first case)"""
         from .results import CaseResult
         t0 = time.time()
         if not self.cases:
@@ -461,16 +486,30 @@ class Elastic:
         K = self.K
         D = np.unique(np.concatenate(self._fixed)) if self._fixed else np.zeros(0, int)
         free = np.setdiff1d(np.arange(self.ib.N), D)
-        uD = np.zeros(self.ib.N)
+        uD0 = np.zeros(self.ib.N)
         for k, v in self._presc.items():
-            uD[k] = v
+            uD0[k] = v
         A = K[free][:, free].tocsr()
-        KfD = K[free][:, D] if len(self._presc) else None
+        any_presc = bool(self._presc) or any(len(self.cases[n].uD) for n in names)
+        KfD = K[free][:, D] if any_presc else None
         if method == "auto":
-            method = "amg" if len(free) > 150_000 else "direct"
+            method = "direct" if len(free) <= 150_000 else ("cholesky" if _has_cholespy() and len(free) <= 800_000 else "amg")
         self.cg_iterations = 0
+        self.method = method
         rels = []
-        if method == "direct":
+        if method == "cholesky":  # CHOLMOD (supernodal, METIS ordering) through cholespy: robust for thin-walled solids
+            from cholespy import CholeskySolverD, MatrixType
+            C = A.tocoo()
+            try:
+                ch = CholeskySolverD(len(free), C.row.astype(np.int32), C.col.astype(np.int32), C.data, MatrixType.COO)
+            except Exception as e:
+                raise RuntimeError(f"Cholesky factorisation failed ({e}); check the supports") from e
+
+            def solve1(b):
+                x = np.zeros_like(b)
+                ch.solve(np.ascontiguousarray(b), x)
+                return x
+        elif method == "direct":
             from scipy.sparse.linalg import splu
             try:
                 lu = splu(A.tocsc())
@@ -497,6 +536,9 @@ class Elastic:
                 return x
         for name in names:
             f = self.cases[name].f
+            uD = uD0.copy()
+            for k, v in self.cases[name].uD.items():
+                uD[k] = v
             b = f[free] - (KfD @ uD[D] if KfD is not None else 0)
             u = uD.copy()
             nb = np.linalg.norm(b)
@@ -517,6 +559,16 @@ class Elastic:
             print(f"  assembly {self.t_assemble:.1f}s, solve {self.t_solve:.1f}s ({method}), {self.ib.N:,} dofs, "
                   f"{len(names)} case(s), relative residual ≤ {self.rel_residual:.1e}")
         return self.u
+
+    def dofs_where(self, where, comps=None) -> dict:
+        """{component: dof ids} located where the predicate holds (dof locations, dim × N), or of given vertex ids"""
+        comps = range(self.dim) if comps is None else comps
+        if isinstance(where, np.ndarray):
+            dofs = self.ib.get_dofs(nodes=where)
+            return {c: dofs.all(f"u^{c + 1}") for c in comps}
+        hit = np.asarray(where(self.ib.doflocs), bool)
+        comp = np.arange(self.ib.N) % self.dim
+        return {c: np.where(hit & (comp == c))[0] for c in comps}
 
     def _rigid_modes(self):
         X = self.ib.doflocs  # location of every dof (dim, N)
@@ -610,6 +662,11 @@ class Elastic:
     def strain_energy_density(self) -> np.ndarray:
         """strain energy density per cell (cell average)"""
         return self._main().strain_energy_density()
+
+
+def _has_cholespy() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("cholespy") is not None
 
 
 def facet_normals(P: np.ndarray) -> np.ndarray:

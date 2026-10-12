@@ -30,8 +30,12 @@ if TYPE_CHECKING:
 
 
 def rect(x0: float, x1: float, y0: float, y1: float) -> Callable:
-    """indicator of a rectangle in plan (x, y) for area_load: a wheel print, a lane, a bearing plate"""
-    return lambda x: (x[0] >= x0) & (x[0] <= x1) & (x[1] >= y0) & (x[1] <= y1)
+    """indicator of a rectangle in plan (x, y) for area_load: a wheel print, a lane, a bearing plate (its `bbox` lets
+    area_load skip the facets far from it)"""
+    def f(x):
+        return (x[0] >= x0) & (x[0] <= x1) & (x[1] >= y0) & (x[1] <= y1)
+    f.bbox = ((x0, x1), (y0, y1))
+    return f
 
 
 class LoadCase:
@@ -41,6 +45,7 @@ class LoadCase:
         self.f = np.zeros(solver.ib.N)
         self.strains: list = []  # (groups mask or None, eps0(x) → Voigt (ncomp, nel, nq) or constant)
         self.bar_P: dict[str, np.ndarray] = {}  # prestress of embedded bars in this case
+        self.uD: dict[int, float] = {}  # prescribed displacements of this case (dof → value)
 
     def _add(self, f: np.ndarray) -> np.ndarray:
         self.f += f
@@ -62,7 +67,14 @@ class LoadCase:
         in plan: a wheel, a lane, a plate): traction F / A·[x in region], A being the covered area integrated with the same
         quadrature, so the resultant is exactly F even where the region cuts through cells"""
         fac = self.s._facets(where)
-        A = self.s.facet_integral(fac, lambda x: region(x).astype(float), intorder)
+        bb = getattr(region, "bbox", None)
+        if bb is not None:  # only the facets whose extent overlaps the region's
+            P = self.s.sk.p[:, self.s.sk.facets[:, fac]]  # (dim, nv, nf)
+            keep = np.ones(len(fac), bool)
+            for i, (lo, hi) in enumerate(bb):
+                keep &= (P[i].max(axis=0) >= lo) & (P[i].min(axis=0) <= hi)
+            fac = fac[keep]
+        A = self.s.facet_integral(fac, lambda x: region(x).astype(float), intorder) if len(fac) else 0.0
         if A <= 0:
             raise ValueError("area_load: the region covers none of the facets")
         F = np.asarray(F, float)
@@ -102,13 +114,43 @@ class LoadCase:
             self.f[self.s.ib.nodal_dofs[i, n]] += c
         return self
 
-    def point_forces(self, points, F, snap: float = 0.0) -> "LoadCase":
+    def point_forces(self, points, F, snap: float = 0.0, outside: str = "raise") -> "LoadCase":
         """forces F (n, dim) at arbitrary points inside the solid, through the shape functions of their cells (snap: accept
-        points up to that many cells outside, moved onto the surface; Locator.locate)"""
-        self._add(self.s.locator.forces(points, F, snap))
+        points up to that many cells outside, moved onto the surface; Locator.locate). outside="skip" drops points
+        outside the mesh instead of raising (loads of the whole structure applied to a submodel)"""
+        P = np.asarray(points, float).reshape(-1, self.s.dim)
+        F = np.asarray(F, float).reshape(-1, self.s.dim)
+        if not len(P):
+            return self
+        if outside == "skip":
+            keep = self.s.locator.inside(P, snap=snap)
+            P, F = P[keep], F[keep]
+            if not len(P):
+                return self
+        self._add(self.s.locator.forces(P, F, snap))
         return self
 
-    def line_load(self, points, q, ds: float | None = None, gauss: int = 3) -> "LoadCase":
+    def displacement(self, where, u, comps=None) -> "LoadCase":
+        """prescribed displacements in this case (support settlement, the cut boundary of a submodel): the dofs located
+        where `where` holds (or of given vertex ids) become fixed in every case, with u (a constant vector or u(X) →
+        (dim, n) at the dof locations X (dim, n)) in this one and zero in the others unless they prescribe their own"""
+        s = self.s
+        comps = list(range(s.dim) if comps is None else comps)
+        per = s.dofs_where(where, comps)
+        X = s.ib.doflocs
+        for c in comps:
+            d = per[c]
+            if not len(d):
+                raise ValueError("displacement: the selection holds no nodes")
+            s._fixed.append(d)
+            if callable(u):
+                vals = np.asarray(u(X[:, d]))[c]
+            else:
+                vals = np.full(len(d), float(np.asarray(u, float)[c]))
+            self.uD.update(zip(d.tolist(), vals.tolist()))
+        return self
+
+    def line_load(self, points, q, ds: float | None = None, gauss: int = 3, outside: str = "raise") -> "LoadCase":
         """a distributed force along a polyline inside the solid (an anchor bolt, a duct, a wall line): q per unit length,
         a constant vector or one vector per vertex (linear in between); integrated with Gauss points on pieces of at
         most ds (default: the bar spacing of femotion.continuum.embed)"""
@@ -129,25 +171,25 @@ class LoadCase:
                 qv = np.array([np.interp(s, s_v, Q[:, c]) for c in range(P.shape[1])])
                 pts.append(p)
                 frc.append(qv * w_ * L / 2)
-        return self.point_forces(np.array(pts), np.array(frc))
+        return self.point_forces(np.array(pts), np.array(frc), outside=outside)
 
     # ── prestressing ────────────────────────────────────────────────────
-    def tendon(self, td: Tendon, anchor=None, up=(0.0, 0.0, 1.0)) -> "LoadCase":
+    def tendon(self, td: Tendon, anchor=None, up=(0.0, 0.0, 1.0), outside: str = "raise") -> "LoadCase":
         """the equivalent loads of a tendon (femotion.continuum.tendon): the change of its force along the path, applied
         where it happens. anchor = (a, b): the anchor forces spread over a bearing plate a × b perpendicular to the
         tendon (side a along `up`), instead of acting at the anchor point"""
         F = td.vertex_forces()
-        pts, frc = [td.points[1:-1]], [F[1:-1]]
+        self.point_forces(td.points[1:-1], F[1:-1], outside=outside)  # along the path: strictly inside
         for i in (0, -1):
             if anchor is None:
-                pts.append(td.points[i][None])
-                frc.append(F[i][None])
-            else:
+                self.point_forces(td.points[i][None], F[i][None], outside=outside)
+            else:  # a bearing plate may poke out of a sloping end face: its points snap onto the surface
                 t = td.tangents()[0 if i == 0 else -1]
                 ap = anchor_points(td.points[i], t, anchor, up)
-                pts.append(ap)
-                frc.append(np.repeat(F[i][None] / len(ap), len(ap), axis=0))
-        return self.point_forces(np.concatenate(pts), np.concatenate(frc), snap=1.0 if anchor is not None else 0.0)
+                if outside == "skip" and not self.s.locator.inside(td.points[i][None])[0]:
+                    continue  # the anchor itself lies outside this (sub)model
+                self.point_forces(ap, np.repeat(F[i][None] / len(ap), len(ap), axis=0), snap=1.0)
+        return self
 
     def bar_prestress(self, bar, P) -> "LoadCase":
         """an initial tension P in an embedded bar (Elastic.bar): the load −Gᵀ P on the structure; the bar's force in this

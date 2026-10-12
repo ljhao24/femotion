@@ -20,7 +20,7 @@ femotion 为工程动画而做：画面上每一处变形、每一种应力颜�
 
 ```bash
 pip install femotion                 # 只依赖 numpy + scipy：线性杆系、拓扑优化、结果文件
-pip install "femotion[continuum]"    # + scikit-fem、pyamg：平面和实体弹性
+pip install "femotion[continuum]"    # + scikit-fem、pyamg、cholespy：平面和实体弹性
 pip install "femotion[mesh]"         # + gmsh：非结构网格、四边形、拉伸和结构化六面体
 pip install "femotion[tetwild]"      # + fTetWild：从不干净的表面模型（Blender、下载的模型、扫描）生成四面体
 pip install "femotion[opensees]"     # + OpenSeesPy：杆系非线性
@@ -39,6 +39,17 @@ pip install "femotion[all]"
   `export_result` 把结果文件转成 VTU，ParaView 直接打开，逐帧结果转成 `.pvd` 序列，按播放即可。
 - **`femotion.frame.sections`**（sectionproperties）：任意形状截面（箱梁、工字钢、空心墩、组合截面）算出面积、惯性矩、
   扭转常数和每延米质量，交给杆系求解器；同一形状也能直接生成 OpenSees 纤维截面，做非线性分析。
+
+## 实体模型（`femotion.continuum`）
+
+平面和三维线弹性（scikit-fem），面向结构而不只是零件（详见 [docs/continuum.md](docs/continuum.md)）：
+
+- 网格按分组指定材料：各向同性、正交异性（转轴、热膨胀，例如碳纤维板）；20 节点六面体；
+- `femotion.mesh.section`：横断面按"列 × 层"分块，沿构件扫掠成全六面体网格，箱梁、多室空心板、梁端加厚段、倒角随位置连续变化；
+- 支座用面弹簧；钢筋、预应力束、锚栓、粘贴板条可以放在实体里任意位置，不必与网格重合（粘结 / 无粘结杆，预应力束等效荷载）；
+- 多个工况一次分解求解（面荷载、按面积分布的轮压、线荷载、温度、初应变、指定位移），结果线性组合、任意点取值、截面内力（静力法和应力积分两种）；
+- 子模型：细网格的局部（锚固区、开孔）由整体模型的位移驱动；
+- 直接法 CHOLMOD（cholespy）：薄壁二次单元模型 AMG 收敛慢时用它。
 
 ## JavaScript 包
 

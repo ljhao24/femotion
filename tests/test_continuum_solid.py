@@ -117,7 +117,7 @@ def test_block_on_area_springs():
     s.spring(s.facets(normal=(0, 0, -1)), k=(1e5, 1e5, kz), name="bed")
     s.solve()
     assert s.nodal_displacement()[:, 2].mean() == pytest.approx(-q / kz, rel=1e-4)
-    assert s.result().spring_force("bed") == pytest.approx([0, 0, q * 2.0], rel=1e-9, abs=1e-6)
+    assert s.result().spring_force("bed") == pytest.approx([0, 0, q * 2.0], rel=1e-9, abs=1e-9 * q)
 
 
 def test_facets_by_normal_and_position():
@@ -192,7 +192,7 @@ def test_free_thermal_expansion_has_no_stress():
     s.case().thermal(25.0)
     _box_supports(s, 2)
     s.solve()
-    assert np.abs(s.nodal_stress()).max() < 1e-4
+    assert np.abs(s.nodal_stress()).max() < 1e-9 * 3e10 * 1e-5 * 25  # roundoff of E α ΔT
     ux = s.nodal_displacement()[np.isclose(s.result_mesh().points[:, 0], 2), 0]
     assert ux.mean() == pytest.approx(2 * 25e-5, rel=1e-10)
 
@@ -404,3 +404,53 @@ def test_export_vtu(tmp_path):
     import meshio
     m = meshio.read(p)
     assert {"u:t", "S:sum", "S123:sum", "dir1:t"} <= set(m.point_data)
+
+
+# ── prescribed displacements, submodels, solvers ────────────────────────
+def test_prescribed_displacement_per_case():
+    """two cases stretch a bar by different amounts: reactions in proportion, E A δ / L"""
+    s = Elastic(structured.box(2, 1, 1, 4, 2, 2), E=1e9, nu=0.0, order=2)
+    _box_supports(s, 2)
+    s.case("a").displacement(lambda X: np.isclose(X[0], 2), (1e-3, 0, 0), comps=(0,))
+    s.case("b").displacement(lambda X: np.isclose(X[0], 2), (3e-3, 0, 0), comps=(0,))
+    s.solve()
+    for name, d in (("a", 1e-3), ("b", 3e-3)):
+        assert s.result(name).section((1.0, 0, 0), (1, 0, 0))["N"] == pytest.approx(1e9 * d / 2, rel=1e-9)
+
+
+def test_submodel_driven_by_a_coarse_model():
+    """the middle of a cantilever, meshed finer and driven by the coarse model's displacements on its cuts (with its own
+    self-weight), gives the bending stress of beam theory, and the same as the coarse model inside"""
+    from femotion.continuum.submodel import drive
+    L, b, h, g = 6.0, 0.5, 0.5, 25e3
+    coarse = Elastic(structured.box(L, b, h, 12, 2, 2), E=3e10, nu=0.2, order=2, serendipity=True)
+    coarse.fix(lambda x: np.isclose(x[0], 0))
+    coarse.case("g").body_force((0, 0, -g))
+    coarse.solve()
+    part = structured.box(1.0, b, h, 8, 4, 4)
+    part.points[:, 0] += 2.5
+    sub = Elastic(part, E=3e10, nu=0.2, order=2, serendipity=True)
+    drive(sub, coarse.result("g"), lambda X: np.isclose(X[0], 2.5) | np.isclose(X[0], 3.5), "g")
+    sub.case("g").body_force((0, 0, -g))
+    sub.solve()
+    x = 3.0
+    M = g * b * h * (L - x) ** 2 / 2  # hogging
+    top = M * (h / 2) / (b * h**3 / 12)
+    p = [(x, b / 2, h)]
+    assert sub.result("g").sample(p)["stress"][0, 0] == pytest.approx(top, rel=0.01)
+    assert sub.result("g").sample(p)["stress"][0, 0] == pytest.approx(coarse.result("g").sample(p)["stress"][0, 0], rel=0.01)
+
+
+def test_cholesky_matches_direct():
+    pytest.importorskip("cholespy")
+    m = structured.box(3, 1, 1, 6, 2, 2)
+    out = {}
+    for method in ("direct", "cholesky"):
+        s = Elastic(m, E=3e10, nu=0.2, order=2, serendipity=True)
+        s.spring(s.facets(normal=(0, 0, -1)), k=(1e7, 1e7, 1e9))
+        s.case("g").body_force((0, 0, -25e3))
+        s.case("p").traction(lambda x: np.isclose(x[0], 3), (1e5, 0, 0))
+        s.solve(method=method)
+        out[method] = (s.result("g").u, s.result("p").u)
+    for a, b in zip(*out.values()):
+        assert np.abs(a - b).max() < 1e-7 * np.abs(a).max()

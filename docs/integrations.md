@@ -13,6 +13,7 @@ bundled; each is installed from its own distribution under its own licence.
 | gmsh | `femotion.mesh.gmsh` (`mesh`) | triangles, quadrilaterals (frontal or quasi-structured), tetrahedra, extruded and structured hexahedra, STEP / IGES import | GPL-2.0-or-later |
 | fTetWild (pytetwild) | `femotion.mesh.tetwild` (`tetwild`) | tetrahedra from messy surface models: Blender scenes, downloads, scans | MPL-2.0 (pytetwild imports PyVista, so the extra installs it) |
 | scikit-fem, pyamg | `femotion.continuum` (`continuum`) | plane and solid linear elasticity, algebraic multigrid | BSD-3, MIT |
+| cholespy (CHOLMOD) | `femotion.continuum` (`continuum`) | sparse Cholesky for solid models up to about a million dofs: thin-walled quadratic models (box girders) where smoothed-aggregation AMG converges slowly | BSD-3 wrapper, CHOLMOD LGPL-2.1 |
 | OpenSeesPy | `femotion.frame.opensees` (`opensees`) | nonlinear frames: plasticity, buckling, large displacements, time histories, member loss | free for education, research and non-profit use |
 | sectionproperties | `femotion.frame.sections` (`sections`) | properties and fiber sections of cross-sections of any shape | MIT; its mesher Triangle is non-commercial |
 | meshio | `femotion.io` (`io`) | reading and writing ~30 mesh formats, results for ParaView | MIT |

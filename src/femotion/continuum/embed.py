@@ -93,6 +93,31 @@ class Locator:
         best_X = np.clip(best_X, lo, hi)
         return best_c, best_X
 
+    def inside(self, points, tol: float = 1e-6, snap: float = 0.0) -> np.ndarray:
+        """bool per point: inside the mesh (within tol, or snap cells)"""
+        P = np.atleast_2d(np.asarray(points, float))
+        lim = max(tol, snap)
+        _, cand = self.tree.query(P, k=self.k)
+        cand = cand.reshape(len(P), -1)
+        ok = np.zeros(len(P), bool)
+        x = P.T[:, :, None]
+        for j in range(cand.shape[1]):
+            todo = ~ok
+            if not todo.any():
+                break
+            X = inverse_map(self.mapping, x[:, todo], cand[todo, j])[:, :, 0]
+            ok[np.where(todo)[0][_violation(X, self.simplex) <= lim]] = True
+        # points the nearest cells did not contain: exact test only if they are within the mesh's bounding box
+        lo, hi = self.sk.p.min(axis=1), self.sk.p.max(axis=1)
+        rest = np.where(~ok & np.all((P >= lo) & (P <= hi), axis=1))[0]
+        for i in rest:
+            try:
+                self.locate(P[i][None], tol=tol, snap=snap)
+                ok[i] = True
+            except ValueError:
+                pass
+        return ok
+
     def _phi(self, cells, X, grad: bool = False):
         """scalar shape functions (Nbfun, n) or their gradients (Nbfun, dim, n) at the points"""
         sb = self.s.sb

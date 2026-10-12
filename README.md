@@ -25,7 +25,7 @@ femotion is made for engineering animation in which every deflection, stress col
 
 ```bash
 pip install femotion                 # numpy + scipy only: frames (linear), topology optimisation, result files
-pip install "femotion[continuum]"    # + scikit-fem, pyamg: plane and solid elasticity
+pip install "femotion[continuum]"    # + scikit-fem, pyamg, cholespy: plane and solid elasticity
 pip install "femotion[mesh]"         # + gmsh: unstructured, quadrilateral, extruded and structured hexahedral meshes
 pip install "femotion[tetwild]"      # + fTetWild: tetrahedra from messy surface models (Blender, downloads, scans)
 pip install "femotion[opensees]"     # + OpenSeesPy: nonlinear frames
@@ -122,9 +122,9 @@ Node ≥ 22.18 use them directly. `cd js && npm install && npm test` runs the co
 
 | Module | What it does | Back-ends |
 |---|---|---|
-| `femotion.mesh` | unified `Mesh` (line2, tri3, tri6, quad4, tet4, hex8), structured and block-structured grids; gmsh (triangles, quadrilaterals, tetrahedra, extruded and structured hexahedra, STEP import); fTetWild for messy surface models | gmsh, fTetWild |
+| `femotion.mesh` | unified `Mesh` (line2, tri3, tri6, quad4, tet4, hex8), structured and block-structured grids; layered cross-sections swept into hexahedra (`mesh.section`: box girders, voided slabs, end thickenings); gmsh (triangles, quadrilaterals, tetrahedra, extruded and structured hexahedra, STEP import); fTetWild for messy surface models | gmsh, fTetWild |
 | `femotion.frame` | beams, bars, cables, springs: model format, fast linear solver, OpenSees back-end, cross-check, post-processing; sections and fiber sections of any shape (`frame.sections`) | own (linear), OpenSees, sectionproperties |
-| `femotion.continuum` | plane stress / strain and 3D linear elasticity, linear or quadratic elements, direct or AMG | scikit-fem, pyamg |
+| `femotion.continuum` | plane stress / strain and 3D linear elasticity, linear or quadratic elements (20-node hexahedra); isotropic and orthotropic materials per cell group; elastic supports; bonded and unbonded bars and prestressing tendons embedded anywhere in the solid; load cases (tractions, area and line loads, temperature, initial strain, prescribed displacements) solved with one factorisation; results combined linearly, sampled at points, integrated over cuts; submodels driven by a coarser model ([docs/continuum.md](docs/continuum.md)) | scikit-fem, pyamg, CHOLMOD (cholespy) |
 | `femotion.topopt` | 2D SIMP topology optimisation recording every iteration | own (88-line algorithm) |
 | `femotion.cfd` | 2D lattice Boltzmann flow with smoke lines, Apple GPU | own (MLX Metal kernels) |
 | `femotion.dynamics` | modal superposition: step release, ground motion, moving loads | — |
