@@ -202,8 +202,10 @@ def tepfers(c: float, d: float, ft: float) -> dict:
 def alonso_1998(c: float, d: float) -> float:
     """corrosion depth (radius loss, mm) at the first visible crack of the cover c over a bar of diameter d, from
     accelerated tests (impressed current 10–100 μA/cm², c/d ≈ 1.25–4.4): x0 = 7.53 + 9.32 c/d μm (Alonso, Andrade,
-    Rodriguez & Diez 1998, Materials and Structures 31:435–441; the first visible cracks of 0.05–0.1 mm came at 15–50 μm
-    in the same group's tests)"""
+    Rodriguez & Diez 1998, Materials and Structures 31:435–441). The same group's earlier tests (Alonso, Andrade,
+    Rodríguez, Casal & García 1994, Hormigón y Acero 45(194):29–42, abstract): the first visible crack (0.05–0.1 mm) at
+    15–50 μm of radius loss, then w = a + b x with slopes b = 0.003–0.018 depending on the corrosion rate (units not
+    stated; mm per μm fits the first-crack data)"""
     return (7.53 + 9.32 * c / d) * 1e-3
 
 
@@ -212,9 +214,9 @@ def liu_weyers_1998(c: float, d: float, ft: float, Ec: float, nu: float = 0.18, 
     """critical rust of Liu & Weyers (1998, ACI Materials Journal 95(6):675–681; Liu 1996, PhD thesis, Virginia Tech,
     5.6): the rust first fills a porous zone d0 around the bar (12.5 μm), then presses on a thick-walled elastic
     cylinder (inner radius a = d/2 + d0, outer b = a + c, modulus Ec / (1 + creep)) until the pressure reaches the
-    plastic ring's 2 c ft / (d + 2 d0). Defaults as in the original: creep coefficient 2.0 (the rust builds up over
-    years), ν = 0.18, d0 = 12.5 μm (some secondary sources print it as 4.9 mils = 124 μm, a slip for 0.49 mils); pass
-    creep=0 to compare with a short-term analysis. Lengths in mm. Returns the radial expansion ds beyond the porous zone,
+    plastic ring's 2 c ft / (d + 2 d0). Defaults as in the original (Liu 1996, 5.6.4): creep coefficient 2.0 (the rust
+    builds up over years), ν = 0.18, d0 = 12.5 μm (printed there as "4.9 mils (12.5 µm)", a slip for 0.49 mils, and
+    copied so elsewhere); pass creep=0 to compare with a short-term analysis. Lengths in mm. Returns the radial expansion ds beyond the porous zone,
     the steel mass loss and the corrosion depth; alpha: mass of the steel per mass of its rust (0.523 Fe(OH)3, 0.622
     Fe(OH)2), rust_density: of the rust relative to steel"""
     a = d / 2 + d0
@@ -231,7 +233,8 @@ def el_maaddawy_soudki_2007(c: float, d: float, fct: float, Ec: float, nu: float
     thick-walled cylinder (wall = the cover c, modulus Ec / (1 + creep), creep coefficient 2.35 in the paper) around a
     porous zone delta0 (10–20 μm), rust of half the steel's density (volume ratio ≈ 3.2), cracking at the plastic
     pressure 2 c fct / d. Defaults as in the original (creep 2.35 after CSA A23.3-94, ν = 0.18, δ0 = 10 μm, the lower of
-    its 10–20 μm); pass creep=0 to compare with a short-term analysis. Lengths in mm. Returns the mass loss (fraction),
+    its 10–20 μm; the paper itself sets fct = 0.94 √f'c and Ec = 4500 √f'c — these values also as cited by Liang & Wang
+    2020, J. Adv. Concr. Technol. 18:699–715); pass creep=0 to compare with a short-term analysis. Lengths in mm. Returns the mass loss (fraction),
     depth and pressure"""
     E = Ec / (1 + creep)
     Dp = d + 2 * delta0

@@ -346,14 +346,18 @@ parts of the neighbouring half segments inside the solid), across it stiff. Laws
 | Law | OpenSees | Use |
 |---|---|---|
 | `BondSlip(s, tau)`: up to 7 points of the envelope, the same both ways | `HystereticSM` (Mazzoni 2023) | any measured or code law |
-| `BondSlip.mc2010(fcm, failure="pull-out" / "splitting", good=, confined=, clear_rib=)` | `HystereticSM` | fib Model Code 2010, 6.1.1, table 6.1-1, ribbed bars before yielding: τ = τmax (s/s1)^0.4 up to s1 (five points), τmax to s2, linear to τbf at s3. **Pull-out** (the bar pulls out of well-confined concrete: cover ≥ 5 φ and clear spacing ≥ 10 φ, or heavy confinement): τmax = 2.5 √fcm (good bond) / 1.25 √fcm, s1 = 1.0 / 1.8 mm, s2 = 2.0 / 3.6 mm, s3 = clear rib spacing, τbf = 0.4 τmax. **Splitting** (the cover splits first: smaller covers and spacings — most slabs): τmax = 7.0 / 8.0 (fcm/20)^0.25 for good bond without / with stirrups, 5.0 / 5.5 otherwise, s1 = s2 = the pull-out slip at that τmax, s3 = 1.2 s1 and τbf = 0 without stirrups, s3 = 0.5 × clear rib spacing and τbf = 0.4 τmax with. `clear_rib` (the clear distance between the bar's ribs) must be given where s3 needs it |
+| `BondSlip.mc2010(fcm, failure="pull-out" / "splitting", good=, confined=, clear_rib=)` | `HystereticSM` | fib Model Code 2010, 6.1.1, table 6.1-1, ribbed bars before yielding: τ = τmax (s/s1)^0.4 up to s1 (five points), τmax to s2, linear to τbf at s3. **Pull-out** (the bar pulls out of well-confined concrete: cover ≥ 5 φ and clear spacing ≥ 10 φ, or closely spaced transverse reinforcement — CEB-FIP MC90 3.1.1): τmax = 2.5 √fcm (good bond) / 1.25 √fcm, s1 = 1.0 / 1.8 mm, s2 = 2.0 / 3.6 mm, s3 = clear rib spacing, τbf = 0.4 τmax. **Splitting** (the cover splits first: smaller covers and spacings — most slabs): τmax = 7.0 / 8.0 (fcm/20)^0.25 for good bond without / with stirrups, 5.0 / 5.5 otherwise, s1 = s2 = the pull-out slip at that τmax, s3 = 1.2 s1 and τbf = 0 without stirrups, s3 = 0.5 × clear rib spacing and τbf = 0.4 τmax with. `clear_rib` (the clear distance between the bar's ribs) must be given where s3 needs it |
 | `BondSlip.mc2010_plain(fcm, kind="hot-rolled" / "cold-drawn", good=)` | `HystereticSM` | MC2010 table 6.1-2, smooth (plain) bars — the plain round bars of older bridges; see below |
 | `BondSlip.rigid_plastic(tau, s_el)` | `ElasticPP` | constant bond stress once the slip exceeds s_el: the tension chord model (Marti et al. 1998: τb0 = 2 fct) |
 
-Smooth bars (`mc2010_plain`, MC2010 table 6.1-2): τ = τmax (s/s1)^0.5 up to s1 = s2 = s3, then a constant τbf = τmax;
-hot-rolled bars τmax = 0.3 √fcm with good bond conditions and 0.15 √fcm otherwise, s1 = 0.1 mm; cold-drawn wire 0.1 √fcm
-and 0.05 √fcm, s1 = 0.01 mm. A plain bar holds by friction once it has slipped a tenth of a millimetre: an order of
-magnitude below a ribbed bar, and without splitting.
+Smooth bars (`mc2010_plain`, MC2010 table 6.1-2 as reproduced by Cairns 2021): τ = τmax (s/s1)^0.5 up to s1 = s2 = s3,
+then a constant τbf = τmax; hot-rolled bars τmax = 0.3 √fcm with good bond conditions and 0.15 √fcm otherwise, s1 =
+0.1 mm; cold-drawn wire 0.1 √fcm and 0.05 √fcm, s1 = 0.01 mm (MC90 table 3.1.2: the same with √fck, for confined and
+unconfined concrete, where the concrete is not in lateral tension). A plain bar holds by friction once it has slipped a
+tenth of a millimetre: an order of magnitude below a ribbed bar. Good bond conditions: bars at 45–90° to the horizontal
+during concreting, or flatter bars at most 250 mm above the bottom or at least 300 mm below the top of the pour. The
+laws are mean values (scatter about 30 %, MC90). The splitting coefficients 7.0 / 8.0 / 5.0 / 5.5 were checked against
+the table by the independent review; `clear_rib` has no code value (neither MC90 nor MC2010 relate it to φ).
 
 `bar_results(k)["bond"]` gives slip and bond stress at the bar's nodes. With slip, cracks space themselves by the
 transfer length — the restrained tie below lands in the range of the tension chord model — instead of by the mesh.
@@ -440,6 +444,8 @@ crack stays at 0.04 mm (`roller`) or reaches 0.30 mm (`spring`), the cover delam
 strip shows the soffit crack stopping at 0.33 mm and the cracks turning up to the top face (0.77 mm) — a folding of the
 free strip about the yielding transverse bars, which a slab does not have.
 
+Where the soffit crack keeps growing (`spring` up to 0.5 mm, `open`) it grows by 0.005–0.007 mm per μm of corrosion
+depth, within the slopes 0.003–0.018 of Alonso et al. (1994; units not stated in their abstract, mm per μm fits it).
 For the first hairline crack on the soffit (0.05 mm) the FE needs x = 7–21 μm (14–27 μm with a porous zone); the
 references give 7.1 μm (Liu & Weyers with their creep coefficient 2.0; 5.3 without creep), 8.4–13.0 μm (El Maaddawy &
 Soudki, creep 2.35, porous zone 10–20 μm; 5.7 without creep), 27 μm (Alonso et al., accelerated tests, first visible
@@ -628,12 +634,18 @@ its own distribution (extra `opensees`), not bundled.
 - Tepfers, R. (1979). Cracking of concrete cover along anchored deformed reinforcing bars. Magazine of Concrete Research
   31(106), 3–12.
 - Alonso, C., Andrade, C., Rodriguez, J., Diez, J. M. (1998). Factors controlling cracking of concrete affected by
-  reinforcement corrosion. Materials and Structures 31, 435–441 (and Alonso et al. 1994, Hormigón y Acero 45(194): first
-  visible cracks of 0.05–0.1 mm at 15–50 μm, growth 0.003–0.018 mm/μm).
+  reinforcement corrosion. Materials and Structures 31, 435–441.
+- Alonso, C., Andrade, C., Rodríguez, J., Casal, J., García, A. M. (1994). Evaluación experimental de la fisuración del
+  hormigón producida por la corrosión de las armaduras. Hormigón y Acero 45(194), 29–42 (abstract: first visible cracks
+  of 0.05–0.1 mm at 15–50 μm of radius loss; w = a + b x with slopes 0.003–0.018 by corrosion rate, units not stated).
+- Cairns, J. (2021). Local bond–slip model for plain surface reinforcement. Structural Concrete 22(2), 666–675 (table 1:
+  the parameters of MC2010 table 6.1-2). CEB-FIP Model Code 1990, 3.1.1 (tables 3.1.1 and 3.1.2).
 - Liu, Y., Weyers, R. E. (1998). Modeling the time-to-corrosion cracking in chloride contaminated reinforced concrete
-  structures. ACI Materials Journal 95(6), 675–681; Liu, Y. (1996), PhD thesis, Virginia Tech, 5.6.
+  structures. ACI Materials Journal 95(6), 675–681; Liu, Y. (1996), PhD thesis, Virginia Tech, 5.6 (creep coefficient
+  2.0, ν 0.18, d0 12.5 μm in 5.6.4).
 - El Maaddawy, T., Soudki, K. (2007). A model for prediction of time from corrosion initiation to corrosion cracking.
-  Cement & Concrete Composites 29, 168–175.
+  Cement & Concrete Composites 29, 168–175 (creep 2.35 after CSA, porous zone 10–20 μm; as also cited by Liang, Y.,
+  Wang, L. (2020), J. Advanced Concrete Technology 18(11), 699–715).
 - Caré, S., Nguyen, Q. T., L'Hostis, V., Berthaud, Y. (2008). Mechanical properties of the rust layer induced by
   impressed current method in reinforced mortar. Cement and Concrete Research 38, 1079–1091 (volume ratios of rusts).
 - Noubactep, C., Caré, S., Crane, R. (2012). Nanoscale metallic iron for environmental remediation. Water, Air, & Soil

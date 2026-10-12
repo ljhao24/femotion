@@ -372,15 +372,17 @@ class BondSlip:
                confined: bool = False, clear_rib: float | None = None, n: int = 5) -> "BondSlip":
         """fib Model Code 2010, 6.1.1, table 6.1-1, ribbed bars before yielding: τ = τmax (s/s1)^0.4 up to s1 (sampled at
         n points), τmax to s2, linear to τbf at s3.
-        failure="pull-out": the bar pulls out of well-confined concrete — MC2010 ties it to a cover of at least 5 φ and a
-        clear spacing of at least 10 φ, or to heavy confinement; τmax = 2.5 √fcm (good bond) or 1.25 √fcm, s1 = 1.0 /
+        failure="pull-out": the bar pulls out of well-confined concrete — a cover of at least 5 φ and a clear spacing of
+        at least 10 φ, or closely spaced transverse reinforcement (CEB-FIP MC90 3.1.1; MC2010 the same in substance); τmax = 2.5 √fcm (good bond) or 1.25 √fcm, s1 = 1.0 /
         1.8 mm, s2 = 2.0 / 3.6 mm, s3 = clear rib spacing, τbf = 0.4 τmax.
         failure="splitting": the cover splits first — every bar with a smaller cover or spacing (most slabs and the
         cover zone of beams): τmax = 7.0 (fcm/20)^0.25 (good bond, no stirrups), 8.0 (good, with stirrups:
         confined=True), 5.0 / 5.5 (other bond conditions); s1 = the pull-out slip at that τmax, s2 = s1; without
         stirrups s3 = 1.2 s1 and τbf = 0, with stirrups s3 = 0.5 × clear rib spacing and τbf = 0.4 τmax.
-        good=True: good bond conditions (bars in the lower part of the pour, MC2010 6.1.3.2); clear_rib: the clear distance
-        between the bar's ribs (needed for pull-out and for splitting with stirrups; from the bar's rib geometry)"""
+        good=True: good bond conditions (bars at 45–90° to the horizontal during concreting, or flatter bars at most 250 mm
+        above the bottom or at least 300 mm below the top of the pour); clear_rib: the clear distance between the bar's
+        ribs (needed for pull-out and for splitting with stirrups; neither code gives a value: from the bar's rib
+        geometry). Mean values, scatter about 30 % (MC90 3.1.1)"""
         if units not in UNITS:
             raise ValueError(f"units: one of {', '.join(UNITS)}")
         ks, kl = UNITS[units][0], UNITS[units][1] / UNITS[units][0]  # MPa per unit stress; mm per unit length
@@ -415,7 +417,10 @@ class BondSlip:
                      n: int = 5) -> "BondSlip":
         """fib Model Code 2010, 6.1.1, table 6.1-2, smooth (plain) bars — the plain round bars of older structures:
         τ = τmax (s/s1)^0.5 up to s1 = s2 = s3, then constant τbf = τmax. kind="hot-rolled": τmax = 0.3 √fcm (good bond
-        conditions) or 0.15 √fcm (all others), s1 = 0.1 mm; "cold-drawn" (wire): 0.1 √fcm or 0.05 √fcm, s1 = 0.01 mm"""
+        conditions) or 0.15 √fcm (all others), s1 = 0.1 mm; "cold-drawn" (wire): 0.1 √fcm or 0.05 √fcm, s1 = 0.01 mm.
+        Values as reproduced from the table by Cairns (2021, Structural Concrete 22:666–675, table 1; the MC2010 text was
+        not at hand); CEB-FIP MC90 table 3.1.2 has the same numbers with √fck, for confined and unconfined concrete, and
+        only where the concrete is not in lateral tension"""
         if units not in UNITS:
             raise ValueError(f"units: one of {', '.join(UNITS)}")
         ks, kl = UNITS[units][0], UNITS[units][1] / UNITS[units][0]
