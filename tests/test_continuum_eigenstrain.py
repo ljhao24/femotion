@@ -364,7 +364,7 @@ def test_corrosion_conversions():
     assert free_expansion(x, d, n=3.0) == pytest.approx(2 * x, rel=0.01)  # (n − 1) x for x ≪ d
     assert depth_for_expansion(free_expansion(x, d, 3.5, 0.0125), d, 3.5, 0.0125) == pytest.approx(x, rel=1e-12)
     assert free_expansion(0.005, d, 3.0, porous=0.0125) == 0.0
-    # the references: published numbers and their internal consistency
+    # the references: transcription of the published formulas (not an independent check) and their consistency
     assert alonso_1998(25, 12) == pytest.approx((7.53 + 9.32 * 25 / 12) * 1e-3)
     assert gbt51355_2019(25, 12, 30, corner=True) == pytest.approx(0.012 * 25 / 12 + 0.00084 * 30 + 0.018)
     assert gbt51355_2019(25, 12, 30) == pytest.approx(0.015 * (25 / 12) ** 1.55 + 0.0014 * 30 + 0.016)
