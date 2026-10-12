@@ -126,7 +126,7 @@ def bar_section(width: float, height: float, bars, *, h: float, ring: float = 0.
 
     def intervals(cs):
         iv = sorted({(round(float(v - a) / tol), round(float(v + a) / tol)) for v in cs})
-        for (l0, h0), (l1, h1) in zip(iv[:-1], iv[1:]):
+        for (_, h0), (l1, _) in zip(iv[:-1], iv[1:]):
             if l1 < h0:
                 raise ValueError("tiles of bars overlap partly (staggered bars): align them or give a smaller tile")
         return [(l * tol, u * tol) for l, u in iv]
@@ -164,12 +164,12 @@ def bar_section(width: float, height: float, bars, *, h: float, ring: float = 0.
                     pts.append(P)
                     quads.append(Q + off)
                     region.append(R)
-                    owner.append(np.where(R < 2, i, i))
+                    owner.append(np.full(len(R), i))
                     off += len(P)
                     continue
             Y, Z = np.meshgrid(ys, zs, indexing="ij")
             ny, nz = len(ys) - 1, len(zs) - 1
-            nid = lambda i, j: i * (nz + 1) + j  # noqa: E731
+            nid = lambda i, j, nz=nz: i * (nz + 1) + j  # noqa: E731
             I, J = np.meshgrid(np.arange(ny), np.arange(nz), indexing="ij")
             I, J = I.ravel(), J.ravel()
             pts.append(np.c_[Y.ravel(), Z.ravel()])

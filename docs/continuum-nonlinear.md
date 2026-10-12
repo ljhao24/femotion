@@ -8,7 +8,8 @@ ultimate load), by load or by displacement control.
 
 It is meant for local, three-dimensional questions that a frame model and a code formula cannot answer: splitting and
 spalling around anchorages and anchor bolts, cracking in diaphragms, deviators, corbels and openings, crack patterns of
-deep members, and the crack widths that go with them.
+deep members, cracks from restrained shrinkage and temperature, the cover split by rusting bars, and the crack widths
+that go with them.
 
 ```python
 import numpy as np
@@ -52,6 +53,8 @@ Any consistent set: N, mm, MPa (fracture energies in N/mm), or kN, m, kPa (kN/m 
 | `bar(..., bond=False)` | one `Truss` per span; deviators: `zeroLength` across the tendon | the end points are anchored; at the points in between the tendon slides without friction (one force along the whole tendon); `slide=False` anchors it there too |
 | `bar(..., prestress=σ0)` | `InitStressMaterial` around the bar's material | tension positive, in full from the first step and balanced by the solid (elastic shortening, and the indentation under point anchors, included): a pretensioned bonded tendon or an unbonded one; a post-tensioned tendon grouted afterwards is not modelled |
 | `dowel(...)` | `elasticBeamColumn` (or `forceBeamColumn` on a `femotion.frame.opensees.Fiber` section) on 6-dof nodes, tied to the solid | anchor bolts and studs: shear and bending reach the concrete along the embedded length; their twist is held by a torsional spring at the first embedded node; `rot=True` also ties the rotation |
+| `bar(..., bond=BondSlip(...))` | `Truss` on its own nodes + a `zeroLength` per node to an anchor point tied to the solid | bond–slip law along the bar (`HystereticSM`, or `ElasticPP` for a rigid-plastic law), stiff across it; see "Bond-slip" |
+| every solid and bar material | wrapped in `nDMaterial InitStrain` / `uniaxialMaterial InitStrainMaterial` | free strains (shrinkage, temperature, rust): σ = f(ε − ε0), see "Free strains" |
 | `fix`, `tie`, `spring`, `face_spring` | `fix`, `equalDOF`, `zeroLength` to fixed ground nodes | Winkler springs per unit area are lumped by tributary area |
 | `static(imposed=…)` | `zeroLength` drivers + `sp` on their ground node | see "Imposed displacements" |
 
@@ -218,8 +221,9 @@ non-cubic cells with `band="volume"`), the line integral the kinematic length.
 
 - **Smeared, not discrete**: a crack is a band of one or two cells. Two real cracks closer than about 2 h merge into one
   band, and the width is the mean opening over the band, not the width at the surface of one crack.
-- **Perfect bond**: bars are tied to the concrete without slip, so there is no transfer length and no tension-stiffening
-  law: crack spacing follows from the mesh and the stress field, and the bar diameter does not enter. Crack widths are
+- **Perfect bond** (the default `bond=True`): bars are tied to the concrete without slip, so there is no transfer length
+  and no tension-stiffening law: crack spacing follows from the mesh and the stress field, and the bar diameter does not
+  enter. With a bond-slip law (`bond=BondSlip(...)`, below) the spacing follows from the transfer length instead. Crack widths are
   therefore of the size of code formulas, not predictions to 0.01 mm. In the beam below, compared on the same
   (short-term) basis as the analysis, the largest FE crack is 0.90–1.09 × the short-term maximum width of JTG 3362-2018
   6.4.3 and 0.73–0.88 × the short-term wk of Eurocode 2 once cracking has stabilised; the independent review found the
@@ -228,7 +232,8 @@ non-cubic cells with `band="volume"`), the line integral the kinematic length.
   read them as an illustration.
 - **Mesh**: crack paths follow the mesh; inclined cracks in a structured mesh zig-zag. Refine where cracks are expected
   and keep cells below h_max.
-- **Time-dependent effects** (creep, shrinkage, fatigue) are not modelled; long-term widths need the code's long-term
+- **Time-dependent effects**: shrinkage and temperature enter as free strains of a stage (below), with the value the
+  user gives; creep and fatigue are not modelled, so long-term widths under sustained load need the code's long-term
   factors.
 
 ## Anchors, strips and local models
@@ -269,6 +274,146 @@ A callable u(points) → (n, 3) works too, and so does a hex8 / tet4 mesh with n
 local, where)` is the same as a function; `interpolate(mesh, U, points)` interpolates a nodal field at any points.
 Boundary forces instead of displacements are ordinary nodal loads (`nodal_force`, `point_force`).
 
+## Free strains: shrinkage, temperature, rust
+
+A free strain ε0 (eigenstrain) is a strain the material would take without stress: shrinkage, a temperature change,
+swelling, the growth of rust. Restrained, it stresses the member and cracks it; free, it only moves it.
+
+```python
+sh = s.shrinkage(3e-4, "slab")                        # ε_sh > 0 shortens; cells by group name(s), predicate, mask, ids
+th = s.thermal(lambda x: 15.0 * x[2] / 0.25)          # ΔT(x): every cell by its material's α, every bar by its own
+e0 = s.initial_strain([2e-4, 0, 0, 0, 0, 0], "web")   # a number (isotropic), 6 Voigt components, a 3 × 3 tensor, or eps0(x)
+s.static(strain=sh, steps=40, name="shrinkage")       # ramped with the load factor λ of the stage, held afterwards
+s.static(F, steps=40, strain=th + 0.5 * e0)           # with loads in the same stage; Eigenstrain objects add and scale
+s.static(strain=-th, steps=20)                        # taken back
+```
+
+Functions of the position take the coordinates of the integration points, x of shape (3, m, 8), and return a value per
+point ((m, 8)), 6 Voigt components ((6, m, 8), engineering shear, order xx yy zz xy yz zx) or a tensor ((3, 3, m, 8)) —
+the convention of `femotion.continuum` `LoadCase.initial_strain`, so the same function drives both. `at="centroid"`
+evaluates once per cell (always with `bbarBrick`, whose averaged volumetric strain needs a free strain constant over the
+cell). Coefficients of thermal expansion: `ElasticIso(alpha=)`, `ElasticOrtho(alpha=(αx, αy, αz))`,
+`ConcreteDamage.alpha` (1e-5 per degree by default, JTG D60-2015 4.3.12 and EN 1992-1-1 3.1.3), `bar(..., alpha=)`
+(0 by default: give 1.2e-5 for steel; `thermal` warns when bars with α = 0 sit in heated concrete). `bar_strain(bars,
+eps0)` gives a free strain along bars alone.
+
+**How.** Every material of the model is wrapped in OpenSees' `InitStrain` material (`nDMaterial InitStrain` for the
+solids — class InitStrainNDMaterial, OpenSees ≥ 3.7; the interpreter knows it as "InitStrain", not
+"InitStrainNDMaterial" — and `uniaxialMaterial InitStrainMaterial` for the bars), which passes ε + ε_init to the wrapped
+material. With ε_init = −ε0 the material sees ε − ε0: cracked, crushed or yielding, it answers a free strain exactly as
+it answers a load, and there is no approximation to quantify. The value is an OpenSees parameter (`eps0`, `eps0_11` …
+of each material point): before every attempt of a step it is set to start + λ·increment for the λ that step aims at, so
+a halved step sets the halved value and a failed attempt leaves nothing behind (the stage ends by setting the committed
+λ again). Material points that share a (start, increment) pair share one parameter: a uniform shrinkage of a group costs
+one update per step, a field that varies from point to point one per point (about 0.2 μs each; creating them costs
+about 1.5 μs per point and stage). Hold stages and `push` stages keep the free strain as it is; a stage stopped early by
+`stop` keeps the share it reached.
+
+**Why not equivalent loads.** ∫Bᵀ D ε0 as nodal loads (what `femotion.continuum.Elastic` does, exact for linear
+materials) leaves the material seeing f(ε) and corrects the stress afterwards, by −D ε0. A member held at both ends
+that shrinks then gets no strain, no material stress and no crack at all — the restraint stress exists only in
+post-processing. Restraint cracking needs σ = f(ε − ε0) inside the material, which the wrapper gives.
+
+**Results.** `cell["strain"]` is the strain the material sees, ε − ε0 (so that the inelastic strain and the crack strain
+keep their meaning); `cell["eps0"]` is ε0, and the strain of the displacements is their sum. Bars: `strain` is the
+elongation strain, `eps0` the free strain. `to_result()` adds a cell field `eps0` when there is one.
+
+Bars: OpenSees' uniaxial `InitStrainMaterial` commits its wrapped material at the shifted strain whenever the parameter
+changes. That is exact for elastic bars and bars in their elastic range; a bar that yields within a thermal stage keeps
+a trace of a failed and retried step in its history.
+
+### Bond-slip
+
+`bar(points, area, material, bond=BondSlip(...))` gives the bar its own nodes (every `seg`, as a bonded bar), each joined
+to an anchor point of the solid at the same place by a `zeroLength` spring: along the bar the bond law times the
+perimeter (default that of a round bar of the given area, or `perimeter=`) times the node's bonded length (only the
+parts of the neighbouring half segments inside the solid), across it stiff. Laws:
+
+| Law | OpenSees | Use |
+|---|---|---|
+| `BondSlip(s, tau)`: up to 7 points of the envelope, the same both ways | `HystereticSM` (Mazzoni 2023) | any measured or code law |
+| `BondSlip.mc2010(fcm, failure="pull-out" / "splitting", good=, confined=, clear_rib=)` | `HystereticSM` | fib Model Code 2010, 6.1.1, table 6.1-1, ribbed bars before yielding: τ = τmax (s/s1)^0.4 up to s1, τmax to s2, linear to τbf at s3 (pull-out, good bond: τmax = 2.5 √fcm, s1 = 1, s2 = 2 mm, s3 = clear rib spacing, τbf = 0.4 τmax) |
+| `BondSlip.rigid_plastic(tau, s_el)` | `ElasticPP` | constant bond stress once the slip exceeds s_el: the tension chord model (Marti et al. 1998: τb0 = 2 fct) |
+
+`bar_results(k)["bond"]` gives slip and bond stress at the bar's nodes. With slip, cracks space themselves by the
+transfer length — the restrained tie below lands in the range of the tension chord model — instead of by the mesh.
+
+### Rust expanding around a bar
+
+Corroding steel turns into rust of 2 to 6 times its volume (Fe3O4 2.08, α-FeOOH 2.91, Fe(OH)2 3.75, Fe(OH)3 4.2,
+Fe(OH)3·3H2O 6.4; Caré et al. 2008), which pushes the concrete outwards until the cover splits along the bar. Modelled
+here with the bar resolved by the mesh and a thin rust ring at its surface:
+
+```python
+from femotion.mesh.inclusions import bar_block, hoop_normals
+from femotion.continuum.corrosion import rust_strain, depth_for_expansion
+m = bar_block(np.linspace(0, 100, 5), 300, 80, [(150, 39, 12)], h=6, ring=0.5)   # groups concrete, steel, rust, rust0 …
+s = OpsSolid(m, {"concrete": c, "steel": ElasticIso(2e5, 0.3), "rust": ElasticIso(2e5, 0.3)},
+             band=("projected", hoop_normals(m, [(150, 39, 12)])))           # radial cracks: hoop direction
+s.static(strain=s.initial_strain(rust_strain((0, 150, 39), (1, 0, 0), 5.5, 0.5, 0.02), "rust0"), steps=100)
+x = depth_for_expansion(0.02, 12, n=3.0)                                       # corrosion depth for δ = 0.02 mm
+```
+
+- **Mesh** (`femotion.mesh.inclusions`): `bar_block(xs, width, height, bars, h=, ring=)` sweeps a rectangular section
+  with round bars along x; each bar sits in a square tile meshed as an O-grid (core square, rings following the circle,
+  layers growing outwards to the tile), the tiles fit into a tensor grid of plain blocks. Tiles are as large as fits
+  (to the nearest edge, or half way to the next bar), so the cover is meshed radially; `m` cells per tile side (4m
+  around the bar). Bars in one row share its height and bars in one column its position; staggered tiles raise.
+  `cylinder(xs, d, R, ring=)` is the thick-walled cylinder of the classical models; `hoop_normals` the hoop direction per
+  cell, the crack direction of radial cracks for `band=("projected", n)`.
+- **Free strain** (`femotion.continuum.corrosion.rust_strain`): the strain of the displacement u = δ (ρ − r_in)/t in the
+  ring (radial δ/t, hoop δ (ρ − r_in)/(t ρ)). Being compatible it leaves an unrestrained ring without stress, and its
+  outer surface moves out by δ, the free expansion of the rust. The ring's material is the rust's stiffness under the
+  pressure of the concrete: as stiff as steel, the rust is incompressible (the upper bound of its push, the usual
+  assumption of analytical models); softer, it gives way. A free strain is driven like a displacement through the
+  ring's stiffness, so the stage follows the drop of pressure once the cover cracks — a pressure on the hole would
+  snap through there.
+- **Conversions**: `free_expansion(x, d, n, porous)` — the free expansion of a bar of diameter d corroded uniformly to
+  the depth x when its rust takes n times the steel's volume, exact for the ring, (n − 1) x for x ≪ d, less a porous
+  zone the rust fills first (Liu & Weyers: 12.5 μm); `depth_for_expansion` inverts it; `mass_loss`,
+  `depth_from_mass_loss`; `cylindrical_strain` for other fields in cylindrical components (functions of the radius;
+  rust on one side of the bar only is a function of position given to `initial_strain` directly).
+- **References** for checks: `lame_cylinder` (elastic cylinder: compliance, first crack), `tepfers` (Tepfers 1979: the
+  splitting pressure of an uncracked elastic, a partly cracked elastic and a plastic ring), and the critical corrosion of
+  `liu_weyers_1998`, `el_maaddawy_soudki_2007` (thick-walled cylinders with a porous zone, cracking at the plastic
+  pressure 2 c ft / d), `alonso_1998` (accelerated tests: x0 = 7.53 + 9.32 c/d μm for the first visible crack) and
+  `gbt51355_2019` (GB/T 51355-2019, C.0.4: 0.012 c/d + 0.00084 fcu + 0.018 mm at corner bars of beams and columns,
+  0.015 (c/d)^1.55 + 0.0014 fcu + 0.016 mm at bars of walls and slabs, natural corrosion).
+
+What the model gives is the mechanics after the rust is there: how much free expansion splits the cover and how the
+crack opens with more. What it does not give: how much rust stays in pores and cracks instead of pressing (a porous
+zone of fixed thickness only), how fast it forms, and non-uniform corrosion unless it is given as a field. The
+empirical depths come from tests that include all of that, which is why the FE, with incompressible rust and no porous
+zone, needs less corrosion to crack the cover than they do (example below).
+
+Example: `examples/continuum_corrosion_slab.py` — a 10 mm plane-strain slice of an 80 mm slab, 300 mm wide, a Ø12 bar
+with 25 mm cover under transverse bars Ø8 @ 100 (smeared over their spacing, MC2010 bond-slip), fcm 33 MPa, the sides
+free to widen:
+
+| Soffit crack | Free expansion δ | Corrosion depth x, n = 3 (mass loss) | with a 12.5 μm porous zone |
+|---|---|---|---|
+| first crack at the bar | 1.5 μm | 0.8 μm | — |
+| 0.05 mm | 14 μm | 7 μm (0.24 %) | 13.5 μm (0.45 %) |
+| 0.2 mm | 52 μm | 26 μm (0.87 %) | 33 μm (1.09 %) |
+| 0.5 mm | 134 μm | 68 μm (2.3 %) | 75 μm (2.5 %) |
+| 1.0 mm | 290 μm | 151 μm (5.0 %) | 157 μm (5.2 %) |
+
+The width grows by 0.0065 mm per μm of corrosion depth once the cover has split, inside the 0.003–0.018 mm/μm of
+Alonso et al.'s accelerated tests. For the hairline crack the references give 5–6 μm (thick-walled cylinders of Liu &
+Weyers and El Maaddawy & Soudki, no creep: the plastic pressure on an elastic cylinder), 27 μm (Alonso et al., first
+visible crack) and 105 μm (GB/T 51355-2019, natural corrosion): the FE, with incompressible rust that all stays at the
+bar, sits at the lower end, as it should. What decides the crack is the reinforcement and the restraint around it:
+
+- transverse bars under the corroding bar (`--layout inner`) cross the soffit crack and stop it at about 0.27 mm; with
+  more rust the cracks run up to the top face (0.8 mm at δ = 385 μm) and the soffit crack closes to 0.08 mm;
+- with the sides held (`--sides held`: no widening of the slab) the soffit crack stays below 0.1 mm and the cover
+  delaminates along the bar layer — inclined cracks from the bar turning horizontal, up to 0.8 mm at δ = 375 μm;
+- with no transverse bars at all the soffit crack opens by 4.7 δ (1.8 mm at δ = 375 μm).
+
+A millimetre-wide crack along a bar on a soffit therefore needs, in this model, little transverse reinforcement or
+restraint across that crack, and corrosion depths of the order of 0.1 mm (several per cent of the bar's mass) — or a
+second cause (shrinkage, temperature, load) opening the same crack.
+
 ## Results
 
 Every converged step keeps the displacements of all nodes (`Step.U`, solid nodes then bar and dowel nodes) and the
@@ -288,7 +433,7 @@ strains); per bar segment `N`, `stress`, `strain`; per dowel element `N`, `V`, `
 
 ## Validation
 
-All in `tests/test_continuum_opensees.py`; the notched beam, the reinforced tie and the comparisons on a common basis
+Loads, bars and cracks in `tests/test_continuum_opensees.py`; the notched beam, the reinforced tie and the comparisons on a common basis
 were added after an independent review (its own scripts and a discrete cohesive-crack model).
 
 | Check | Reference | Result |
@@ -321,6 +466,27 @@ were added after an independent review (its own scripts and a discrete cohesive-
 | RC beam, crack widths at σs = 260 … 360 MPa (cracked section), on the basis of the analysis (short-term, monotonic) | JTG 3362-2018 6.4.3 Wcr with C2 = 1 (`femotion.codes.jtg.sls.crack_width`, Ml = 0); Eurocode 2 7.3.4 wk with kt = 0.6, hc,ef = min(2.5 (h − d), (h − x)/3, h/2) | FE largest crack 0.90 … 1.09 × Wcr and 0.73 … 0.88 × wk; spacing 106 … 131 mm |
 | reinforced tie 100 × 100 × 1000, Ø16 (independent review, 25 and 12.5 mm cells) | fib MC2010 7.6 (mean and maximum widths), EC2 | surface widths between MC2010's mean and maximum, below EC2's wk; spacing about half of the codes' mean spacing, and dependent on the mesh while cracks form |
 
+Free strains, bond-slip and rust (`tests/test_continuum_eigenstrain.py`):
+
+| Check | Reference | Result |
+|---|---|---|
+| uniform temperature on a statically supported block with a bar of the same α | free expansion: no stress, u = α ΔT x | stresses 1e-7 of E α ΔT (round-off of the bar's penalty ties); displacement 2e-7 |
+| block held on all faces, isotropic and anisotropic ε0, two stages added | σ = −E ε0 / (1 − 2ν); −D ε0 | 1e-9 |
+| free strain field with all six components varying inside the cells; a temperature field (integration points) | `femotion.continuum.Elastic(order=1)` with the same field as equivalent loads, same mesh | displacements 2e-13, cell stresses 5e-13 (`ElasticIso`); ASDConcrete3D below cracking: displacements 1e-13 (IMPL-EX; 3e-6 implicit), stresses 7e-5 (its own departures from linearity) |
+| bimetal strip 100 × 10 mm (ν = 0), heated, 50 and 100 cells along | Timoshenko (1925) | curvature 0.978 and 0.995 (0.9986 with 200): the 8-node brick locks in bending as cells get long; converges |
+| heated prism with a bar of another α | composite strain (Ec Ac αc + Es As αs) ΔT / (Ec Ac + Es As) | bar force 9e-5 in the middle third; end displacement −0.16 % (the bar hands its force over near the ends) |
+| **prism held at both ends shrinks and cracks** (weak layer, ν = 0) | the crack band law: ∫σ dw = Gf with w = ε_sh L − σ L / E | 0.999 Gf (implicit), 1.03 Gf (IMPL-EX); peak within a step of ft; cell width = w to 0.2 % |
+| bar with a rigid-plastic bond law pulled out of a stiff block | τ π d L (bonded length inside the solid only) | exact (1e-12); every spring at τ |
+| **RC tie 100 × 100 × 600, Ø16, fixed at both ends, ε_sh = 6e-4** (bond τb0 = 2 fct, strength ±5 % between sections, 20 mm cells) | tension chord model (Marti et al. 1998): spacing within [s_rm0/2, s_rm0] = [97, 195] mm; kinematics: Σw = L (ε_sh − R / Ec Ac); EN 1992-1-1 (7.11) s_r,max = 413 mm; EN 1992-3 annex M (M.1) w_k = 0.167 mm | spacings 100–142 mm, mean 125; Σw 0.330 vs 0.336 mm (−2 %); widths 0.05–0.09 mm (the restraint force has dropped to 42 % of the cracking force, w_k assumes it at the cracking force) |
+| O-grid sections | areas | section exact to 1e-9; bar = polygon of 4m sides, ring = its annulus |
+| **elastic rust ring in a concrete cylinder** (d 12, R 40, ring 0.6 mm of 20 GPa, plane strain, 64 cells around) | exact three-layer Lamé solution with the ring's free strain | radial displacement of the bar surface −0.1 %, of the outside +0.02 %; hoop stress next to the bar 0.03 % |
+| **rust cracking a cylinder of cover** (d 12, c 25, C30, ring as stiff as steel, 24 and 32 cells around) | first crack: Lamé hoop stress at the bar = ft (δ = 0.613 μm); peak pressure: Tepfers (1979) partly cracked elastic 4.50 MPa < p < plastic 12.07 MPa; thick-walled models (Liu & Weyers 1998, El Maaddawy & Soudki 2007): plastic pressure on an uncracked elastic cylinder, δ = 2.76 μm | first crack at 0.65 / 0.61 μm (within a step); peak 7.1 / 9.1 MPa; the outer surface cracks after the peak, at δ = 5.78 / 5.75 μm = 2.1 × the thick-wall value (the cracked ring is softer than an elastic one) |
+
+In the axisymmetric cylinder every cell around the bar cracks before the cracks localise, and the crack band assumes one
+crack per band: the energy dissipated before the peak, and with it the peak pressure, grows with the number of cells
+around (7.1 MPa with 24, 9.1 MPa with 32; random strengths around the bar do not change it, the localisation into four or
+five radial cracks comes after the peak). The expansion at which the cover cracks through hardly moves (5.78 / 5.75 μm).
+
 The RC beam: 200 × 300 mm, span 2400, loads at a = 900, 2 Ø16 at 40 mm, fcm 38 MPa, quarter model, 50 mm hexahedra,
 line bearing, elastic pads under the bearing and the loading plate. Supporting the beam on a strip of node lines instead
 of a line clamps its end: in the elastic range the 25 mm model was then 22 % stiffer than beam theory with shear, against
@@ -339,9 +505,16 @@ Apple M1 Max, OpenSeesPy 3.8 (UmfPack), IMPL-EX, two Newton iterations per step:
 | member with two anchor bolts and a prestressed strip, 50 mm | 3 840 + 2 dowels | 17 settling steps + 1 | 34 s ² |
 | the same, 50 × 25 × 25 mm | 15 360 (52 000 equations) | 10 | 247 s (AMD; 352 s with RCM) ¹; 29 settling steps + 1: 998 s ² |
 
+| restrained RC tie with a bond-slip bar (free strain) | 600 + 30 bond springs | 150 | 9 s |
+| rust in a thick-walled cylinder, 24 cells around | 504 | 90 | 10–12 s |
+| corroding slab, plane-strain slice | 1 374 + 50 bond springs | 230 | 100 s |
+| the same slab as a 3D slice, 4 cells along the bar | 6 184 | — | 2.5 s per Newton iteration ³ |
+
 ¹ measured before the trilinear ties, which add six auxiliary nodes and seven tie elements per bar node (a few per cent
 of the equations); ² with another heavy job on the machine, so an upper bound. The prestress of a stage settles in 10–20
-steps under IMPL-EX (see "Solving").
+steps under IMPL-EX (see "Solving"). ³ UmfPack's factorisation of 24 000 equations dominates (SuperLU 2.3 times and
+SparseSYM 50 times slower; MUMPS is not in OpenSeesPy for macOS): model a bar's surroundings as a slice where the
+problem allows. Free strains add one parameter update per group of points per step (0.2 μs each).
 
 The material update (eight points per hexahedron, about 13 µs each) and the sparse factorisation (UmfPack; the
 equation ordering `numberer` matters: AMD for bulky blocks, RCM for long slender members) share the time; IMPL-EX needs

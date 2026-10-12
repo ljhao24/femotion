@@ -13,8 +13,7 @@ from femotion.continuum import Elastic  # noqa: E402
 from femotion.continuum.corrosion import (alonso_1998, depth_for_expansion, depth_from_mass_loss,  # noqa: E402
                                           el_maaddawy_soudki_2007, free_expansion, gbt51355_2019, lame_cylinder,
                                           liu_weyers_1998, mass_loss, rust_strain, tepfers)
-from femotion.continuum.opensees import (BondSlip, ConcreteDamage, ElasticIso, Eigenstrain, OpsSolid, elastic,  # noqa: E402
-                                         steel)
+from femotion.continuum.opensees import BondSlip, ConcreteDamage, ElasticIso, Eigenstrain, OpsSolid, elastic  # noqa: E402
 from femotion.mesh import structured  # noqa: E402
 from femotion.mesh.inclusions import bar_block, bar_section, cylinder, hoop_normals  # noqa: E402
 

@@ -45,12 +45,12 @@ pip install "femotion[all]"
 平面和三维线弹性（scikit-fem），面向结构而不只是零件（详见 [docs/continuum.md](docs/continuum.md)）：
 
 - 网格按分组指定材料：各向同性、正交异性（转轴、热膨胀，例如碳纤维板）；20 节点六面体；
-- `femotion.mesh.section`：横断面按"列 × 层"分块，沿构件扫掠成全六面体网格，箱梁、多室空心板、梁端加厚段、倒角随位置连续变化；
+- `femotion.mesh.section`：横断面按"列 × 层"分块，沿构件扫掠成全六面体网格，箱梁、多室空心板、梁端加厚段、倒角随位置连续变化；`femotion.mesh.inclusions`：带圆形钢筋的截面（钢筋周围 O 形网格，可带锈蚀层），沿钢筋扫掠成六面体；
 - 支座用面弹簧；钢筋、预应力束、锚栓、粘贴板条可以放在实体里任意位置，不必与网格重合（粘结 / 无粘结杆，预应力束等效荷载）；
 - 多个工况一次分解求解（面荷载、按面积分布的轮压、线荷载、温度、初应变、指定位移），结果线性组合、任意点取值、截面内力（静力法和应力积分两种）；
 - 子模型：细网格的局部（锚固区、开孔）由整体模型的位移驱动；
 - 直接法 CHOLMOD（scikit-sparse 或 cholespy）：薄壁二次单元模型 AMG 收敛慢时用它；
-- 非线性开裂（`femotion.continuum.opensees`，OpenSees）：混凝土弥散裂缝（ASDConcrete3D，裂缝带正则化）、嵌入钢筋 / 钢束 / 锚栓、分阶段加载、裂缝宽度（[docs/continuum-nonlinear.md](docs/continuum-nonlinear.md)）。
+- 非线性开裂（`femotion.continuum.opensees`，OpenSees）：混凝土弥散裂缝（ASDConcrete3D，裂缝带正则化）、嵌入钢筋 / 钢束 / 锚栓（可带粘结滑移）、分阶段加载（荷载、收缩、温度等初应变）、钢筋锈胀（`femotion.continuum.corrosion`）、裂缝宽度（[docs/continuum-nonlinear.md](docs/continuum-nonlinear.md)）。
 
 ## JavaScript 包
 
