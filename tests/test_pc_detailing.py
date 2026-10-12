@@ -575,7 +575,7 @@ def test_detailing_reports_never_fail_and_skip_missing_inputs():
     assert bad.ok and len(bad.warnings) == 5 and "WARNING" in str(bad)
 
 
-# ── after the review (the independent review, not published with this library) ─────────────────────
+# ── after the independent review (not published with this library) ─────────────────────────────────
 def test_mixed_reinforcement_hogging_9_4_2():
     """review M2: 9.4.2 (p109) asks for ordinary bars at the tension face, the top one over interior supports"""
     tendons = dict(concrete="C50", tendons=[(1251, 300, 1100, 90)])
