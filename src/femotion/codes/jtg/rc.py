@@ -998,7 +998,7 @@ def shear(sec: RCSection, Vd: float, stirrups=None, *, gamma0: float = 1.0, hogg
                  "Vcs": Vcs, "Vsb": Vsb, "Vpb": Vpb, "Vpb_ex": Vpb_ex, "fsv": sst.fsv, "rho_pv": rho_pv}, notes,
                 section=sec, hogging=hogging)
     # the inputs behind the values above, for calculation reports (femotion.codes.jtg.report)
-    chk.details.update(As=float(t[:, 0].sum()), Ap=float(Ap), Asv=Asv, sv=sv, legs=legs, dia=dia,
+    chk.details.update(As=float(t[:, 0].sum()), Ap=float(Ap), Asv=Asv, sv=sv, legs=legs, dia=dia, stirrup_fsd=sst.fsd,
                        rho_sv_provided=rho_prov, fpv=fpv, bent=[tuple(r) for r in bent],
                        bent_tendons=[tuple(r) for r in bent_tendons], bent_external=[tuple(r) for r in bent_external])
     vmax = 0.51e-3 * math.sqrt(c.fcuk) * b * h0

@@ -49,6 +49,13 @@ gamma0 = jtg.GAMMA_0[2]  # safety class 2
 span_sec = jtg.tee(200, 1100, 1600, 160, concrete="C40", steel="HRB400", bottom=[(10, 28, 110)], top=[(8, 20, 50)])
 pier_sec = jtg.tee(200, 1100, 1600, 160, concrete="C40", steel="HRB400", bottom=[(6, 28, 95)], top=[(14, 25, 60)])
 stirrups_span, stirrups_end, stirrups_pier = (2, 10, 200), (2, 12, 100), (4, 10, 100)
+# the same bars as they are placed, for the detailing rules: the 10Φ28 of the span (one point at 110 mm in the
+# calculation) are welded frames of five layers of 2Φ28 in contact, the 6Φ28 of the pier three layers; the centroids
+# stay at 110 and 95 mm, so the resistances are those of the sections above
+span_frames = jtg.tee(200, 1100, 1600, 160, concrete="C40", steel="HRB400",
+                      bottom=[(2, 28, 54 + 28 * k) for k in range(5)], top=[(8, 20, 50)])
+pier_frames = jtg.tee(200, 1100, 1600, 160, concrete="C40", steel="HRB400",
+                      bottom=[(2, 28, 67 + 28 * k) for k in range(3)], top=[(14, 25, 60)])
 
 c = span_sec.concrete
 area, I = span_sec.area * 1e-6, span_sec.I * 1e-12  # noqa: E741
@@ -157,10 +164,11 @@ dxs = np.diff(xs)
 pos = np.maximum(D, 0.0)
 fQ = 0.7 * live(0.0).factor() * np.array([q_k * float(((r[:-1] + r[1:]) / 2 * dxs).sum()) + P_k * r.max() for r in pos])
 eta_t = jtg.long_term_factor(c)
-i_max = int(np.argmax(fQ[: n + 1]))
 f_long = eta_t * fQ
-fG_l, fQ_l = eta_t * fG[i_max], eta_t * fQ[i_max]
-camber = jtg.precamber_rc(fG_l, fQ_l, L * 1e3)
+# pre-camber at the largest deflection of each span (the spans alike but for rounding)
+i_spans = [int(np.argmax(fQ[: n + 1])), n + int(np.argmax(fQ[n:]))]
+cambers = [(i, eta_t * fG[i], eta_t * fQ[i], jtg.precamber_rc(eta_t * fG[i], eta_t * fQ[i], L * 1e3)) for i in i_spans]
+i_max, fG_l, fQ_l, camber = max(cambers, key=lambda t: t[3])
 
 # ── the report ──────────────────────────────────────────────────────────────
 W = 680  # px, the width of the drawings
@@ -178,6 +186,9 @@ loc = lambda u, what="": (f"x = {u:.2f} m" + (f"（{what}）" if what and zh els
 ch = rep.chapter(T("设计依据", "Basis of design"))
 s = ch.section(T("规范", "Codes"))
 jr.design_basis(s)
+s.paragraph(T("式号未注明规范的为 JTG 3362—2018 的公式，注“D60”的为 JTG D60—2015 的公式；括号内带“条”字的为条文号。",
+              "Formula numbers are those of JTG 3362-2018 unless marked D60 (JTG D60-2015); \"cl.\" marks a clause."),
+            cls="muted")
 s = ch.section(T("设计标准", "Design parameters"))
 s.kv([(T("设计安全等级", "design safety class"), T("二级", "2"), ""),
       (T("结构重要性系数", "importance factor") + " $γ_{0}$", f"{gamma0:.1f}", ""),
@@ -208,7 +219,8 @@ s.figure([section_figure(span_sec, lang=lang, title="", width=330, stirrup_d=12)
          subcaptions=[T(f"跨中截面（0 ～ {0.7 * L:g} m、{1.3 * L:g} ～ {2 * L:g} m）",
                         f"span section (0–{0.7 * L:g} m, {1.3 * L:g}–{2 * L:g} m)"),
                       T(f"中支点截面（{0.7 * L:g} ～ {1.3 * L:g} m）", f"pier section ({0.7 * L:g}–{1.3 * L:g} m)")])
-jr.section_properties(s, {T("跨中截面", "span"): span_sec, T("中支点截面", "pier"): pier_sec})
+jr.section_properties(s, {T("跨中截面", "span"): span_sec, T("中支点截面", "pier"): pier_sec},
+                      hogging=(T("中支点截面", "pier"),))
 s.paragraph(T("箍筋：端支点附近 0 ～ 3 m 为 2 肢 Φ12@100，跨中段 2 肢 Φ10@200，中支点两侧各 0.3L 范围内 4 肢 Φ10@100。",
               "Stirrups: 2 legs Φ12 @ 100 over 0–3 m at the end supports, 2 legs Φ10 @ 200 in the spans, 4 legs "
               "Φ10 @ 100 within 0.3 L each side of the pier."))
@@ -226,22 +238,22 @@ s = ch.section(T("结构离散", "Discretisation"))
 s.paragraph(T(f"按平面杆系计算，主梁离散为 {len(beams)} 个梁单元（单元长 {L / n:g} m），节点 {len(nodes)} 个。左端支点为固定铰支座，"
               f"中支点和右端支点为活动铰支座（见", f"A plane frame of {len(beams)} beam elements ({L / n:g} m) and "
               f"{len(nodes)} nodes; a fixed pin at the left end, rollers at the pier and the right end (see "),
-            rep.ref("fig:model"), T("）。截面刚度取毛截面 EcI，自重和二期恒载按一致荷载精确计入单元端。",
+            rep.ref("fig:model"), T("）。截面刚度取毛截面 $E_{c}I$，自重和二期恒载按一致荷载精确计入单元端。",
                                    "). Gross stiffness EcI; permanent loads exact at the element ends."))
 s.figure(elevation_figure(model, title="", **kw), caption=T("计算模型", "The model"), id="fig:model")
 s.kv([("$A$", area, "m²"), ("$I$", I, "m⁴"), ("$E_{c}$", c.Ec, "MPa"), (T("每延米质量", "mass per metre"), mass, "t/m")],
      cols=2)
-s.paragraph(T("注：JTG 3362—2018 4.3.1 规定钢筋混凝土构件内力分析取 0.8EcI；本梁为同一截面、同一材料，刚度同比例折减不改变荷载产生的内力，"
-              "故取 EcI（基频计算按 JTG D60—2015 4.3.2 亦取 EcI）。",
+s.paragraph(T("注：JTG 3362—2018 4.3.1 规定钢筋混凝土构件内力分析取 $0.8E_{c}I$；本梁为同一截面、同一材料，刚度同比例折减不改变荷载产生的内力，"
+              "故取 $E_{c}I$（基频计算按 JTG D60—2015 4.3.2 亦取 $E_{c}I$）。",
               "JTG 3362 4.3.1 asks for 0.8 EcI of reinforced concrete members; on a girder of one section and one"
               " material "
               "this scales all stiffness alike and leaves the forces from loads unchanged, so EcI is used (also for"
               " the "
               "frequencies, D60 4.3.2)."), cls="muted")
 s = ch.section(T("动力特性与冲击系数", "Frequencies and impact factors"), id="sec:freq")
-s.formula([("μ", "0.1767\\op{ln}f - 0.0157"),
-           ("μ_{1}", f"0.1767 × \\op{{ln}}{fixed(f1, 3)} - 0.0157 = {fixed(mu1, 3)}"),
-           ("μ_{2}", f"0.1767 × \\op{{ln}}{fixed(f2, 3)} - 0.0157 = {fixed(mu2, 3)}")], tag="D60 4.3.2")
+s.formula([("μ", "0.1767\\op{ln}\\,f - 0.0157"),
+           ("μ_{1}", f"0.1767 × \\op{{ln}}\\,{fixed(f1, 3)} - 0.0157 = {fixed(mu1, 3)}"),
+           ("μ_{2}", f"0.1767 × \\op{{ln}}\\,{fixed(f2, 3)} - 0.0157 = {fixed(mu2, 3)}")], tag="D60 4.3.2")
 s.paragraph(T(f"结构第一、二阶竖弯频率 f₁ = {f1:.3f} Hz、f₂ = {f2:.3f} Hz（有限元特征值分析）；按 JTG D60—2015 条文说明，正弯矩和剪力"
               f"用 f₁，负弯矩用 f₂。", f"First two vertical frequencies f1 = {f1:.3f} Hz, f2 = {f2:.3f} Hz (eigenvalue "
               "analysis); f1 for sagging moment and shear, f2 for hogging moment (D60 commentary)."))
@@ -252,10 +264,13 @@ s = ch.section(T("永久作用", "Permanent actions"))
 s.figure(load_figure(model, self_w, title="", **kw), caption=T("结构自重", "Self-weight"), id="fig:self")
 s.figure(load_figure(model, sdl, title="", **kw), caption=T("二期恒载", "Superimposed dead load"), id="fig:sdl")
 s = ch.section(T("汽车荷载", "Traffic"))
-s.paragraph(T("汽车荷载（车道荷载）按影响线最不利布置：均布荷载布满影响线同号区段，集中荷载作用于影响线峰值处（计算剪力时集中荷载乘 1.2）。",
+s.paragraph(T("汽车荷载（车道荷载）按影响线最不利布置：均布荷载布满影响线同号区段，集中荷载作用于影响线峰值处（计算剪力时集中荷载乘 1.2）。"
+              f"图中车道荷载已乘冲击系数和横向分布系数：正弯矩和剪力为 $(1 + μ_{{1}})m$ = (1 + {mu1:.3f}) × 0.55 = "
+              f"{(1 + mu1) * 0.55:.4f}，负弯矩为 $(1 + μ_{{2}})m$ = (1 + {mu2:.3f}) × 0.55 = {(1 + mu2) * 0.55:.4f}。",
               "The lane load in its worst placement on the influence lines: q over the parts of one sign, P at the"
-              " peak "
-              "(× 1.2 for shear)."))
+              " peak (× 1.2 for shear). The loads drawn include impact and distribution: $(1 + μ_{1})m$ = "
+              f"(1 + {mu1:.3f}) × 0.55 = {(1 + mu1) * 0.55:.4f} for sagging moment and shear, $(1 + μ_{{2}})m$ = "
+              f"(1 + {mu2:.3f}) × 0.55 = {(1 + mu2) * 0.55:.4f} for hogging."))
 k_end0 = 0
 v_sense = 1 if abs(Q_V[1][k_end0]) > abs(Q_V[0][k_end0]) else 0
 for lay, cap, uid in [
@@ -281,10 +296,10 @@ s.table(rows, header=[T("截面", "Section"), "M_{G}", "M_{Q,max}", "M_{Q,min}",
                                    "Traffic effects with impact and distribution; signs as the frame results (sagging "
                                    "+).")])
 s.figure(charts.moment_chart(x, Mmax, Mmin, gamma0=gamma0, shaved=Mmin_r, supports=supports, title="", **kw),
-         caption=T("基本组合弯矩包络图（γ0Md）", "Moment envelope of the basic combination (γ0 Md)"), id="fig:menv")
+         caption=T("基本组合弯矩包络图（$γ_{0}M_{d}$）", "Moment envelope of the basic combination ($γ_{0}M_{d}$)"), id="fig:menv")
 s.figure(charts.shear_chart(x, Vmax, Vmin, gamma0=gamma0, supports=supports, title="", **kw),
-         caption=T("基本组合剪力包络图（γ0Vd）", "Shear envelope of the basic combination (γ0 Vd)"), id="fig:venv")
-s.paragraph(T("正常使用极限状态：汽车荷载不计冲击，频遇组合 ψf1 = 0.7、准永久组合 ψq = 0.4（JTG D60—2015 4.1.6）。",
+         caption=T("基本组合剪力包络图（$γ_{0}V_{d}$）", "Shear envelope of the basic combination ($γ_{0}V_{d}$)"), id="fig:venv")
+s.paragraph(T("正常使用极限状态：汽车荷载不计冲击，频遇组合 $ψ_{f1}$ = 0.7、准永久组合 $ψ_{q}$ = 0.4（JTG D60—2015 4.1.6）。",
               "Serviceability: traffic without impact, frequent ψf1 = 0.7, quasi-permanent ψq = 0.4 (D60 4.1.6)."))
 rows = [[loc(x[k]), Ms_max[k], Ms_min[k], Ml_max[k], Ml_min[k]] for k in (ks, kp)]
 s.table(rows, header=[T("截面", "Section"), "M_{s,max}", "M_{s,min}", "M_{l,max}", "M_{l,min}"],
@@ -308,13 +323,14 @@ ss.paragraph(T("与最大负弯矩同一荷载布置下的中支点反力：自�
 ss.formula([("R", f"1.2R_{{G}} + 1.4R_{{Q}} = 1.2 × {fixed(R_G, 1)} + 1.4 × {fixed(R_Q, 1)} ="
                   f" {fixed(R_d, 1)}\\,\\u{{kN}}"),
             ("a", f"b + 2y = 0.45 + 2 × {fixed(y_c, 3)} = {fixed(a_sp, 3)}\\,\\u{{m}}"),
-            ("M'", f"\\frac{{Ra}}{{8}} = \\frac{{{fixed(R_d, 1)} × {fixed(a_sp, 3)}}}{{8}} = {fixed(red['M_prime'], 1)}"
-                   "\\,\\u{kN·m}")], tag="3362 4.3.5-2")
-ss.formula([("M + M'", f"{fixed(Mmin[k_pier], 1)} + {fixed(red['M_prime'], 1)} = "
-                       f"{fixed(Mmin[k_pier] + red['M_prime'], 1)}\\,\\u{{kN·m}}"),
+            ("M'", "=", f"\\frac{{qa^{{2}}}}{{8}} = \\frac{{Ra}}{{8}} = \\frac{{{fixed(R_d, 1)} ×"
+                        f" {fixed(a_sp, 3)}}}{{8}} = "
+                        f"{fixed(red['M_prime'], 1)}\\,\\u{{kN·m}}", "4.3.5-2")])
+ss.formula([("M - M'", "=", f"-({fixed(abs(Mmin[k_pier]), 1)} - {fixed(red['M_prime'], 1)}) = "
+                             f"{fixed(Mmin[k_pier] + red['M_prime'], 1)}\\,\\u{{kN·m}}", "4.3.5-1"),
             ("0.9M", f"0.9 × ({fixed(Mmin[k_pier], 1)}) = {fixed(0.9 * Mmin[k_pier], 1)}\\,\\u{{kN·m}}"),
             ("M_{e}", f"{fixed(Me, 1)}\\,\\u{{kN·m}}" + (T("\\t{（削减量不超过 10%，取 0.9M）}", "\\t{ (at most 10 %: 0.9M)}")
-                                                     if red["capped"] else ""))], tag="3362 4.3.5-1")
+                                                     if red["capped"] else ""))])
 jr.write_check(s, jtg.flexure(span_sec, Mmax[k_span], gamma0), where=loc(x[k_span], T("跨中最大正弯矩", "largest sagging")),
                id="chk:flex-span", figure_kw={"stirrup_d": 12})
 jr.write_check(s, jtg.flexure(pier_sec, Mmin_r[k_pier], gamma0),
@@ -363,8 +379,8 @@ jr.write_check(s, jtg.crack_width(span_sec, Ms_max[ks], Ml_max[ks], env="I"), wh
 jr.write_check(s, jtg.crack_width(pier_sec, Ms_min[kp], Ml_min[kp], env="I"), where=loc(x[kp], T("中支点", "pier")),
                id="chk:crack-pier")
 s = ch.section(T("挠度和预拱度", "Deflection and pre-camber"))
-s.paragraph(T("各单元刚度按其频遇组合弯矩取用（6.5.2：小于开裂弯矩取 B0，大于时取开裂后的等效刚度），按结构力学方法求挠度；汽车荷载频遇值（ψf1 = 0.7，"
-              f"不计冲击）的挠度乘以长期增长系数 ηθ = {eta_t:.2f}（6.5.3）。",
+s.paragraph(T("各单元刚度按其频遇组合弯矩取用（6.5.2：小于开裂弯矩取 $B_{0}$，大于时取开裂后的等效刚度），按结构力学方法求挠度；汽车荷载频遇值（$ψ_{f1}$ = 0.7，"
+              f"不计冲击）的挠度乘以长期增长系数 $η_{{θ}}$ = {eta_t:.2f}（6.5.3）。",
               "The stiffness of each element from its frequent moment (6.5.2), deflections by structural mechanics;"
               " the "
               f"frequent live-load deflection (ψf1 = 0.7, no impact) × ηθ = {eta_t:.2f} (6.5.3)."))
@@ -373,23 +389,35 @@ ff = charts.deflection_chart(xs, f_long, limit=[(0, L, f_lim, "L/600"), (L, 2 * 
                              label=T("ηθ × 汽车荷载频遇值挠度", "ηθ × frequent live-load deflection"), supports=supports,
                              title="", **kw)
 s.figure(ff, caption=T("汽车荷载（频遇值）长期挠度", "Long-term live-load deflection"), id="fig:defl")
-jr.write_check(s, jtg.deflection_check(fQ_l, L * 1e3), where=loc(xs[i_max]), id="chk:defl")
+f_max, x_max = next(iter(ff.extremes.values()))  # the largest value the chart labels
+i_c = int(np.argmin(np.abs(xs - x_max)))
+jr.write_check(s, jtg.deflection_check(f_long[i_c], L * 1e3), where=loc(xs[i_c]), id="chk:defl")
 ss = s.section(T("预拱度（6.5.5）", "Pre-camber (6.5.5)"))
 ss.formula([("f_{G} + f_{Q}", f"{fixed(fG_l, 2)} + {fixed(fQ_l, 2)} = {fixed(fG_l + fQ_l, 2)}\\,\\u{{mm}}"),
-            ("", ">", f"\\frac{{L}}{{1600}} = {fixed(L * 1e3 / 1600, 2)}\\,\\u{{mm}}"),
+            ("", ">" if fG_l + fQ_l > L * 1e3 / 1600 else "<=",
+             f"\\frac{{L}}{{1600}} = {fixed(L * 1e3 / 1600, 2)}\\,\\u{{mm}}"),
             ("Δ", f"f_{{G}} + \\frac{{f_{{Q}}}}{{2}} = {fixed(fG_l, 2)} + \\frac{{{fixed(fQ_l, 2)}}}{{2}} = "
-                  f"{fixed(camber, 2)}\\,\\u{{mm}}")], tag="6.5.5")
-ss.paragraph(T(f"设置预拱度 {camber:.1f} mm（x = {xs[i_max]:.2f} m），沿顺桥向做成平顺曲线。",
-               f"Pre-camber {camber:.1f} mm at x = {xs[i_max]:.2f} m, as a smooth curve along the span."))
+                  f"{fixed(camber, 2)}\\,\\u{{mm}}")], tag=T("6.5.5 条", "cl. 6.5.5"))
+ss.paragraph(T(f"上式为 x = {xs[i_max]:.2f} m 处（两跨中较大者）。各跨预拱度："
+               + "；".join(f"x = {xs[i]:.2f} m 处 {cb:.2f} mm" for i, _, _, cb in cambers) + "，沿顺桥向做成平顺曲线。",
+               f"The above at x = {xs[i_max]:.2f} m (the larger of the spans). Pre-camber: "
+               + "; ".join(f"{cb:.2f} mm at x = {xs[i]:.2f} m" for i, _, _, cb in cambers)
+               + ", as a smooth curve along the span."))
 
 # 7 detailing
 ch = rep.chapter(T("构造检查", "Detailing"))
 ch.paragraph(T("构造要求不满足时只给出提示，不改变承载力和正常使用验算的结论；提示汇总见", "Unmet detailing rules are warnings and do "
                "not change the verdicts of the checks; all of them in "), rep.ref("tab:warnings"), "。" if zh else ".")
 jr.write_check(ch, jtg.durability(span_sec, "I", life=100), where=T("主梁", "girder"))
-jr.write_check(ch, jtg.section_detailing(span_sec, env="I", life=100, stirrup_d=12), where=T("跨中截面", "span section"),
-               figure_kw={"stirrup_d": 12})
-jr.write_check(ch, jtg.section_detailing(pier_sec, env="I", life=100, stirrup_d=10, hogging=True),
+ch.paragraph(T("构造检查按钢筋的实际排列：跨中截面的 10Φ28 为 5 层 2Φ28 焊接骨架（层间相贴），中支点截面的 6Φ28 为 3 层 2Φ28 "
+               "焊接骨架；合力点仍分别距底面 110 mm、95 mm，与承载力计算所用的截面一致。",
+               "The detailing rules take the bars as placed: the 10Φ28 of the span are welded frames of five layers of"
+               " 2Φ28 in contact, the 6Φ28 of the pier three layers; their centroids stay at 110 and 95 mm, as in the"
+               " resistance."))
+jr.write_check(ch, jtg.section_detailing(span_frames, env="I", life=100, stirrup_d=12, welded_frame=True, main_rows=5),
+               where=T("跨中截面", "span section"), figure_kw={"stirrup_d": 12})
+jr.write_check(ch, jtg.section_detailing(pier_frames, env="I", life=100, stirrup_d=10, hogging=True, welded_frame=True,
+                                         main_rows=(3, 1)),
                where=T("中支点截面", "pier section"), figure_kw={"stirrup_d": 10})
 jr.write_check(ch, jtg.stirrup_detailing(span_sec, stirrups_span, hook=(50, 50, 135), support_spacing=100),
                where=T("跨中段箍筋", "stirrups in the span"))

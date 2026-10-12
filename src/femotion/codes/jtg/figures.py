@@ -486,21 +486,23 @@ def _lookup(table, z):
 
 
 def bar_layout(sec: RCSection, *, side_cover: float | None = None, stirrup_d: float | None = None,
-               webs: int | None = None, bar_x=None, topping: bool | None = None) -> list[dict]:
+               webs: int | None = None, bar_x=None, topping: bool | None = None, main_rows=None) -> list[dict]:
     """the bars of sec as drawn by section_figure: one dict per row (bars at one depth), with z (mm), face ("bottom",
     "top": the edge rows of RCSection.edge_masks; "side": other rows in the web; "inner": the others; "ring"), idx
     (the bar points of sec.bars), groups [(n, d)], n, d (the largest diameter), area, bars [(x, z, d)] (x from the
     centre line), layers (1, or more where a lumped row is drawn in layers), exact (whole numbers of bars), lumped
-    (points without a diameter, drawn as one disc of their area). Conventions in the module docstring."""
+    (points without a diameter, drawn as one disc of their area). main_rows: the main rows from each face, as
+    section_detailing takes them (several layers of a welded frame). Conventions in the module docstring."""
     shape = _Shape(sec, webs, sec.kind == "composite" if topping is None else topping)
-    return _bar_rows(sec, shape, side_cover, stirrup_d, bar_x)
+    return _bar_rows(sec, shape, side_cover, stirrup_d, bar_x, main_rows)
 
 
-def _bar_rows(sec, shape, side_cover, stirrup_d, bar_x):
+def _bar_rows(sec, shape, side_cover, stirrup_d, bar_x, main_rows=None):
     """bar_layout on a _Shape"""
+    from .detailing import _main_masks
     ds = float(stirrup_d or 0.0)
     side = _default_side(sec, ds) if side_cover is None else float(side_cover)
-    bot, top = sec.edge_masks()
+    bot, top = _main_masks(sec, main_rows)
     rows = []
     ring = _ring_layout(sec)
     web = _web_zone(shape)
@@ -697,7 +699,7 @@ def section_figure(sec, *, check=None, lang: str = "zh", width: float = 560, tit
                    hogging: bool | None = None, stirrup_d: float | None = None, side_cover: float | None = None,
                    webs: int | None = None, bar_x=None, tendon_x=None, external_n=None,
                    strand: tuple[float, float] = (15.2, 140.0), dims: bool = True, labels: bool = True,
-                   legend: bool = True, info: bool = True) -> Figure:
+                   legend: bool = True, info: bool = True, main_rows=None) -> Figure:
     """the section with its reinforcement, to scale, as a femotion.viz Figure (width px; the height follows).
 
     sec: an RCSection (jtg.rect, tee, box, circle, …) or a Composite (jtg.composite: drawn as its ultimate section, the
@@ -710,7 +712,9 @@ def section_figure(sec, *, check=None, lang: str = "zh", width: float = 560, tit
     webs: number of webs of a box (default 2 for kind "box"); bar_x / tendon_x: {depth: [x, …]} positions (mm from the
     centre line) of a bar row / of the ducts at a depth; external_n: tendons drawn per external row (default 2, or
     {row: n}); strand: (nominal diameter, area) of a strand, for counts of strands in the labels and for pretensioned
-    rows. dims, labels, legend, info: switch the dimensions, the labels of the steel, the legend and the text block."""
+    rows. dims, labels, legend, info: switch the dimensions, the labels of the steel, the legend and the text block.
+    main_rows: the main rows from each face, as section_detailing takes them (default from a section_detailing
+    check, else the edge rows)."""
     if lang not in _S:
         raise ValueError("lang: 'zh' or 'en'")
     comp = sec if isinstance(sec, Composite) else None
@@ -720,8 +724,11 @@ def section_figure(sec, *, check=None, lang: str = "zh", width: float = 560, tit
     checks = [] if check is None else (list(check) if isinstance(check, (list, tuple)) else [check])
     if webs is None and comp is not None and comp.precast.kind == "box":
         webs = 2
+    if main_rows is None:
+        main_rows = next((c.details["main_rows"] for c in checks if isinstance(c, Check) and "main_rows" in c.details),
+                         None)
     d = _Drawing(s, comp is not None or s.kind == "composite", lang, width, stirrup_d, side_cover, webs, bar_x, tendon_x,
-                 external_n, strand, hogging)
+                 external_n, strand, hogging, main_rows)
     for c in checks:
         d.overlay(c)
     return d.figure(title, dims=dims, labels=labels, legend=legend, info=info)
@@ -732,14 +739,14 @@ class _Drawing:
     coordinates, _annotations on the page)"""
 
     def __init__(self, sec, topping, lang, width, stirrup_d, side_cover, webs, bar_x, tendon_x, external_n, strand,
-                 hogging):
+                 hogging, main_rows=None):
         self.sec, self.L, self.lang, self.width = sec, _S[lang], lang, float(width)
         self.hogging = hogging
         self.shape = _Shape(sec, webs, topping)
         self.ds = float(stirrup_d or 0.0)
         self.stirrup = stirrup_d is not None and stirrup_d > 0
         self.side = _default_side(sec, self.ds) if side_cover is None else float(side_cover)
-        self.rows = _bar_rows(sec, self.shape, side_cover, stirrup_d, bar_x)
+        self.rows = _bar_rows(sec, self.shape, side_cover, stirrup_d, bar_x, main_rows)
         self.tendons = _tendon_rows(sec, self.shape, self.side, self.ds, tendon_x, strand) if sec.has_internal else []
         self.ext = _external_rows(sec, self.shape, external_n) if sec.has_external else []
         self.strand = strand

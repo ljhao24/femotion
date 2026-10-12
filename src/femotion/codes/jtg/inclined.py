@@ -456,7 +456,8 @@ def stirrup_design(sec: RCSection, Vd: float, *, legs: int, dia: float | None = 
         raise ValueError("nothing left for the stirrups to carry")
     K = coef * (2 + 0.6 * P) * math.sqrt(c.fcuk) * sst.fsv * b * h0 ** 2  # sv = K Asv / demand²
     smax = min(s.h / 2, 400.0)
-    details = {"b": b, "h0": h0, "P": P, "alpha1": alpha1, "alpha2": a2, "alpha3": a3, "fsv": sst.fsv,
+    details = {"xi": None if pre else xi, "gamma0": gamma0, "Vd": abs(Vd), "fcuk": c.fcuk, "legs": legs,  # reports
+               "b": b, "h0": h0, "P": P, "alpha1": alpha1, "alpha2": a2, "alpha3": a3, "fsv": sst.fsv,
                "demand": demand, "rho_sv_min": sst.rho_sv_min, "s_max": smax}
     if spacing is None:
         Asv = legs * math.pi * dia * dia / 4

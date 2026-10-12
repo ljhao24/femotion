@@ -260,6 +260,8 @@ def torsion(sec: RCSection, Td: float, Vd: float = 0.0, *, stirrups, Ast: float,
     T_body = Td * Wtw / Wt_tot
     chk.demand = gamma0 * T_body
     chk.details["T_share"] = T_body
+    chk.details.update(Td=Td, Vd=Vd, gamma0=gamma0, Wt_total=Wt_tot, Ast=Ast, sv=stirrups[2],
+                       fsd=sec.steel.fsd)  # inputs, for calculation reports
     thin = bool(w["box"] and (t2 < 0.1 * b_body - 1e-9 or t1 < 0.1 * h_body - 1e-9))
     if thin:
         msg = (f"box walls t1 = {t1:.0f}, t2 = {t2:.0f} mm: 5.5.1 needs t2 ≥ 0.1 b = {0.1 * b_body:.0f} and "
@@ -307,7 +309,8 @@ def torsion(sec: RCSection, Td: float, Vd: float = 0.0, *, stirrups, Ast: float,
         Vu = coef * math.sqrt(K * rho_sv)
         rho_need = (gamma0 * abs(Vd) / coef) ** 2 / K
         q_shear = rho_need * b / legs
-        chk.details.update(Vu=Vu, shear_ratio=gamma0 * abs(Vd) / Vu, P=P, alpha1=alpha1, alpha3=a3, rho_sv_shear=rho_need)
+        chk.details.update(Vu=Vu, shear_ratio=gamma0 * abs(Vd) / Vu, P=P, alpha1=alpha1, alpha3=a3, rho_sv_shear=rho_need,
+                           alpha2=alpha2, rho_sv=rho_sv, legs=legs, beta_t_shear=bt_v)
         if gamma0 * abs(Vd) > Vu:
             chk.failed.append(f"shear with torsion: γ0Vd = {gamma0 * abs(Vd):.1f} > Vu = {Vu:.1f} kN with all the "
                               "stirrups (5.5.4-1)")

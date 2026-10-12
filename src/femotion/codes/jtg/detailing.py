@@ -326,6 +326,8 @@ def section_detailing(sec: RCSection, *, env=None, member: str = "superstructure
         chk.notes.append("no environment class (env=…): table 9.1.1 and 4.5.3 not checked")
     if np.isnan(sec.bar_d).any():
         chk.notes.append("bars without a diameter (points given without one): skipped in the cover and spacing rules")
+    if main_rows is not None:
+        chk.details["main_rows"] = main_rows
     ds = 0.0 if stirrup_d is None else float(stirrup_d)
     ob, ot = (ds, ds) if outer_d is None else ((outer_d, outer_d) if np.isscalar(outer_d) else tuple(outer_d))
     nbun = ((1, bundle) if hogging else (bundle, 1)) if np.isscalar(bundle) else tuple(bundle)
