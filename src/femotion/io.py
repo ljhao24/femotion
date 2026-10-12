@@ -219,5 +219,5 @@ def export_result(src, path: str | Path, frame: int | None = None, step: int = 1
         time = float(t[k]) if t is not None and len(t) == nf else (k / fps if fps else float(k))
         rows.append(f'    <DataSet timestep="{time:.9g}" group="" part="0" file={quoteattr(f.relative_to(path.parent).as_posix())}/>')
     path.write_text('<?xml version="1.0"?>\n<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n'
-                    "  <Collection>\n" + "\n".join(rows) + "\n  </Collection>\n</VTKFile>\n")
+                    "  <Collection>\n" + "\n".join(rows) + "\n  </Collection>\n</VTKFile>\n", encoding="utf-8")
     return [path] + out

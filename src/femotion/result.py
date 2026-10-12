@@ -105,7 +105,7 @@ def read(path: str | Path) -> dict:
     path = Path(path)
     if path.suffix != ".json":
         path = path.with_suffix(".json")
-    desc = json.loads(path.read_text())
+    desc = json.loads(path.read_text(encoding="utf-8"))
     raw = path.with_suffix(".bin").read_bytes()
     arrs = {}
     for a in desc["arrays"]:
@@ -120,5 +120,5 @@ def read(path: str | Path) -> dict:
 
 def write_json(path: str | Path, obj) -> Path:
     path = Path(path)
-    path.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+    path.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     return path

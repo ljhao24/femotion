@@ -219,7 +219,7 @@ def test_pdf_with_chrome(tmp_path):
     assert data.startswith(b"%PDF") and b"/Outlines" in data
     # the cover on page 1, the contents on page 2, every chapter on a new page
     assert rep.pages["s-1"] == 3 and rep.pages["s-2"] == 4 and rep.pages["s-3"] >= 5
-    assert '<span class="tp">3</span>' in (tmp_path / "r.html").read_text()
+    assert '<span class="tp">3</span>' in (tmp_path / "r.html").read_text(encoding="utf-8")
 
 
 # ── checks written (the formulas of every template: tests/test_report_templates.py) ─────
@@ -265,7 +265,7 @@ def _literal_names():
     """a regular expression for every literal name of a Check in the library's source"""
     out = []
     for f in sorted((ROOT / "src" / "femotion" / "codes" / "jtg").glob("*.py")):
-        for isf, s in re.findall(r'Check(?:\.report)?\(\s*(f?)"((?:[^"\\]|\\.)*)"', f.read_text()):
+        for isf, s in re.findall(r'Check(?:\.report)?\(\s*(f?)"((?:[^"\\]|\\.)*)"', f.read_text(encoding="utf-8")):
             parts = re.split(r"(\{[^{}]*\})", s) if isf else [s]
             out.append((f.name, s, "".join(".*" if (isf and p.startswith("{")) else re.escape(p) for p in parts)))
     return out
@@ -412,7 +412,7 @@ def test_example_report(tmp_path):
             runpy.run_path(str(ROOT / "examples" / "jtg_report_rc_girder.py"), run_name="__main__")
     finally:
         sys.argv = argv
-    h = out.read_text()
+    h = out.read_text(encoding="utf-8")
     doc = _parse(h)
     assert len(doc.ids) == len(set(doc.ids)) and all(x[1:] in doc.ids for x in doc.hrefs)
     assert not doc.links and not doc.srcs
@@ -450,7 +450,7 @@ def test_example_formulas(tmp_path):
                 assert abs(calc - TT.V(vals, key)) <= max(3e-3 * abs(calc), 0.06), (e.title, label)
             if len(row) > 3:
                 assert TT._close(calc, row[3], 3e-3, 2e-3), (e.title, label, calc, row[3])
-    h = out.read_text()
+    h = out.read_text(encoding="utf-8")
     found = TT._inequalities(h)
     assert len(found) > 30
     bad = [x for x in found if not TT._holds(*x[:3])]
