@@ -1529,9 +1529,10 @@ class OpsSolid:
         cell, bar, dowel = self._read_fields() if record else (None, None, None)
         return Step(stage, k, float(lam), U, R, sup, cell, bar, dowel)
 
-    def _read_fields(self) -> tuple[dict, dict]:
+    def _read_fields(self) -> tuple[dict, dict, dict]:
         """cell averages over the integration points: stress, strain (engineering shear, order xx yy zz xy yz zx),
-        inelastic strain, crack strain and normal, crack width, cracked / crushed flags; bar axial force and strain"""
+        inelastic strain, crack strain and normal, crack width, cracked / crushed flags; bar axial force and strain; dowel
+        element forces"""
         ops = self.ops
         nc = self.nc
         S = np.zeros((nc, 6))
