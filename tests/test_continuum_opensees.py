@@ -30,6 +30,7 @@ def cantilever(m, mat, P=-5.0):
 
 
 # ── linear range: same element, same mesh, another solver ─────────────────
+@pytest.mark.filterwarnings("ignore:.*elongated")  # 2:1 cells, no cracking here
 @pytest.mark.parametrize("kind", ["hex8", "tet4"])
 @pytest.mark.parametrize("concrete", [False, True])
 def test_linear_range_matches_scikit_fem(kind, concrete):
@@ -694,8 +695,8 @@ def test_dowel_twist_is_held_and_loose_bar_nodes_are_reported():
     s._build()
     s.ops.timeSeries("Linear", 99)
     s.ops.pattern("Plain", 99, 99)
-    s.ops.load(tip + 1, 1.0, 0.0, 0.0, 0.0, 0.0, 1e-3)  # a lateral force and a small torque at the head
-    st = s.static(None)
+    s.ops.load(tip + 1, 0.0, 0.0, 0.0, 0.0, 0.0, 1e-3)  # a small torque at the head (no API for moments)
+    st = s.static(s.nodal_force(None, (1.0, 0, 0), nodes=[tip]))  # with a lateral force
     assert st.converged
     s2 = OpsSolid(m, ElasticIso(3e7, 0.2))
     s2.bar([(0.5, 0.5, 0.5), (0.5, 0.5, 1.4), (0.5, 0.5, 1.8)], area=1e-4, material=elastic(2e8), outside="free")

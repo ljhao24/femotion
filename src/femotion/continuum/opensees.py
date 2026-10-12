@@ -1,6 +1,7 @@
 """OpenSees back-end for solids (OpenSeesPy ≥ 3.8; extra "opensees"): nonlinear analysis of concrete with smeared cracks —
 where cracks appear, how they grow and how wide they open — with embedded reinforcement, prestressing tendons, anchor bolts
-and bonded or anchored strips, staged loading and crack-width read-outs. Guide and validation: docs/continuum-nonlinear.md.
+and bonded or anchored strips, staged loading and crack-width read-outs. The guide, its validation and the OpenSees
+pitfalls met on the way are in docs/continuum-nonlinear.md; this docstring is the summary.
 
     from femotion.mesh import structured
     from femotion.continuum.opensees import OpsSolid, ConcreteDamage, steel
@@ -17,64 +18,20 @@ and bonded or anchored strips, staged loading and crack-width read-outs. Guide a
     s.crack_widths(); s.cracks_along((0, 100, 1), (3000, 100, 1))       # per cell; individual cracks along a line
     s.export("out/beam.pvd")                                             # ParaView series; s.to_result() for fem-result/1
 
-Units: any consistent set (N, mm, MPa or kN, m, kPa …). Only the defaults of ConcreteDamage.from_strength, which come
-from empirical formulas in MPa, need to know it (units="N-mm" | "kN-m" | "N-m" | "MN-m").
+Units: any consistent set; only the defaults of ConcreteDamage.from_strength need units= ("N-mm" | "kN-m" | "N-m" | "MN-m").
 
-Model
-- solids: hex8 → stdBrick (8-point trilinear, or bbarBrick), tet4 → FourNodeTetrahedron; materials by cell group
-  (ConcreteDamage, ElasticIso, ElasticOrtho).
-- ConcreteDamage → nDMaterial ASDConcrete3D (Petracca, Camata, ASDEA): damage-plasticity with a Lubliner-type surface and
-  separate tension and compression laws; the post-peak branches are regularised by the crack band of each cell (below).
-- bars (rebars, tendons, strips): Truss elements along any polyline, not tied to the mesh. Bonded bars are cut into short
-  segments whose nodes are each tied to the solid by ASDEmbeddedNodeElement (penalty, linear tetrahedral interpolation:
-  inside a hexahedron the node is tied to one of its six sub-tetrahedra); unbonded bars get nodes only at their given
-  points (anchors, deviators) and one Truss per span. A bar node that coincides with a mesh node uses it directly.
-  prestress=σ0 wraps the material in InitStressMaterial (tension +; the first analysis step balances it).
-- dowels (anchor bolts, studs): beam elements on 6-dof nodes tied to the solid in translation (or also in rotation), so
-  shear and bending reach the concrete along the embedded length; bars ending on a dowel node are pinned to it (a
-  prestressed strip anchored on bolt heads).
-- supports: fixed components, ties (equalDOF), nodal springs, distributed (Winkler) springs on boundary faces; imposed
-  displacements through stiff springs from driven ground nodes (sub-models, stroke control).
-- loads (consistent nodal forces): nodal, point (anywhere, by shape functions), traction / pressure on boundary faces,
-  body force and self-weight.
-- stages: static (load control) and push (displacement control) accumulate in call order, each held afterwards. The
-  concrete integrates with IMPL-EX by default (two Newton iterations per step, never stalls; error of about one step);
-  implex=False iterates implicitly. Steps that do not converge switch algorithm and then halve.
-
-Crack band (Bažant & Oh 1983) and crack width
-- Each concrete cell gets its own softening law: the tensile law is given as stress against crack opening w (fib MC2010
-  bilinear by default, area Gf) and converted to strain with the band width h of the cell, ε = σ/E + ε_pre + w/h, so the
-  energy dissipated per unit crack area is Gf whatever the mesh size; the compressive branch likewise with Gc. h is ∛V for
-  hexahedra and ∛(6V) for tetrahedra (the side of the cube the tetrahedron would be a sixth of), or the extent of the cell
-  along a given direction (band=("projected", n), Oliver 1989), or any array. Cells are grouped in 1 % bins of h, one
-  OpenSees material per bin. A cell larger than h_max = the snap-back limit E·Δw/Δσ of the steepest softening segment is
-  given the law of h_max (it dissipates Gf·h/h_max; a warning says how many).
-- The crack strain is read from stresses and strains, not from internal variables: the inelastic strain tensor
-  ε_in = ε − C₀⁻¹ σ at the integration points, averaged over the cell; its largest principal value minus the pre-peak part
-  is the crack opening strain ε_cr, its direction the crack normal n; a cell counts as cracked once the tensile
-  equivalent strain of the material passed the peak. The crack width is w = ε_cr · h (the opening of the band the law was
-  regularised for). Along a line the profile of ε_cr (n·t)² is integrated cell by cell and cut into individual cracks at
-  its valleys; the width of each is the opening of that crack projected on the line.
-- Limits of the estimate: smeared cracks do not localise into single lines, so one physical crack is a band of one or
-  two cells, and neighbouring cracks closer than ~2 h merge; the opening is the mean over the band, not the width at the
-  surface; the steel is perfectly bonded (no slip, no tension-stiffening law), so crack spacing follows the mesh and the
-  bar diameter does not enter; widths are order-of-magnitude checks against code formulas, not predictions to 0.01 mm.
-- With ν > 0 a softening band restrained laterally by its elastic neighbours dissipates a few per cent less than Gf
-  (ASDConcrete3D's equivalent strain comes from the effective stress): 0.93 Gf for ν = 0.2, Gf exactly for ν = 0.
-
-Pitfalls found while writing this module (OpenSeesPy 3.8)
-- ASDEmbeddedNodeElement takes the fourth retained node as an optional argument parsed from a *string*: passed as a
-  Python int it is silently dropped and the node is tied to the triangle of the first three nodes. Pass str(node).
-- Its default penalty 1e18·∛V leaves round-off of ~1e-5 in the displacements and stalls convergence tests; here the
-  penalty is 1e6 × the largest Young's modulus (relative error ~1e-8).
-- FourNodeTetrahedron with negative volume gives a negative stiffness without a warning; cells are re-oriented here.
-- IMPL-EX extrapolates with OpenSees' pseudo-time increment, which displacement control changes in every iteration (the
-  step then diverges): the material time is set per step here (setParameter dTime / dTimeCommit).
-- An sp constraint on a node puts a whole displacement increment into the first cell layer in the predictor and cracks
-  it; imposed displacements go through stiff springs instead.
-- ASDConcrete3D's own "-fc" shortcut assumes MPa and N/mm, and its "-autoRegularization" and crack-width responses use
-  the shortest node-to-node distance as the band; none is used here.
-- geomTransf and frame elements need the 6-dof model builder when created; loads on 6-dof nodes take six components.
+- Solids: hex8 → stdBrick (or bbarBrick), tet4 → FourNodeTetrahedron; materials by cell group: ConcreteDamage
+  (ASDConcrete3D, damage-plasticity; its softening laws regularised by the crack band of each cell, Bažant & Oh 1983),
+  ElasticIso / ElasticOrtho (or femotion.continuum.Isotropic / Orthotropic).
+- Bars (Truss) along any polyline, tied to the cells they cross with the cells' own interpolation (trilinear in
+  hexahedra, built from nested ASDEmbeddedNodeElement ties); unbonded ones slide over their deviators; prestress through
+  InitStressMaterial. Dowels (anchor bolts) are beams tied to the solid. Supports, ties, springs, Winkler faces, imposed
+  displacements (through stiff springs; sub-models from a femotion.continuum CaseResult).
+- Stages (static: load control; push: displacement control) accumulate and are held. Concrete integrates with IMPL-EX by
+  default (two Newton iterations per step; holds and prestress are settled without extrapolation), or implicitly.
+- Cracks: the inelastic strain ε − C₀⁻¹σ per cell gives the crack strain and normal; width w = ε_cr · h; along a line
+  the cracks are cut at the valleys of the profile. Widths are of the size of code formulas, not predictions (smeared
+  cracks, perfect bond).
 
 OpenSees holds one global model, shared with femotion.frame.opensees: only the model built last is valid, calling an older
 one raises. Licence: OpenSees is free for education, research and non-profit use (copyright The Regents of the University
@@ -207,7 +164,9 @@ class ConcreteDamage:
         Hordijk 1991, wc = 5.136 Gf/ft) or "linear" (zero at 2 Gf/ft); every branch is scaled to an area of exactly Gf.
         prepeak (tension): "mc2010" (linear to 0.9 ft, then to ft at 0.15 ‰, eq. 5.1-8) or "linear".
         Compression: linear to 0.4 fc, Sargin's curve (MC2010 eq. 5.1-26) to fc at εc1, then linear to residual_c·fc over
-        an area Gc, constant beyond. Extra keywords go to the dataclass (plastic_t, implex, crack_planes, rho, …)."""
+        an area Gc, constant beyond. Extra keywords go to the dataclass (plastic_t, implex, crack_planes, rho, …).
+        With ν = 0.2 a crack band restrained by elastic neighbours dissipates about 0.93 Gf (ASDConcrete3D's equivalent
+        strain comes from the effective stress); pass Gf = Gf_target / 0.933 where the band's energy should be Gf."""
         if units not in UNITS:
             raise ValueError(f"units: one of {', '.join(UNITS)}")
         ks, kg = UNITS[units]
@@ -825,8 +784,9 @@ class OpsSolid:
         Section: a solid circle of diameter d and Young's modulus E (shear modulus E / 2(1 + ν)), or section=(E, A, Iy,
         Iz, G, J); fiber=femotion.frame.opensees.Fiber for a yielding anchor (forceBeamColumn, 5 Lobatto points).
         Cut into elements of at most `seg` (default half the median crack band); every node inside the solid is tied to
-        it in translation (the dowel bears on the concrete and bends on its own); rot=True also ties its rotation to the
-        rotation of the solid (a fully bonded stiff insert). Nodes outside the solid (a head standing proud of the
+        it in translation (the dowel bears on the concrete and bends on its own; a torsional spring as stiff as one of its
+        elements holds its twist at the first embedded node); rot=True also ties its rotation to the rotation of the
+        solid (a fully bonded stiff insert; tied to the sub-tetrahedron that holds the node, linear). Nodes outside the solid (a head standing proud of the
         surface) stay free. Bars whose points coincide with dowel nodes are pinned to them (define the dowels first): a
         prestressed strip anchored on the bolt heads. Returns the dowel's index."""
         if self.built:
