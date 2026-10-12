@@ -94,17 +94,18 @@ def test_locator_and_interpolation():
 
 
 # ── crack band: peak, fracture energy, mesh objectivity ───────────────────
-def tension_prism(nb: int, nu: float, implex: bool = False, steps: int = 150):
+def tension_prism(nb: int, nu: float, implex: bool = False, steps: int = 150, kind: str = "hex8"):
     """a 400 × 100 × 100 mm prism pulled through a rigid end (tie + displacement control); the middle cell layer is 5 %
-    weaker (a notch) so the crack forms there"""
+    weaker (a notch) so the crack forms there. kind="tet4": every cube cut into six tetrahedra"""
     L, b = 400.0, 100.0
     kw = dict(units="N-mm", prepeak="linear", nu=nu, implex=implex)
     c = ConcreteDamage.from_strength(38.0, **kw)
     cw = ConcreteDamage.from_strength(38.0, ft=0.95 * c.ft, **kw)
     m = structured.box(L, b, b, 4 * nb, nb, nb)
+    m = tets_of(m) if kind == "tet4" else m
     hx = L / (4 * nb)
     weak = np.abs(m.centroids()[:, 0] - (L / 2 + hx / 2)) < hx / 2
-    m.cell_groups = {"c": {"hex8": np.flatnonzero(~weak)}, "w": {"hex8": np.flatnonzero(weak)}}
+    m.cell_groups = {"c": {kind: np.flatnonzero(~weak)}, "w": {kind: np.flatnonzero(weak)}}
     s = OpsSolid(m, {"c": c, "w": cw})
     s.fix(lambda x: np.isclose(x[0], 0), comps=(0,))
     s.fix(lambda x: np.isclose(x[1], 0), comps=(1,))
@@ -139,6 +140,15 @@ def test_crack_band_energy_and_objectivity():
     assert W[1, 0.0] == pytest.approx(1.0, abs=0.02) and W[2, 0.0] == pytest.approx(1.0, abs=0.02)
     assert 0.90 < W[2, 0.2] < 0.97
     assert W[1, 0.2] == pytest.approx(W[2, 0.2], rel=0.02)
+
+
+@pytest.mark.parametrize("nb", [1, 2])
+def test_crack_band_of_tetrahedra(nb):
+    """tetrahedra (cubes cut in six): with the band ∛(6V) a crack through one layer of cubes dissipates Gf (ν = 0) and
+    the whole end displacement is its width"""
+    s, c, u, F, A, hx = tension_prism(nb, 0.0, kind="tet4")
+    assert np.trapezoid(F, u) / (c.Gf * A) == pytest.approx(1.0, abs=0.02)
+    assert s.cracks_along((0, 31, 29), (400, 31, 29))["max_width"] == pytest.approx(u[-1] - F[-1] / A / c.E * 400, rel=0.01)
 
 
 def test_crack_width_of_a_separated_prism():
@@ -368,7 +378,7 @@ def rc_beam(prepeak: str, target: float, steps: int):
     s.bar([(20, 50, 40), (L2, 50, 40)], area=201.06, material=steel(450.0, 2.0e5))
     s.fix(lambda x: np.isclose(x[0], L2), comps=(0,))
     s.fix(lambda x: np.isclose(x[1], B / 2), comps=(1,))
-    sup = s.fix(lambda x: np.isclose(x[2], 0) & (np.abs(x[0] - 100) <= 25 + 1e-6), comps=(2,))
+    sup = s.fix(lambda x: np.isclose(x[2], 0) & np.isclose(x[0], 100), comps=(2,))  # a line bearing (no end clamping)
     F = s.traction(lambda x: np.isclose(x[2], D) & (np.abs(x[0] - 1000) <= 25 + 1e-6), (0, 0, -1.0))
     mid = s.nearest((L2, B / 2, 0))
     st = s.push(F, mid, 2, -target, steps=steps)
@@ -448,3 +458,19 @@ def test_export_and_save(tmp_path):
     assert files[0].suffix == ".pvd" and len(files) == 5
     npz = np.load(s.save_npz(tmp_path / "beam.npz"))
     assert npz["U"].shape == (4, s.n_nodes, 3) and npz["cell/width"].shape == (4, s.nc)
+
+
+def test_width_history_and_stop():
+    """the stop condition ends a stage at a crack width; width_history gives the largest width per recorded step"""
+    s, c, u, F, A, hx = tension_prism(1, 0.0, steps=150)
+    idx, w = s.width_history()
+    assert w[0] == 0 and w[-1] == pytest.approx(s.crack_widths().max())
+    m = structured.box(400.0, 100.0, 100.0, 4, 1, 1)
+    s2 = OpsSolid(m, ConcreteDamage.from_strength(38.0, units="N-mm", prepeak="linear", implex=False))
+    s2.fix(lambda x: np.isclose(x[0], 0), comps=(0,))
+    s2.fix(lambda x: np.isclose(x[1], 0), comps=(1,))
+    s2.fix(lambda x: np.isclose(x[2], 0), comps=(2,))
+    end = s2.tie(lambda x: np.isclose(x[0], 400.0), comps=(0,))
+    st = s2.push(s2.nodal_force(None, (1.0, 0, 0), nodes=[end]), end, 0, 0.3, steps=150,
+                 stop=lambda h: h.cell["width"].max() > 0.05)
+    assert "stop" in st.message and 0.05 < s2.crack_widths().max() < 0.06

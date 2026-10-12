@@ -1,6 +1,6 @@
 """OpenSees back-end for solids (OpenSeesPy ≥ 3.8; extra "opensees"): nonlinear analysis of concrete with smeared cracks —
-where cracks appear, how they grow and how wide they open — with embedded reinforcement, prestressing tendons, anchors and
-bonded strips, staged loading and crack-width read-outs.
+where cracks appear, how they grow and how wide they open — with embedded reinforcement, prestressing tendons, anchor bolts
+and bonded or anchored strips, staged loading and crack-width read-outs. Guide and validation: docs/continuum-nonlinear.md.
 
     from femotion.mesh import structured
     from femotion.continuum.opensees import OpsSolid, ConcreteDamage, steel
@@ -8,32 +8,38 @@ bonded strips, staged loading and crack-width read-outs.
     c = ConcreteDamage.from_strength(fc=38.0, units="N-mm")              # mean strengths, fib Model Code 2010 defaults
     s = OpsSolid(m, c)
     s.bar([(50, 100, 40), (2950, 100, 40)], area=402.0, material=steel(500.0, 2.0e5))    # bonded bar, any path
-    s.fix(lambda x: np.isclose(x[0], 0) & np.isclose(x[2], 0), comps=(1, 2))
-    s.fix(lambda x: np.isclose(x[0], 3000) & np.isclose(x[2], 0), comps=(2,))
-    s.fix(lambda x: np.isclose(x[1], 0), comps=(1,))
+    s.fix(lambda x: np.isclose(x[0], 100) & np.isclose(x[2], 0), comps=(1, 2))
+    s.fix(lambda x: np.isclose(x[0], 2900) & np.isclose(x[2], 0), comps=(2,))
+    s.fix(lambda x: np.isclose(x[0], 1500) & np.isclose(x[1], 0), comps=(0,))
     F = s.traction(lambda x: np.isclose(x[2], 300) & (abs(x[0] - 1500) < 100), (0, 0, -1.0))
     s.static(s.self_weight(25e-6), steps=2)                             # stage 1, held
     s.push(F, node=(1500, 100, 0), dof=2, target=-6.0, steps=60)         # stage 2, displacement control
-    s.crack_widths()[-1]; s.cracks_along((0, 100, 1), (3000, 100, 1))   # per cell; individual cracks along a line
+    s.crack_widths(); s.cracks_along((0, 100, 1), (3000, 100, 1))       # per cell; individual cracks along a line
     s.export("out/beam.pvd")                                             # ParaView series; s.to_result() for fem-result/1
 
 Units: any consistent set (N, mm, MPa or kN, m, kPa …). Only the defaults of ConcreteDamage.from_strength, which come
 from empirical formulas in MPa, need to know it (units="N-mm" | "kN-m" | "N-m" | "MN-m").
 
 Model
-- solids: hex8 → stdBrick (8-point trilinear, or bbarBrick), tet4 → FourNodeTetrahedron; materials by cell group.
+- solids: hex8 → stdBrick (8-point trilinear, or bbarBrick), tet4 → FourNodeTetrahedron; materials by cell group
+  (ConcreteDamage, ElasticIso, ElasticOrtho).
 - ConcreteDamage → nDMaterial ASDConcrete3D (Petracca, Camata, ASDEA): damage-plasticity with a Lubliner-type surface and
-  separate tension and compression laws; the post-peak branches are regularised by the crack band of each cell (see below).
-- bars (rebars, tendons, anchors, strips): Truss elements along any polyline, not tied to the mesh. Bonded bars are cut into
-  short segments whose nodes are each tied to the solid by ASDEmbeddedNodeElement (penalty, linear tetrahedral
-  interpolation: inside a hexahedron the node is tied to one of its six sub-tetrahedra); unbonded bars get nodes only at
-  their given points (anchors, deviators) and one Truss per span. A bar node that coincides with a mesh node uses it
-  directly. prestress=σ0 wraps the material in InitStressMaterial (tension +; the first analysis step balances it).
-- supports: fixed components, nodal springs, distributed (Winkler) springs on boundary faces; prescribed displacements.
+  separate tension and compression laws; the post-peak branches are regularised by the crack band of each cell (below).
+- bars (rebars, tendons, strips): Truss elements along any polyline, not tied to the mesh. Bonded bars are cut into short
+  segments whose nodes are each tied to the solid by ASDEmbeddedNodeElement (penalty, linear tetrahedral interpolation:
+  inside a hexahedron the node is tied to one of its six sub-tetrahedra); unbonded bars get nodes only at their given
+  points (anchors, deviators) and one Truss per span. A bar node that coincides with a mesh node uses it directly.
+  prestress=σ0 wraps the material in InitStressMaterial (tension +; the first analysis step balances it).
+- dowels (anchor bolts, studs): beam elements on 6-dof nodes tied to the solid in translation (or also in rotation), so
+  shear and bending reach the concrete along the embedded length; bars ending on a dowel node are pinned to it (a
+  prestressed strip anchored on bolt heads).
+- supports: fixed components, ties (equalDOF), nodal springs, distributed (Winkler) springs on boundary faces; imposed
+  displacements through stiff springs from driven ground nodes (sub-models, stroke control).
 - loads (consistent nodal forces): nodal, point (anywhere, by shape functions), traction / pressure on boundary faces,
   body force and self-weight.
-- stages: static (load control) and push (displacement control) accumulate in call order, each held afterwards;
-  non-converged steps switch algorithm (Krylov-Newton, Newton with line search, modified Newton) and then halve the step.
+- stages: static (load control) and push (displacement control) accumulate in call order, each held afterwards. The
+  concrete integrates with IMPL-EX by default (two Newton iterations per step, never stalls; error of about one step);
+  implex=False iterates implicitly. Steps that do not converge switch algorithm and then halve.
 
 Crack band (Bažant & Oh 1983) and crack width
 - Each concrete cell gets its own softening law: the tensile law is given as stress against crack opening w (fib MC2010
@@ -47,13 +53,14 @@ Crack band (Bažant & Oh 1983) and crack width
   ε_in = ε − C₀⁻¹ σ at the integration points, averaged over the cell; its largest principal value minus the pre-peak part
   is the crack opening strain ε_cr, its direction the crack normal n; a cell counts as cracked once the tensile
   equivalent strain of the material passed the peak. The crack width is w = ε_cr · h (the opening of the band the law was
-  regularised for). Along a line, cracks are runs of cracked cells; the width of each is ∫ ε_cr (n·t)² ds, the opening
-  of that crack projected on the line.
+  regularised for). Along a line the profile of ε_cr (n·t)² is integrated cell by cell and cut into individual cracks at
+  its valleys; the width of each is the opening of that crack projected on the line.
 - Limits of the estimate: smeared cracks do not localise into single lines, so one physical crack is a band of one or
   two cells, and neighbouring cracks closer than ~2 h merge; the opening is the mean over the band, not the width at the
   surface; the steel is perfectly bonded (no slip, no tension-stiffening law), so crack spacing follows the mesh and the
-  bar diameter does not enter; widths are therefore order-of-magnitude checks against code formulas, not predictions to
-  0.01 mm. See docs/continuum-nonlinear.md.
+  bar diameter does not enter; widths are order-of-magnitude checks against code formulas, not predictions to 0.01 mm.
+- With ν > 0 a softening band restrained laterally by its elastic neighbours dissipates a few per cent less than Gf
+  (ASDConcrete3D's equivalent strain comes from the effective stress): 0.93 Gf for ν = 0.2, Gf exactly for ν = 0.
 
 Pitfalls found while writing this module (OpenSeesPy 3.8)
 - ASDEmbeddedNodeElement takes the fourth retained node as an optional argument parsed from a *string*: passed as a
@@ -61,8 +68,13 @@ Pitfalls found while writing this module (OpenSeesPy 3.8)
 - Its default penalty 1e18·∛V leaves round-off of ~1e-5 in the displacements and stalls convergence tests; here the
   penalty is 1e6 × the largest Young's modulus (relative error ~1e-8).
 - FourNodeTetrahedron with negative volume gives a negative stiffness without a warning; cells are re-oriented here.
-- ASDConcrete3D's own "-fc" shortcut assumes MPa and N/mm, and its "-autoRegularization" uses the shortest node-to-node
-  distance as the band; neither is used here.
+- IMPL-EX extrapolates with OpenSees' pseudo-time increment, which displacement control changes in every iteration (the
+  step then diverges): the material time is set per step here (setParameter dTime / dTimeCommit).
+- An sp constraint on a node puts a whole displacement increment into the first cell layer in the predictor and cracks
+  it; imposed displacements go through stiff springs instead.
+- ASDConcrete3D's own "-fc" shortcut assumes MPa and N/mm, and its "-autoRegularization" and crack-width responses use
+  the shortest node-to-node distance as the band; none is used here.
+- geomTransf and frame elements need the 6-dof model builder when created; loads on 6-dof nodes take six components.
 
 OpenSees holds one global model, shared with femotion.frame.opensees: only the model built last is valid, calling an older
 one raises. Licence: OpenSees is free for education, research and non-profit use (copyright The Regents of the University
@@ -86,7 +98,8 @@ LOG = os.path.join(tempfile.gettempdir(), "femotion_opensees_solid.log")
 UNITS = {"N-mm": (1.0, 1.0), "MN-m": (1.0, 1e3), "kN-m": (1e-3, 1.0), "N-m": (1e-6, 1e-3)}
 
 _HEX_SIGNS = np.array([[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], float)
-HEX_TETS = np.array([(0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6), (0, 7, 4, 6), (0, 4, 5, 6), (0, 5, 1, 6)])  # around the 0-6 diagonal
+# a hexahedron (VTK order) as six tetrahedra around its 0-6 diagonal
+HEX_TETS = np.array([(0, 1, 2, 6), (0, 2, 3, 6), (0, 3, 7, 6), (0, 7, 4, 6), (0, 4, 5, 6), (0, 5, 1, 6)])
 _G2 = np.array([-1.0, 1.0]) / math.sqrt(3.0)
 
 
@@ -386,7 +399,8 @@ class Locator:
         self.off = np.cumsum([0] + [len(c) for c in self.conn])
         P = mesh.points
         cen = np.concatenate([P[c].mean(axis=1) for c in self.conn])
-        self.rad = np.concatenate([np.linalg.norm(P[c] - P[c].mean(axis=1, keepdims=True), axis=2).max(axis=1) for c in self.conn])
+        self.rad = np.concatenate([np.linalg.norm(P[c] - P[c].mean(axis=1, keepdims=True), axis=2).max(axis=1)
+                                   for c in self.conn])
         self.lo = np.concatenate([P[c].min(axis=1) for c in self.conn])
         self.hi = np.concatenate([P[c].max(axis=1) for c in self.conn])
         self.tree = cKDTree(cen)
@@ -761,8 +775,8 @@ class OpsSolid:
         if section is None:
             if d is None or E is None:
                 raise ValueError("dowel: give d and E (solid circle) or section=(E, A, Iy, Iz, G, J)")
-            A, I = math.pi * d**2 / 4, math.pi * d**4 / 64
-            section = (E, A, I, I, E / (2 * (1 + nu)), 2 * I)
+            A, Id = math.pi * d**2 / 4, math.pi * d**4 / 64
+            section = (E, A, Id, Id, E / (2 * (1 + nu)), 2 * Id)
         P = self._subdivide(P, seg or 0.5 * float(np.median(self.h)))
         ids = []
         for p in P:
@@ -1369,8 +1383,17 @@ class OpsSolid:
         """crack width w = ε_cr · h of every solid cell (0 where not cracked)"""
         return self._rec(step).cell["width"]
 
+    def width_history(self, *path, **kw) -> tuple[np.ndarray, np.ndarray]:
+        """the largest crack width at every recorded step: of any cell, or of the cracks along a line or polyline
+        (cracks_along(*path, **kw)). Returns (history indices, widths): interpolate the load at a width limit, e.g.
+        np.interp(0.2, w, P[idx]) while the widths grow"""
+        idx = np.array(self.recorded())
+        if not path:
+            return idx, np.array([self.history[i].cell["width"].max() for i in idx])
+        return idx, np.array([self.cracks_along(*path, step=int(i), **kw)["max_width"] for i in idx])
+
     def first_crack(self) -> int | None:
-        """history index of the first recorded step with a cracked cell"""
+        """history index of the first recorded step with a cracked cell (record every step to find it to one step)"""
         return next((i for i in self.recorded() if self.history[i].cell["cracked"].any()), None)
 
     def reaction(self, at=None, step=-1) -> np.ndarray:
@@ -1482,7 +1505,6 @@ class OpsSolid:
         pv = np.array([float(np.mean(val[g])) for g in groups])
         psm = np.array([float(np.mean(ss[g])) for g in groups])
         pw = pv * pl  # opening carried by each crossed cell
-        ls = np.full(len(ss), total / n)
         cracks = []
         on = np.r_[False, pv > 0, False]
         for a, b in zip(np.flatnonzero(on[1:] & ~on[:-1]), np.flatnonzero(~on[1:] & on[:-1])):
