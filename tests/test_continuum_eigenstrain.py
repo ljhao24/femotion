@@ -11,8 +11,8 @@ pytest.importorskip("openseespy")
 pytest.importorskip("skfem")
 from femotion.continuum import Elastic  # noqa: E402
 from femotion.continuum.corrosion import (alonso_1998, depth_for_expansion, depth_from_mass_loss,  # noqa: E402
-                                          el_maaddawy_soudki_2007, free_expansion, gbt51355_2019, lame_cylinder,
-                                          liu_weyers_1998, mass_loss, rust_strain, tepfers)
+                                          el_maaddawy_soudki_2007, free_expansion, gbt51355_2019, interface_pressure,
+                                          lame_cylinder, liu_weyers_1998, mass_loss, rust_strain, tepfers)
 from femotion.continuum.opensees import BondSlip, ConcreteDamage, ElasticIso, Eigenstrain, OpsSolid, elastic  # noqa: E402
 from femotion.mesh import structured  # noqa: E402
 from femotion.mesh.inclusions import bar_block, bar_section, cylinder, hoop_normals  # noqa: E402
@@ -40,6 +40,7 @@ def test_free_expansion_is_stress_free():
     assert np.abs(h.cell["strain"]).max() < 1e-6 * 2e-4
     assert np.allclose(h.cell["eps0"], [2e-4, 2e-4, 2e-4, 0, 0, 0])
     assert np.abs(h.bar["N"]).max() < 1e-6 * 200e3 * 1e-3 * 2e-4 and np.allclose(h.bar["eps0"], 2e-4)
+    assert np.abs(h.bar["strain"]).max() < 1e-6 * 2e-4  # the bar's strain is its material's, ε − ε0, as for cells
     assert h.U[s.nearest((1.0, 0.4, 0.3))] == pytest.approx(2e-4 * np.array([1.0, 0.4, 0.3]), rel=1e-6)
 
 
@@ -154,6 +155,66 @@ def test_eigenstrain_algebra_and_stopping():
     assert "stopped" in st.message and s.history[-1].cell["eps0"][0, 0] == pytest.approx(0.4e-3)
     s.static(strain=b, steps=2)
     assert s.history[-1].cell["eps0"][0, 0] == pytest.approx(1.4e-3)
+
+
+@pytest.mark.parametrize("ratio", [0.33, 1.33])
+def test_yielding_bar_under_its_own_free_strain_is_path_independent(ratio):
+    """an unbonded Steel01 bar (fy 400, 1 % hardening) in parallel with an elastic block shortens by a free strain of
+    its own (−6e-3, it yields), then the free strain is taken back (it yields the other way): bilinear steel on a
+    monotonic path ends in the same state whatever the number of steps. The free strain is the imposed elongation of a
+    stiff elastic spring in series with each segment, so the steel only ever sees converged states (OpenSees'
+    InitStrainMaterial would commit the steel at an off-path state on every update: −30 % with one step)"""
+    L, b = 1000.0, 100.0
+    As = ratio * 30e3 * b * b / 2e5
+
+    def run(steps):
+        m = structured.box(L, b, b, 10, 2, 2)
+        s = OpsSolid(m, ElasticIso(30e3, 0.0))
+        bi = s.bar([(0, b / 2, b / 2), (L, b / 2, b / 2)], As, ("Steel01", 400.0, 2e5, 0.01), bond=False,
+                   free_strain=True)
+        statically_determinate(s, L, b)
+        s.static(strain=s.bar_strain(bi, -6e-3), steps=steps)
+        out = [s.bar_results(bi)["stress"].mean()]
+        s.static(strain=s.bar_strain(bi, 6e-3), steps=steps)
+        return out + [s.bar_results(bi)["stress"].mean()]
+
+    ref = run(40)
+    assert abs(ref[0]) > 400  # yielded
+    for steps in (1, 5):
+        assert run(steps) == pytest.approx(ref, rel=1e-6, abs=1e-6)
+
+
+@pytest.mark.filterwarnings("ignore:.*elongated")
+def test_thermal_selection_and_guards():
+    """thermal(dT, cells) heats the bars inside the selected cells only (bars=True), the bars listed (a list), or none;
+    cells with alpha = 0 are warned about, all of them raise; shrinkage() takes the concrete cells by default; a free
+    strain of another model, or one on a bar built without free strains, raises"""
+    m = structured.box(1.0, 0.2, 0.4, 5, 1, 4)
+    top = m.centroids()[:, 2] > 0.2
+    m.cell_groups = {"top": {"hex8": np.flatnonzero(top)}, "bottom": {"hex8": np.flatnonzero(~top)}}
+    c = ConcreteDamage.from_strength(38.0, units="N-mm")
+    s = OpsSolid(m, {"top": c, "bottom": ElasticIso(30e3, 0.2)})
+    hi = s.bar([(0, 0.1, 0.35), (1.0, 0.1, 0.35)], 1e-4, elastic(2e5), alpha=1.2e-5)
+    lo = s.bar([(0, 0.1, 0.05), (1.0, 0.1, 0.05)], 1e-4, elastic(2e5), alpha=1.2e-5)
+    nobar = s.bar([(0, 0.15, 0.05), (1.0, 0.15, 0.05)], 1e-4, elastic(2e5))  # no free strain springs
+    t = s.thermal(20.0, "top")
+    seg = {b: set(s.bars[b]["segs"].tolist()) for b in (hi, lo)}
+    assert seg[hi] <= set(t.segs.tolist()) and not (seg[lo] & set(t.segs.tolist()))
+    assert np.allclose(t.seg_values, 1.2e-5 * 20)
+    assert set(s.thermal(20.0, "top", bars=[lo]).segs.tolist()) == seg[lo]
+    assert len(s.thermal(20.0, "top", bars=False).segs) == 0
+    with pytest.warns(UserWarning, match="alpha = 0"):
+        s.thermal(20.0)
+    with pytest.raises(ValueError, match="coefficient of thermal expansion"):
+        s.thermal(20.0, "bottom", bars=False)
+    sh = s.shrinkage(3e-4)
+    assert set(sh.cells.tolist()) == set(s.cells_of("top").tolist())
+    other = OpsSolid(structured.box(1.0, 0.2, 0.4, 2, 1, 2), c)
+    with pytest.raises(ValueError, match="another model"):
+        statically_determinate(s, 1.0, 0.2)
+        s.static(strain=other.shrinkage(1e-4))
+    with pytest.raises(ValueError, match="without free strains"):
+        s.bar_strain(nobar, 1e-4)
 
 
 # ── cracking under a free strain ─────────────────────────────────────────
@@ -328,17 +389,33 @@ def lame_three_layers(r_i, r, R, delta, E, nu):
     return (lambda p: A3 * p + B3 / p), (lambda p: 2 * (l3 + m3) * A3 + 2 * m3 * B3 / p**2)
 
 
+def lame_pressure(r_i, r, R, delta, E, nu):
+    """the interface pressure −σρρ(r) of the concrete in lame_three_layers"""
+    u, hoop = lame_three_layers(r_i, r, R, delta, E, nu)
+    lam, mu = E[2] * nu / ((1 + nu) * (1 - 2 * nu)), E[2] / (2 * (1 + nu))
+    A, B = np.linalg.solve([[r, 1 / r], [R, 1 / R]], [u(r), u(R)])
+    return -(2 * (lam + mu) * A - 2 * mu * B / r**2)
+
+
 def test_rust_ring_matches_lame():
     """an elastic rust ring with the free strain of rust_strain inside a concrete cylinder (plane strain) matches the
     exact three-layer Lamé solution: radial displacement of the bar surface and of the outside, hoop stress in the
-    concrete next to the bar"""
+    concrete next to the bar; the interface pressure read from the equilibrium of the concrete (interface_pressure) is
+    the exact one to 0.3 % whatever the number of cells round the bar, where the stresses of the thin ring itself are
+    12–22 % low"""
     d, R, t, delta = 12.0, 40.0, 0.6, 0.01
     r = d / 2
     E = (200e3, 20e3, 33e3)
     u_ex, hoop_ex = lame_three_layers(r - t, r, R, delta, E, 0.2)
-    msh, s = rust_cylinder(16, {"steel": ElasticIso(E[0], 0.2), "rust": ElasticIso(E[1], 0.2),
-                                "concrete": ElasticIso(E[2], 0.2)})
-    s.static(strain=s.initial_strain(rust_strain((0, 0, 0), (1, 0, 0), r - t, t, delta), "rust"))
+    p_ex = lame_pressure(r - t, r, R, delta, E, 0.2)
+    mats = {"steel": ElasticIso(E[0], 0.2), "rust": ElasticIso(E[1], 0.2), "concrete": ElasticIso(E[2], 0.2)}
+    for m in (6, 8, 16):
+        msh, s = rust_cylinder(m, mats)
+        s.watch("p", interface_pressure((0, 0, 0), (1, 0, 0), r, cells="concrete"))
+        s.static(strain=s.initial_strain(rust_strain((0, 0, 0), (1, 0, 0), r - t, t, delta), "rust"))
+        w = s.watched("p")[-1]
+        assert w["p"] == pytest.approx(p_ex, rel=4e-3) and np.ptp(w["p_node"]) < 1e-9 * p_ex
+        assert s.watched("p")[0]["p"] == 0.0
     rho, ur = radial(msh, s.history[-1].U)
     for p in (r, R):
         assert ur[np.isclose(rho, p, rtol=1e-9)].mean() == pytest.approx(u_ex(p), rel=2e-3)
@@ -355,47 +432,54 @@ def test_rust_ring_matches_lame():
     assert hoop[first].mean() == pytest.approx(hoop_ex(pc), rel=3e-3)
 
 
-def test_rust_cracks_the_cover_between_tepfers_bounds():
-    """rust expanding a stiff ring inside a concrete cylinder (cover c = 25 mm, bar 12 mm, plane strain, smeared cracking
-    all round): the first crack appears when Lamé's hoop stress at the bar reaches ft (within one step); the peak
-    pressure on the concrete lies between Tepfers' partly cracked elastic ring and his plastic ring (a softening ring
-    carries more than a brittle one, less than a plastic one); the outer surface cracks after the peak"""
+def rust_cover(m: int, dmax: float = 0.009, steps: int = 90):
+    """rust expanding a steel-stiff ring in a concrete cylinder: cover 25, bar 12, plane strain, C30, smeared cracks"""
     d, c, t = 12.0, 25.0, 0.5
     r, R = d / 2, d / 2 + c
     conc = ConcreteDamage.from_strength(38.0, units="N-mm", prepeak="linear")
-    msh = cylinder([0.0, 1.0], d, R, ring=t, m=6)
+    msh = cylinder([0.0, 1.0], d, R, ring=t, m=m)
     s = OpsSolid(msh, {"concrete": conc, "steel": ElasticIso(2e5, 0.3), "rust": ElasticIso(2e5, 0.3)},
                  band=("projected", hoop_normals(msh, [(0, 0, 0)])))
     s.fix(lambda x: np.isclose(x[0], 0) | np.isclose(x[0], 1.0), comps=(0,))
     s.fix(lambda x: np.isclose(x[1], 0) & (np.abs(x[2]) > 0) & np.isclose(x[0], 0), comps=(1,))
     s.fix(lambda x: np.isclose(x[2], 0) & (np.abs(x[1]) > 0) & np.isclose(x[0], 0), comps=(2,))
-    dmax, steps = 0.009, 90
+    s.watch("p", interface_pressure((0, 0, 0), (1, 0, 0), r))
     assert s.static(strain=s.initial_strain(rust_strain((0, 0, 0), (1, 0, 0), r - t, t, dmax), "rust"),
                     steps=steps).converged
     rho, _ = radial(msh, np.zeros((msh.n_points, 3)))
     inner = np.isclose(rho, r, rtol=1e-9)
-    C = s.cell_centroids()
-    nr = np.c_[np.zeros(s.nc), C[:, 1], C[:, 2]] / np.hypot(C[:, 1], C[:, 2])[:, None]
-    rust, conc_c = s.cells_of("rust"), s.cells_of("concrete")
-    hexc = msh.cells["hex8"]
-    outer = np.intersect1d(np.flatnonzero(np.isclose(rho[hexc], R, rtol=1e-9).any(axis=1)), conc_c)
-    u, p, first, surf = [], [], [], []
-    for h in s.history[1:]:
-        u.append(radial(msh, h.U)[1][inner].mean())
-        S = h.cell["stress"]
-        srr = (S[:, 1] * nr[:, 1] ** 2 + S[:, 2] * nr[:, 2] ** 2 + 2 * S[:, 4] * nr[:, 1] * nr[:, 2])
-        p.append(-srr[rust].mean())
-        first.append(h.cell["cracked"][conc_c].any())
-        surf.append(h.cell["cracked"][outer].any())
-    u, p = np.array(u), np.array(p)
+    conc_c = s.cells_of("concrete")
+    outer = np.intersect1d(np.flatnonzero(np.isclose(rho[msh.cells["hex8"]], R, rtol=1e-9).any(axis=1)), conc_c)
+    u = np.array([radial(msh, h.U)[1][inner].mean() for h in s.history])
+    p = np.array([w["p"] for w in s.watched("p")])
+    first = np.array([h.cell["cracked"][conc_c].any() for h in s.history])
+    surf = np.array([h.cell["cracked"][outer].any() for h in s.history])
+    return conc, u, p, first, surf, (d, c, r, R, dmax / steps)
+
+
+def test_rust_cracks_the_cover_like_a_plastic_ring():
+    """rust expanding a stiff ring inside a concrete cylinder (cover c = 25 mm, bar 12 mm, plane strain, smeared cracking
+    all round): the first crack appears when Lamé's hoop stress at the bar reaches ft (within one step); the pressure on
+    the concrete (from its equilibrium) rises to 0.98 of Tepfers' plastic ring — every cell round the bar cracks at once
+    and each crack opens far less than w1 = Gf/ft, so the cracked zone still carries about ft, as a plastic ring would
+    (C30's characteristic length E Gf/ft² ≈ 560 mm ≫ the 25 mm cover) — well above his partly cracked elastic ring, and
+    stays on a plateau; the outer surface cracks on the plateau, at an expansion about twice the thick-walled cylinder
+    models' (Liu & Weyers 1998, El Maaddawy & Soudki 2007: the plastic pressure on an uncracked elastic cylinder)"""
+    conc, u, p, first, surf, (d, c, r, R, du) = rust_cover(6)
     lc, tp = lame_cylinder(r, R, conc.E, conc.nu), tepfers(c, d, conc.ft)
     k1 = int(np.argmax(first))
-    du = dmax / steps
     assert lc["delta1"](conc.ft) - du <= u[k1] <= lc["delta1"](conc.ft) * 1.05 + du
-    assert tp["partly_cracked"] < p.max() < tp["plastic"]
+    assert 0.95 * tp["plastic"] < p.max() < tp["plastic"] and p.max() > 2 * tp["partly_cracked"]
     ks = int(np.argmax(surf))
-    assert np.any(surf) and ks >= int(np.argmax(p))
-    # the thick-walled cylinder models (Liu & Weyers 1998; El Maaddawy & Soudki 2007 alike) put the plastic pressure on
-    # an uncracked elastic cylinder; the cracked ring is softer, so the FE needs more expansion to crack the cover
+    assert np.any(surf) and p[ks] > 0.98 * p.max() and p[-1] > 0.98 * p.max()
     lw = liu_weyers_1998(c, d, conc.ft, conc.E, nu=conc.nu, d0=0.0)
-    assert lw["pressure"] == pytest.approx(tp["plastic"]) and 1.2 < u[ks] / lw["expansion"] < 4.0
+    assert lw["pressure"] == pytest.approx(tp["plastic"]) and 1.8 < u[ks] / lw["expansion"] < 2.4
+
+
+@pytest.mark.slow
+def test_rust_cover_pressure_does_not_depend_on_the_mesh():
+    """24 and 32 cells round the bar: the same pressure plateau (0.1 %) and the same expansion at which the outer
+    surface cracks"""
+    a, b = rust_cover(6), rust_cover(8)
+    assert a[2].max() == pytest.approx(b[2].max(), rel=5e-3)
+    assert a[1][int(np.argmax(a[4]))] == pytest.approx(b[1][int(np.argmax(b[4]))], rel=0.03)

@@ -98,6 +98,77 @@ def rust_strain(p0, axis, r_in: float, t: float, delta: float):
                               lambda rho: delta * (np.clip(rho, r_in, r_in + t) - r_in) / (t * np.maximum(rho, 1e-300)))
 
 
+_HEX_FACES = ((0, 1, 2, 3), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7))
+_TET_FACES = ((0, 1, 2), (0, 1, 3), (1, 2, 3), (0, 2, 3))
+
+
+def interface_pressure(p0, axis, r: float, cells=None, tol: float = 1e-6):
+    """the pressure between a bar (with its rust) and the concrete around it, from the equilibrium of the concrete: the
+    forces the concrete cells exert on the nodes of the cylindrical interface of radius r about the axis (through p0
+    along `axis`), divided by the area that a uniform pressure would load them with (the polygon of the mesh, not the
+    circle). The stresses of a thin rust ring are not a measure of it: they carry the error of a polygon forced to a
+    large free strain (12–22 % low with 24–32 cells round a bar). For OpsSolid.watch:
+
+        s.watch("p", interface_pressure((0, y0, z0), (1, 0, 0), r))   # then s.watched("p")[k]["p"]
+
+    or call it on the current state. cells: the concrete cells (default: the ConcreteDamage cells). Returns
+    dict(p: mean pressure (compression +), theta: angle of each interface node about the axis, p_node: pressure per
+    node, force: total radial force on the concrete, area: the loaded area)"""
+    p0, a = _axis_frame(p0, axis)
+    ref = np.eye(3)[int(np.argmin(np.abs(a)))]
+    e1 = ref - a * (ref @ a)
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(a, e1)
+    cache: dict = {}
+
+    def setup(s):
+        P = s.mesh.points
+        n, rho = _polar(P.T, p0, a)
+        on = np.abs(rho - r) <= tol * r
+        if not on.any():
+            raise ValueError(f"no node of the mesh on the radius {r:g} about the axis")
+        cc = s.concrete_cells() if cells is None else s.cells_of(cells)
+        rows, g = [], np.zeros((len(P), 3))
+        for k in s.kinds:
+            o, conn = s.off[k], s.mesh.cells[k]
+            sel = cc[(cc >= o) & (cc < o + len(conn))]
+            faces = _HEX_FACES if k == "hex8" else _TET_FACES
+            for e in sel:
+                nodes = conn[e - o]
+                hit = on[nodes]
+                if not hit.any():
+                    continue
+                rows.append((int(e), np.flatnonzero(hit), nodes[hit]))
+                for f in faces:  # faces on the interface: the nodal load of a unit pressure
+                    fn = nodes[list(f)]
+                    if not on[fn].all():
+                        continue
+                    X = P[fn]
+                    av = 0.5 * np.cross(X[2] - X[0], X[3] - X[1]) if len(f) == 4 else 0.5 * np.cross(X[1] - X[0], X[2] - X[0])
+                    if av @ n[:, fn].mean(axis=1) < 0:
+                        av = -av
+                    g[fn] += av / len(f)
+        ids = np.unique(np.concatenate([r_[2] for r_ in rows]))
+        cache.update(rows=rows, ids=ids, n=n[:, ids].T, area_node=np.einsum("ij,ij->i", g[ids], n[:, ids].T),
+                     theta=np.arctan2(n[:, ids].T @ e2, n[:, ids].T @ e1))
+
+    def fn(s):
+        if not cache:
+            setup(s)
+        F = {}
+        forces = s.element_forces([row[0] for row in cache["rows"]])
+        for (e, loc, nodes), f in zip(cache["rows"], forces):
+            for li, nd in zip(loc, nodes):
+                F[int(nd)] = F.get(int(nd), np.zeros(3)) + f[li]
+        Fn = np.array([F[int(i)] for i in cache["ids"]])
+        fr = np.einsum("ij,ij->i", Fn, cache["n"])  # the node pushes the concrete outwards: + under pressure
+        A = cache["area_node"]
+        return dict(p=float(fr.sum() / A.sum()), theta=cache["theta"], p_node=fr / A, force=float(fr.sum()),
+                    area=float(A.sum()))
+
+    return fn
+
+
 # ── references for cover cracking ──────────────────────────────────────────
 def lame_cylinder(a: float, b: float, E: float, nu: float, plane: str = "strain") -> dict:
     """thick-walled cylinder (inner radius a, outer b, free outside) under an inner pressure p, linear elastic (Lamé):
@@ -172,5 +243,5 @@ def gbt51355_2019(c: float, d: float, fcu: float, corner: bool = False) -> float
 
 
 __all__ = ["mass_loss", "depth_from_mass_loss", "free_expansion", "depth_for_expansion", "cylindrical_strain",
-           "rust_strain", "lame_cylinder", "tepfers", "alonso_1998", "liu_weyers_1998", "el_maaddawy_soudki_2007",
-           "gbt51355_2019"]
+           "rust_strain", "interface_pressure", "lame_cylinder", "tepfers", "alonso_1998", "liu_weyers_1998",
+           "el_maaddawy_soudki_2007", "gbt51355_2019"]
