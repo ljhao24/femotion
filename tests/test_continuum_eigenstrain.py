@@ -272,6 +272,27 @@ def test_bond_slip_pullout_capacity():
     assert max(sp.tau) == pytest.approx(7.0 * (38 / 20) ** 0.25) and sp.tau[-1] < 1e-2 * max(sp.tau)
 
 
+def test_plain_bar_bond_law():
+    """MC2010 table 6.1-2 for smooth bars: τ = τmax (s/s1)^0.5 to s1, then τmax; a plain hot-rolled bar pulled out of a
+    stiff block carries τmax × perimeter × length"""
+    hr, cd = BondSlip.mc2010_plain(38.0), BondSlip.mc2010_plain(38.0, kind="cold-drawn", good=False)
+    assert max(hr.tau) == pytest.approx(0.3 * math.sqrt(38.0)) and hr.s[4] == pytest.approx(0.1)
+    assert hr.tau[0] == pytest.approx(0.3 * math.sqrt(38.0) * (1 / 25) ** 0.5) and hr.tau[-1] == max(hr.tau)
+    assert max(cd.tau) == pytest.approx(0.05 * math.sqrt(38.0)) and cd.s[4] == pytest.approx(0.01)
+    L, d = 200.0, 12.0
+    m = structured.box(L, 100, 100, 20, 4, 4)
+    s = OpsSolid(m, ElasticIso(30e3, 0.2))
+    s.fix(lambda x: np.isclose(x[0], 0))
+    bi = s.bar([(0.0, 50, 50), (L, 50, 50), (L + 50, 50, 50)], math.pi * d * d / 4, elastic(2e5), bond=hr,
+               outside="free")
+    end = s.bars[bi]["nodes"][-1]
+    s.fix(None, comps=(1, 2), nodes=[end])
+    F = np.zeros((s.n_nodes, 3))
+    F[end, 0] = 1.0
+    assert s.push(F, end, 0, 2.0, steps=20).converged
+    assert max(h.lam for h in s.history) == pytest.approx(max(hr.tau) * math.pi * d * L, rel=1e-6)
+
+
 def test_bonded_length_of_a_bar_entering_the_solid():
     """a bar that enters the solid between two of its nodes (from 47.3 mm outside) is bonded over exactly the length
     inside: the surface crossing is found by bisection"""

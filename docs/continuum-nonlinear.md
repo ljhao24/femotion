@@ -350,6 +350,11 @@ parts of the neighbouring half segments inside the solid), across it stiff. Laws
 | `BondSlip.mc2010_plain(fcm, kind="hot-rolled" / "cold-drawn", good=)` | `HystereticSM` | MC2010 table 6.1-2, smooth (plain) bars — the plain round bars of older bridges; see below |
 | `BondSlip.rigid_plastic(tau, s_el)` | `ElasticPP` | constant bond stress once the slip exceeds s_el: the tension chord model (Marti et al. 1998: τb0 = 2 fct) |
 
+Smooth bars (`mc2010_plain`, MC2010 table 6.1-2): τ = τmax (s/s1)^0.5 up to s1 = s2 = s3, then a constant τbf = τmax;
+hot-rolled bars τmax = 0.3 √fcm with good bond conditions and 0.15 √fcm otherwise, s1 = 0.1 mm; cold-drawn wire 0.1 √fcm
+and 0.05 √fcm, s1 = 0.01 mm. A plain bar holds by friction once it has slipped a tenth of a millimetre: an order of
+magnitude below a ribbed bar, and without splitting.
+
 `bar_results(k)["bond"]` gives slip and bond stress at the bar's nodes. With slip, cracks space themselves by the
 transfer length — the restrained tie below lands in the range of the tension chord model — instead of by the mesh.
 

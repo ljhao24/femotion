@@ -410,6 +410,26 @@ class BondSlip:
         tt.append(max(tbf, 1e-3 * tmax))
         return cls(tuple(x / kl for x in ss), tuple(x / ks for x in tt))
 
+    @classmethod
+    def mc2010_plain(cls, fcm: float, *, units: str = "N-mm", kind: str = "hot-rolled", good: bool = True,
+                     n: int = 5) -> "BondSlip":
+        """fib Model Code 2010, 6.1.1, table 6.1-2, smooth (plain) bars — the plain round bars of older structures:
+        τ = τmax (s/s1)^0.5 up to s1 = s2 = s3, then constant τbf = τmax. kind="hot-rolled": τmax = 0.3 √fcm (good bond
+        conditions) or 0.15 √fcm (all others), s1 = 0.1 mm; "cold-drawn" (wire): 0.1 √fcm or 0.05 √fcm, s1 = 0.01 mm"""
+        if units not in UNITS:
+            raise ValueError(f"units: one of {', '.join(UNITS)}")
+        ks, kl = UNITS[units][0], UNITS[units][1] / UNITS[units][0]
+        f = fcm * ks
+        if kind == "hot-rolled":
+            tmax, s1 = (0.3 if good else 0.15) * math.sqrt(f), 0.1
+        elif kind == "cold-drawn":
+            tmax, s1 = (0.1 if good else 0.05) * math.sqrt(f), 0.01
+        else:
+            raise ValueError("kind: 'hot-rolled' or 'cold-drawn'")
+        ss = [s1 * (k / n) ** 2 for k in range(1, n + 1)] + [100 * s1]
+        tt = [tmax * (x / s1) ** 0.5 for x in ss[:-1]] + [tmax]
+        return cls(tuple(x / kl for x in ss), tuple(x / ks for x in tt))
+
     def ops_material(self, ops, tag: int, scale: float) -> int:
         """the uniaxial force – slip material of one bond spring: τ × scale (perimeter × tributary length)"""
         s, t = np.asarray(self.s, float), np.asarray(self.tau, float) * scale

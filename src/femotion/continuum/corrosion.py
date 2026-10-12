@@ -7,8 +7,11 @@ The rust layer is a thin ring of cells at the bar's surface (femotion.mesh.inclu
 δ (ρ − r_in)/(t ρ) — so the ring's outer surface moves out by δ when nothing resists it and the rust's own stiffness (the
 ring's material) only matters under the pressure of the concrete. A stage of OpsSolid ramps δ from 0 to its value:
 
-    from femotion.continuum.corrosion import rust_strain, depth_for_expansion
+    from femotion.continuum.corrosion import rust_strain, interface_pressure, depth_for_expansion
+    s.watch("p", interface_pressure((0, y0, z0), (1, 0, 0), r))       # the rust's pressure, from the concrete's equilibrium
     s.static(steps=200, strain=s.initial_strain(rust_strain((0, y0, z0), (1, 0, 0), r - t, t, delta), "rust0"))
+
+The ring's own stresses are a tool to impose δ, not a result: read the pressure with interface_pressure.
 
 Units: lengths in any unit (consistent), stresses likewise; the empirical formulas state their own units.
 """
