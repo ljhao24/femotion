@@ -281,6 +281,7 @@ swelling, the growth of rust. Restrained, it stresses the member and cracks it; 
 
 ```python
 sh = s.shrinkage(3e-4, "slab")                        # ε_sh > 0 shortens; cells by group name(s), predicate, mask, ids
+dif = s.shrinkage(4e-4, "bottom slab") + s.shrinkage(2e-4, ["webs", "top slab"])   # differential shrinkage
 th = s.thermal(lambda x: 15.0 * x[2] / 0.25)          # ΔT(x): every cell by its material's α, every bar by its own
 e0 = s.initial_strain([2e-4, 0, 0, 0, 0, 0], "web")   # a number (isotropic), 6 Voigt components, a 3 × 3 tensor, or eps0(x)
 s.static(strain=sh, steps=40, name="shrinkage")       # ramped with the load factor λ of the stage, held afterwards
@@ -341,13 +342,13 @@ transfer length — the restrained tie below lands in the range of the tension c
 ### Rust expanding around a bar
 
 Corroding steel turns into rust of 2 to 6 times its volume (Fe3O4 2.08, α-FeOOH 2.91, Fe(OH)2 3.75, Fe(OH)3 4.2,
-Fe(OH)3·3H2O 6.4; Caré et al. 2008), which pushes the concrete outwards until the cover splits along the bar. Modelled
+Fe(OH)3·3H2O 6.4; Caré et al. 2008, as tabulated by Noubactep et al. 2012), which pushes the concrete outwards until the cover splits along the bar. Modelled
 here with the bar resolved by the mesh and a thin rust ring at its surface:
 
 ```python
 from femotion.mesh.inclusions import bar_block, hoop_normals
 from femotion.continuum.corrosion import rust_strain, depth_for_expansion
-m = bar_block(np.linspace(0, 100, 5), 300, 80, [(150, 39, 12)], h=6, ring=0.5)   # groups concrete, steel, rust, rust0 …
+m = bar_block([0.0, 10.0], 300, 80, [(150, 39, 12)], h=6, ring=0.5)   # a slice; groups concrete, steel, rust, rust0 …
 s = OpsSolid(m, {"concrete": c, "steel": ElasticIso(2e5, 0.3), "rust": ElasticIso(2e5, 0.3)},
              band=("projected", hoop_normals(m, [(150, 39, 12)])))           # radial cracks: hoop direction
 s.static(strain=s.initial_strain(rust_strain((0, 150, 39), (1, 0, 0), 5.5, 0.5, 0.02), "rust0"), steps=100)
@@ -398,7 +399,7 @@ free to widen:
 | 0.5 mm | 134 μm | 68 μm (2.3 %) | 75 μm (2.5 %) |
 | 1.0 mm | 290 μm | 151 μm (5.0 %) | 157 μm (5.2 %) |
 
-The width grows by 0.0065 mm per μm of corrosion depth once the cover has split, inside the 0.003–0.018 mm/μm of
+The width grows by 0.0067 mm per μm of corrosion depth once the cover has split, inside the 0.003–0.018 mm/μm of
 Alonso et al.'s accelerated tests. For the hairline crack the references give 5–6 μm (thick-walled cylinders of Liu &
 Weyers and El Maaddawy & Soudki, no creep: the plastic pressure on an elastic cylinder), 27 μm (Alonso et al., first
 visible crack) and 105 μm (GB/T 51355-2019, natural corrosion): the FE, with incompressible rust that all stays at the
@@ -418,9 +419,10 @@ second cause (shrinkage, temperature, load) opening the same crack.
 
 Every converged step keeps the displacements of all nodes (`Step.U`, solid nodes then bar and dowel nodes) and the
 reactions of the supported nodes (`Step.R`, `Step.Rn`: fixed components, springs, displacement drivers). Recorded steps
-(`record=True`, every k-th, or only the last) also keep, per cell: `stress`, `strain` (engineering shear; order xx yy zz
-xy yz zx), `eps_in`, `crack_strain`, `crack_normal`, `width`, `cracked`, `crushed`, `eq_strain` (material equivalent
-strains); per bar segment `N`, `stress`, `strain`; per dowel element `N`, `V`, `M`, `local`.
+(`record=True`, every k-th, or only the last) also keep, per cell: `stress`, `strain` (the strain the material sees,
+ε − ε0; engineering shear; order xx yy zz xy yz zx), `eps0` (free strain), `eps_in`, `crack_strain`, `crack_normal`,
+`width`, `cracked`, `crushed`, `eq_strain` (material equivalent strains); per bar segment `N`, `stress`, `strain`,
+`eps0`; per bond spring `slip`, `tau`; per dowel element `N`, `V`, `M`, `local`.
 
 - `curve(node, dof, at=…)`: load–displacement (−1 × the reaction resultant at the supports selected by `at`, i.e. the
   applied load with its sign; `sign=1` gives the reaction);
@@ -544,6 +546,17 @@ adds about 0.2 s per step for 4 000 cells.
 - IMPL-EX under displacement control, and with loads that do not change (holds, prestress): see "Solving".
 - A failed step reverts ASDConcrete3D's time increment to the committed one: the pseudo-time is set again before every
   attempt.
+- The initial-strain wrapper exists in OpenSeesPy 3.8 as `nDMaterial InitStrain tag base eps0 <5 more>` (class
+  InitStrainNDMaterial, parameters `eps0`, `eps0_11` … `eps0_13`); `nDMaterial InitStrainNDMaterial` is "unknown". It
+  adds its value to the strain (σ = f(ε + ε_init)), so a free strain is passed with the opposite sign.
+  `InitStressNDMaterial` around `ElasticIsotropic` aborts the process ("getCopy — subclass responsibility").
+- `uniaxialMaterial InitStrainMaterial` commits the wrapped material at the shifted strain when its parameter `epsInit`
+  changes (see "Free strains").
+- `setParameter -val v -ele e … ` costs about 0.9 μs a call, `updateParameter` 0.2 μs: per-point free strains are cheap.
+- Bond laws: `uniaxialMaterial MultiLinear` jumps on unloading (from the softening plateau at 8 to −15 within 0.5 of
+  the slip in a probe); `ElasticMultiLinear` unloads along its loading curve; `HystereticSM` follows a multi-point
+  envelope and unloads like Hysteretic, so it is used (it prints a banner when first created).
+- `system SparseSYM` was 50 times and `SuperLU` 2.3 times slower than UmfPack on a 24 000-equation solid.
 
 ## Licence
 
@@ -562,4 +575,23 @@ its own distribution (extra `opensees`), not bundled.
 - Hendriks, M. A. N. et al. (2017). Guidelines for nonlinear finite element analysis of concrete structures,
   Rijkswaterstaat RTD 1016-1:2017.
 - Petracca, M., Camata, G. et al. ASDConcrete3D, OpenSees documentation.
-- JTG 3362-2018, 6.4.3; EN 1992-1-1:2004, 7.3.4.
+- JTG 3362-2018, 6.4.3; EN 1992-1-1:2004, 7.3.4; EN 1992-3:2006, annex M; JTG D60-2015, 4.3.12.
+- Timoshenko, S. (1925). Analysis of bi-metal thermostats. J. Opt. Soc. Am. 11(3), 233–255.
+- Marti, P., Alvarez, M., Kaufmann, W., Sigrist, V. (1998). Tension chord model for structural concrete. Structural
+  Engineering International 8(4), 287–298.
+- fib Model Code 2010, 6.1.1 (bond and anchorage, table 6.1-1).
+- Tepfers, R. (1979). Cracking of concrete cover along anchored deformed reinforcing bars. Magazine of Concrete Research
+  31(106), 3–12.
+- Alonso, C., Andrade, C., Rodriguez, J., Diez, J. M. (1998). Factors controlling cracking of concrete affected by
+  reinforcement corrosion. Materials and Structures 31, 435–441 (and Alonso et al. 1994, Hormigón y Acero 45(194): first
+  visible cracks of 0.05–0.1 mm at 15–50 μm, growth 0.003–0.018 mm/μm).
+- Liu, Y., Weyers, R. E. (1998). Modeling the time-to-corrosion cracking in chloride contaminated reinforced concrete
+  structures. ACI Materials Journal 95(6), 675–681; Liu, Y. (1996), PhD thesis, Virginia Tech, 5.6.
+- El Maaddawy, T., Soudki, K. (2007). A model for prediction of time from corrosion initiation to corrosion cracking.
+  Cement & Concrete Composites 29, 168–175.
+- Caré, S., Nguyen, Q. T., L'Hostis, V., Berthaud, Y. (2008). Mechanical properties of the rust layer induced by
+  impressed current method in reinforced mortar. Cement and Concrete Research 38, 1079–1091 (volume ratios of rusts).
+- Noubactep, C., Caré, S., Crane, R. (2012). Nanoscale metallic iron for environmental remediation. Water, Air, & Soil
+  Pollution 223, 1363–1382 (table 5).
+- GB/T 51355-2019 既有混凝土结构耐久性评定标准, appendix C.0.4.
+- Mazzoni, S. (2023). HystereticSM material, OpenSees documentation.
