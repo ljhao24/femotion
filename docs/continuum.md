@@ -30,6 +30,10 @@ r.spring_force("B0")
 export_vtu("out/deck.vtu", s, {"G1": s.result("G1"), "sum": r})
 ```
 
+Cracking — concrete softening, crack widths, bars yielding — is the OpenSees back-end `femotion.continuum.opensees`
+([continuum-nonlinear.md](continuum-nonlinear.md)): the same `Mesh` and cell groups, the linear model here driving its
+submodels.
+
 ## Pieces
 
 | module | what |

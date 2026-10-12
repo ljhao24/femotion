@@ -49,7 +49,8 @@ pip install "femotion[all]"
 - 支座用面弹簧；钢筋、预应力束、锚栓、粘贴板条可以放在实体里任意位置，不必与网格重合（粘结 / 无粘结杆，预应力束等效荷载）；
 - 多个工况一次分解求解（面荷载、按面积分布的轮压、线荷载、温度、初应变、指定位移），结果线性组合、任意点取值、截面内力（静力法和应力积分两种）；
 - 子模型：细网格的局部（锚固区、开孔）由整体模型的位移驱动；
-- 直接法 CHOLMOD（cholespy）：薄壁二次单元模型 AMG 收敛慢时用它。
+- 直接法 CHOLMOD（scikit-sparse 或 cholespy）：薄壁二次单元模型 AMG 收敛慢时用它；
+- 非线性开裂（`femotion.continuum.opensees`，OpenSees）：混凝土弥散裂缝（ASDConcrete3D，裂缝带正则化）、嵌入钢筋 / 钢束 / 锚栓、分阶段加载、裂缝宽度（[docs/continuum-nonlinear.md](docs/continuum-nonlinear.md)）。
 
 ## JavaScript 包
 
